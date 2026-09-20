@@ -1,0 +1,1065 @@
+/*
+ * Copyright 2026 Federico D'Ambrosio
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+use super::layout::{DashboardRectKind, centered_rect, visible_dashboard_rects};
+use super::panels::render_panel;
+use crate::app::{AppMode, AppState, PanelState};
+use crate::{dashboard::DashboardRow, theme::Theme};
+use humantime::format_duration;
+use ratatui::{
+    prelude::*,
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+};
+
+pub(crate) fn draw_ui(frame: &mut Frame, app: &mut AppState) {
+    let size = frame.area();
+
+    // Layout: title bar, charts area, footer
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(2),
+        ])
+        .split(size);
+
+    // Title
+    let title_text = format!(
+        "{} — range={} step={}  panels={}  {}(r to refresh, +/- range, [] pan, 0 live, q quit)",
+        app.title,
+        format_duration(app.range),
+        format_duration(app.step),
+        normal_panel_count(app),
+        if app.is_live() { "" } else { "⏸ PAUSED " }
+    );
+    let title_block = Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(title_text).alignment(Alignment::Center));
+    frame.render_widget(title_block, chunks[0]);
+
+    // Charts area: use Grafana grid if any panel has it, else fallback to 2-column flow
+    let area = chunks[1];
+    let charts_block = Block::default().borders(Borders::ALL);
+    frame.render_widget(charts_block, area);
+    let inner_area = area.inner(Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+
+    let mut selected_rendered_cluster = None;
+    if app.mode == AppMode::Fullscreen || app.mode == AppMode::FullscreenInspect {
+        if let Some((panel_index, p)) = app
+            .selected_panel_index()
+            .and_then(|index| app.panels.get(index).map(|panel| (index, panel)))
+        {
+            selected_rendered_cluster =
+                render_panel(frame, inner_area, panel_index, p, app, true, app.cursor_x);
+        }
+    } else {
+        for item in visible_dashboard_rects(size, app) {
+            match item.kind {
+                DashboardRectKind::Panel { index } => {
+                    if let Some(panel) = app.panels.get(index) {
+                        let is_selected = app.selected_item == Some(item.id);
+                        let rendered_cluster = render_panel(
+                            frame,
+                            item.rect,
+                            index,
+                            panel,
+                            app,
+                            is_selected,
+                            app.cursor_x,
+                        );
+                        if is_selected {
+                            selected_rendered_cluster = rendered_cluster;
+                        }
+                    }
+                }
+                DashboardRectKind::Row { row_id, depth, .. } => {
+                    if let Some(row) = app.layout.row(row_id) {
+                        render_row_header(
+                            frame,
+                            item.rect,
+                            row,
+                            depth,
+                            app.selected_item == Some(item.id),
+                            &app.theme,
+                        );
+                    }
+                }
+                DashboardRectKind::Tabs { group_id, depth } => {
+                    if let Some(group) = app.layout.tabs(group_id) {
+                        let titles = group
+                            .tabs
+                            .iter()
+                            .map(|tab| tab.title.clone())
+                            .collect::<Vec<_>>();
+                        let geometry =
+                            super::tab_bar_geometry(item.rect, &titles, group.active, depth);
+                        super::render_tab_bar(
+                            frame,
+                            &geometry,
+                            &app.theme,
+                            app.selected_item == Some(item.id),
+                        );
+                    }
+                }
+                DashboardRectKind::TabEmpty { .. } => frame.render_widget(
+                    Line::styled(
+                        "  No supported panels in this tab",
+                        Style::default().fg(app.theme.text),
+                    ),
+                    item.rect,
+                ),
+            }
+        }
+    }
+    app.rendered_annotation_cluster = selected_rendered_cluster;
+
+    // Footer / Status bar
+    let errors = app.panels.iter().filter(|p| p.last_error.is_some()).count();
+    let panel_count_display =
+        if app.mode == AppMode::Fullscreen || app.mode == AppMode::FullscreenInspect {
+            "1 (Fullscreen)".to_string()
+        } else {
+            normal_panel_count(app)
+        };
+
+    let mode_display = match app.mode {
+        AppMode::Normal => "NORMAL",
+        AppMode::Search => "SEARCH",
+        AppMode::Fullscreen => "FULLSCREEN",
+        AppMode::Inspect => "INSPECT",
+        AppMode::FullscreenInspect => "FULLSCREEN INSPECT",
+    };
+
+    let navigation_hint = if app.selected_tab_group_id().is_some() {
+        "←/→ switch tab, Enter enter, ↑/↓ navigate"
+    } else {
+        "↑/↓ navigate"
+    };
+    let summary = format!(
+        "Mode: {}{} | Prom: {} | range={} step={:?} refresh={} | grid={} | panels={} (skipped {}) errors={} | keys: {navigation_hint}, r refresh, e export, Ctrl+E record, +/- range, q quit, ? debug:{}",
+        mode_display,
+        if app.recording.is_some() { " REC" } else { "" },
+        app.prometheus.base,
+        format_duration(app.range),
+        app.step,
+        format_duration(app.refresh_every),
+        if app.autogrid_enabled { "on" } else { "off" },
+        panel_count_display,
+        app.skipped_panels,
+        errors,
+        if app.debug_bar { "on" } else { "off" }
+    );
+
+    let detail = build_footer_detail(app);
+
+    let footer = Paragraph::new(format!("{}\n{}", summary, detail)).wrap(Wrap { trim: true });
+    frame.render_widget(footer, chunks[2]);
+
+    // Search Popup
+    if app.mode == AppMode::Search {
+        let area = centered_rect(60, 20, size);
+        let block = Block::default()
+            .title(" Search Dashboard ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(app.theme.border_selected));
+        frame.render_widget(Clear, area); // Clear background
+        frame.render_widget(block, area);
+
+        let inner_area = area.inner(Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(inner_area);
+
+        // Input
+        let input = Paragraph::new(format!("> {}", app.search_query))
+            .style(Style::default().fg(app.theme.text));
+        frame.render_widget(input, chunks[0]);
+
+        // Results
+        let results: Vec<ListItem> = app
+            .search_results
+            .iter()
+            .filter_map(|item| match item {
+                crate::dashboard::DashboardItemId::Row(row_id) => {
+                    let row = app.layout.row(*row_id)?;
+                    let marker = if row.collapsed { '▶' } else { '▼' };
+                    Some(ListItem::new(format!("{marker} {}", row.title)))
+                }
+                crate::dashboard::DashboardItemId::Panel(index) => {
+                    let panel = app.panels.get(*index)?;
+                    Some(ListItem::new(format!("• {}", panel.title)))
+                }
+                crate::dashboard::DashboardItemId::Tabs(group_id) => {
+                    let group = app.layout.tabs(*group_id)?;
+                    let title = group
+                        .active
+                        .and_then(|index| {
+                            group
+                                .tabs
+                                .get(index)
+                                .map(|tab| super::tab_title(&tab.title, index))
+                        })
+                        .unwrap_or_else(|| "No tabs".to_string());
+                    Some(ListItem::new(format!("▰ {title}")))
+                }
+            })
+            .collect();
+        let list = List::new(results)
+            .highlight_style(
+                Style::default()
+                    .fg(app.theme.title)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(app.theme.background), // Optional: add background to make it pop more?
+            )
+            .highlight_symbol(">> ");
+
+        let mut list_state = ratatui::widgets::ListState::default();
+        if !app.search_results.is_empty() {
+            list_state.select(Some(0));
+        }
+        frame.render_stateful_widget(list, chunks[1], &mut list_state);
+    }
+
+    super::render_annotation_modal(frame, app);
+}
+
+fn normal_panel_count(app: &AppState) -> String {
+    let total = app.panels.len();
+    let visible = if app
+        .layout
+        .items
+        .iter()
+        .all(|item| matches!(item, crate::dashboard::DashboardLayoutItem::Panel(_)))
+    {
+        total
+    } else {
+        app.layout.visible_panel_count()
+    };
+    if visible == total {
+        total.to_string()
+    } else {
+        format!("{visible}/{total}")
+    }
+}
+
+pub(crate) fn render_row_header(
+    frame: &mut Frame,
+    rect: Rect,
+    row: &DashboardRow,
+    depth: usize,
+    selected: bool,
+    theme: &Theme,
+) {
+    let marker = if row.collapsed { '▶' } else { '▼' };
+    let text = format!("{marker} {}{}", "  ".repeat(depth), row.title);
+    let style = Style::default()
+        .fg(if selected {
+            theme.border_selected
+        } else {
+            theme.border
+        })
+        .add_modifier(if selected {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        });
+    frame.render_widget(Paragraph::new(text).style(style), rect);
+}
+
+fn build_footer_detail(app: &AppState) -> String {
+    let mut parts = Vec::new();
+
+    if matches!(app.mode, AppMode::Inspect | AppMode::FullscreenInspect)
+        && let Some(cx) = app.cursor_x
+    {
+        let cursor_time = chrono::DateTime::from_timestamp(cx as i64, 0)
+            .map(|dt| dt.format("%H:%M:%S").to_string())
+            .unwrap_or_default();
+        parts.push(format!("Cursor: {cursor_time}"));
+    }
+
+    if let Some(status) = app.annotations.footer_status() {
+        parts.push(format!("Annotations: {status}"));
+    }
+
+    if let Some(status) = &app.export_status {
+        parts.push(status.clone());
+    }
+
+    if app.debug_bar {
+        // Choose a debug panel: if we have grid, pick the top-left grid panel; otherwise pick the first panel
+        let debug_panel: Option<&PanelState> = if app.panels.iter().any(|p| p.grid.is_some()) {
+            app.panels
+                .iter()
+                .filter(|p| p.grid.is_some())
+                .min_by_key(|p| {
+                    let g = p.grid.unwrap();
+                    (g.y, g.x)
+                })
+        } else {
+            app.panels.first()
+        };
+
+        if let Some(p) = debug_panel {
+            let url = p.last_url.as_deref().unwrap_or("-");
+            parts.push(format!(
+                "last panel: {} | samples={} | url={}",
+                p.title, p.last_samples, url
+            ));
+        }
+    }
+
+    parts.join(" | ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        app::{GridUnit, PanelType, SeriesView, YAxisMode},
+        export::ExportOptions,
+        prom::PromClient,
+        theme::Theme,
+    };
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn test_app() -> AppState {
+        AppState::new(
+            PromClient::new("http://localhost:9090".to_string()),
+            std::time::Duration::from_secs(300),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(1),
+            "Test".to_string(),
+            vec![],
+            0,
+            Theme::default(),
+            "dashed-line".to_string(),
+            ExportOptions::default(),
+        )
+    }
+
+    fn graph_panel(title: &str) -> PanelState {
+        PanelState {
+            title: title.to_string(),
+            exprs: vec![],
+            legends: vec![],
+            query_modes: vec![],
+            series: vec![],
+            last_error: None,
+            last_url: None,
+            last_samples: 0,
+            grid: None,
+            y_axis_mode: crate::app::YAxisMode::Auto,
+            panel_type: crate::app::PanelType::Graph,
+            thresholds: None,
+            min: None,
+            max: None,
+            autogrid: None,
+            display: crate::ui::DisplayFormat::default(),
+            options: crate::app::PanelOptions::None,
+        }
+    }
+
+    fn nested_row_app() -> AppState {
+        use crate::dashboard::{
+            DashboardItemId, DashboardLayout, DashboardLayoutItem, DashboardRow, RowId,
+        };
+
+        let mut app = test_app();
+        app.panels = vec![graph_panel("Visible child"), graph_panel("Collapsed child")];
+        app.apply_layout(DashboardLayout::new(vec![DashboardLayoutItem::Row(
+            DashboardRow::new(
+                RowId::new(0),
+                "Expanded",
+                false,
+                false,
+                vec![
+                    DashboardLayoutItem::Panel(0),
+                    DashboardLayoutItem::Row(DashboardRow::new(
+                        RowId::new(1),
+                        "Nested",
+                        true,
+                        false,
+                        vec![DashboardLayoutItem::Panel(1)],
+                    )),
+                ],
+            ),
+        )]));
+        app.selected_item = Some(DashboardItemId::Row(RowId::new(0)));
+        app
+    }
+
+    #[test]
+    fn tabs_render_active_marker_focus_and_only_active_panel() {
+        use crate::dashboard::{
+            DashboardItemId, DashboardLayout, DashboardLayoutItem, DashboardTab, DashboardTabs,
+            TabGroupId,
+        };
+
+        let id = TabGroupId::new(0);
+        let mut app = test_app();
+        app.view_end_ts = 1_783_080_000;
+        app.panels = vec![graph_panel("CPU panel"), graph_panel("Memory panel")];
+        app.apply_layout(DashboardLayout::new(vec![DashboardLayoutItem::Tabs(
+            DashboardTabs::new(
+                id,
+                vec![
+                    DashboardTab {
+                        title: "CPU".into(),
+                        children: vec![DashboardLayoutItem::Panel(0)],
+                    },
+                    DashboardTab {
+                        title: "Memory".into(),
+                        children: vec![DashboardLayoutItem::Panel(1)],
+                    },
+                ],
+            ),
+        )]));
+        app.selected_item = Some(DashboardItemId::Tabs(id));
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+
+        terminal.draw(|frame| draw_ui(frame, &mut app)).unwrap();
+        let text = terminal_text(&terminal);
+
+        assert!(text.contains("* CPU Memory"));
+        assert!(text.contains("CPU panel"));
+        assert!(!text.contains("Memory panel"));
+        let bar = visible_dashboard_rects(Rect::new(0, 0, 100, 40), &app)
+            .into_iter()
+            .find(|item| item.id == DashboardItemId::Tabs(id))
+            .unwrap();
+        let active_cell = terminal
+            .backend()
+            .buffer()
+            .cell((bar.rect.x, bar.rect.y))
+            .unwrap();
+        assert!(active_cell.modifier.contains(Modifier::BOLD));
+        assert!(active_cell.modifier.contains(Modifier::UNDERLINED));
+
+        if let Ok(directory) = std::env::var("GRAFATUI_TABS_CAPTURE_DIR") {
+            let directory = std::path::PathBuf::from(directory).join("tabs-switch");
+            std::fs::create_dir_all(&directory).unwrap();
+            capture_buffer(&terminal, &directory.join("initial-100x40.json"));
+
+            app.layout.set_active_tab(id, 1).unwrap();
+            app.selected_item = Some(DashboardItemId::Tabs(id));
+            terminal.draw(|frame| draw_ui(frame, &mut app)).unwrap();
+            let switched = terminal_text(&terminal);
+            assert!(switched.contains("CPU * Memory"));
+            assert!(switched.contains("Memory panel"));
+            assert!(!switched.contains("CPU panel"));
+            capture_buffer(&terminal, &directory.join("switched-100x40.json"));
+
+            app.enter_selected_tab();
+            terminal.draw(|frame| draw_ui(frame, &mut app)).unwrap();
+            assert_eq!(app.selected_item, Some(DashboardItemId::Panel(1)));
+            capture_buffer(&terminal, &directory.join("entered-100x40.json"));
+        }
+    }
+
+    #[test]
+    fn tabs_render_empty_overflow_nested_and_scrolled_contracts() {
+        use crate::dashboard::{
+            DashboardItemId, DashboardLayout, DashboardLayoutItem, DashboardRow, DashboardTab,
+            DashboardTabs, RowId, TabGroupId,
+        };
+
+        let mut empty = test_app();
+        empty.view_end_ts = 1_783_080_000;
+        empty.apply_layout(DashboardLayout::new(vec![
+            DashboardLayoutItem::Tabs(DashboardTabs::new(TabGroupId::new(0), vec![])),
+            DashboardLayoutItem::Tabs(DashboardTabs::new(
+                TabGroupId::new(1),
+                vec![DashboardTab {
+                    title: "Empty".into(),
+                    children: vec![],
+                }],
+            )),
+        ]));
+        let empty_text = draw_contract_capture(&mut empty, 40, 12, "tabs-empty");
+        assert!(empty_text.contains("No tabs"));
+        assert!(empty_text.contains("No supported panels in this tab"));
+
+        let overflow_id = TabGroupId::new(2);
+        let mut overflow = test_app();
+        overflow.view_end_ts = 1_783_080_000;
+        overflow.apply_layout(DashboardLayout::new(vec![DashboardLayoutItem::Tabs(
+            DashboardTabs::new(
+                overflow_id,
+                ["Overview", "服务", "e\u{301}rrors", "Latency", "Final"]
+                    .into_iter()
+                    .map(|title| DashboardTab {
+                        title: title.into(),
+                        children: vec![],
+                    })
+                    .collect(),
+            ),
+        )]));
+        overflow.layout.set_active_tab(overflow_id, 4).unwrap();
+        overflow.selected_item = Some(DashboardItemId::Tabs(overflow_id));
+        let overflow_text = draw_contract_capture(&mut overflow, 24, 12, "tabs-overflow");
+        assert!(overflow_text.contains("<"));
+        assert!(overflow_text.contains("* Final"));
+
+        let outer_id = TabGroupId::new(3);
+        let inner_id = TabGroupId::new(4);
+        let mut nested = test_app();
+        nested.view_end_ts = 1_783_080_000;
+        nested.panels = vec![graph_panel("Inactive")];
+        nested.apply_layout(DashboardLayout::new(vec![DashboardLayoutItem::Tabs(
+            DashboardTabs::new(
+                outer_id,
+                vec![
+                    DashboardTab {
+                        title: "Nested".into(),
+                        children: vec![DashboardLayoutItem::Tabs(DashboardTabs::new(
+                            inner_id,
+                            vec![
+                                DashboardTab {
+                                    title: "First".into(),
+                                    children: vec![],
+                                },
+                                DashboardTab {
+                                    title: "Second".into(),
+                                    children: vec![DashboardLayoutItem::Row(DashboardRow::new(
+                                        RowId::new(0),
+                                        "Collapsed",
+                                        true,
+                                        false,
+                                        vec![],
+                                    ))],
+                                },
+                            ],
+                        ))],
+                    },
+                    DashboardTab {
+                        title: "Other".into(),
+                        children: vec![DashboardLayoutItem::Panel(0)],
+                    },
+                ],
+            ),
+        )]));
+        nested.layout.set_active_tab(inner_id, 1).unwrap();
+        nested.selected_item = Some(DashboardItemId::Tabs(outer_id));
+        let nested_text = draw_contract_capture(&mut nested, 100, 40, "tabs-nested");
+        assert!(nested_text.contains("* Nested Other"));
+        assert!(nested_text.contains("First * Second"));
+        assert!(nested_text.contains('▶'));
+        assert!(nested_text.contains("Collapsed"));
+        assert!(!nested_text.contains("Inactive"));
+
+        let scroll_id = TabGroupId::new(5);
+        let mut scrolled = test_app();
+        scrolled.view_end_ts = 1_783_080_000;
+        scrolled.panels = vec![graph_panel("Above one"), graph_panel("Above two")];
+        scrolled.apply_layout(DashboardLayout::new(vec![
+            DashboardLayoutItem::Panel(0),
+            DashboardLayoutItem::Panel(1),
+            DashboardLayoutItem::Tabs(DashboardTabs::new(
+                scroll_id,
+                vec![DashboardTab {
+                    title: "Below".into(),
+                    children: vec![],
+                }],
+            )),
+        ]));
+        scrolled.selected_item = Some(DashboardItemId::Tabs(scroll_id));
+        super::super::scroll_selected_into_view(Rect::new(0, 0, 100, 12), &mut scrolled);
+        assert!(scrolled.vertical_scroll > 0);
+        let scroll_text = draw_contract_capture(&mut scrolled, 100, 12, "tabs-scroll");
+        assert!(scroll_text.contains("* Below"));
+    }
+
+    fn draw_contract_capture(app: &mut AppState, width: u16, height: u16, name: &str) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw_ui(frame, app)).unwrap();
+        if let Ok(root) = std::env::var("GRAFATUI_TABS_CAPTURE_DIR") {
+            let directory = std::path::PathBuf::from(root).join(name);
+            std::fs::create_dir_all(&directory).unwrap();
+            capture_buffer(
+                &terminal,
+                &directory.join(format!("{name}-{width}x{height}.json")),
+            );
+        }
+        terminal_text(&terminal)
+    }
+
+    fn capture_buffer(terminal: &Terminal<TestBackend>, path: &std::path::Path) {
+        let buffer = terminal.backend().buffer();
+        let cells = (0..buffer.area.height)
+            .flat_map(|y| {
+                (0..buffer.area.width).map(move |x| {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    let modifiers = [
+                        (Modifier::BOLD, "bold"),
+                        (Modifier::DIM, "dim"),
+                        (Modifier::ITALIC, "italic"),
+                        (Modifier::UNDERLINED, "underlined"),
+                        (Modifier::REVERSED, "reversed"),
+                        (Modifier::CROSSED_OUT, "crossed_out"),
+                    ]
+                    .into_iter()
+                    .filter_map(|(flag, name)| cell.modifier.contains(flag).then_some(name))
+                    .collect::<Vec<_>>();
+                    serde_json::json!({
+                        "x": x,
+                        "y": y,
+                        "symbol": cell.symbol(),
+                        "fg": test_color_hex(cell.fg, "#d0d0d0"),
+                        "bg": test_color_hex(cell.bg, "#101010"),
+                        "modifiers": modifiers,
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        let capture = serde_json::json!({
+            "version": 1,
+            "width": buffer.area.width,
+            "height": buffer.area.height,
+            "cell_width": 8,
+            "cell_height": 16,
+            "default_fg": "#d0d0d0",
+            "default_bg": "#101010",
+            "cells": cells,
+            "cursor": serde_json::Value::Null,
+        });
+        std::fs::write(path, serde_json::to_vec_pretty(&capture).unwrap()).unwrap();
+    }
+
+    fn test_color_hex(color: Color, reset: &str) -> String {
+        let (red, green, blue) = match color {
+            Color::Reset => return reset.to_owned(),
+            Color::Black => (0, 0, 0),
+            Color::Red => (128, 0, 0),
+            Color::Green => (0, 128, 0),
+            Color::Yellow => (128, 128, 0),
+            Color::Blue => (0, 0, 128),
+            Color::Magenta => (128, 0, 128),
+            Color::Cyan => (0, 128, 128),
+            Color::Gray => (192, 192, 192),
+            Color::DarkGray => (128, 128, 128),
+            Color::LightRed => (255, 0, 0),
+            Color::LightGreen => (0, 255, 0),
+            Color::LightYellow => (255, 255, 0),
+            Color::LightBlue => (0, 0, 255),
+            Color::LightMagenta => (255, 0, 255),
+            Color::LightCyan => (0, 255, 255),
+            Color::White => (255, 255, 255),
+            Color::Rgb(red, green, blue) => (red, green, blue),
+            Color::Indexed(index) if index < 16 => {
+                const ANSI: [(u8, u8, u8); 16] = [
+                    (0, 0, 0),
+                    (128, 0, 0),
+                    (0, 128, 0),
+                    (128, 128, 0),
+                    (0, 0, 128),
+                    (128, 0, 128),
+                    (0, 128, 128),
+                    (192, 192, 192),
+                    (128, 128, 128),
+                    (255, 0, 0),
+                    (0, 255, 0),
+                    (255, 255, 0),
+                    (0, 0, 255),
+                    (255, 0, 255),
+                    (0, 255, 255),
+                    (255, 255, 255),
+                ];
+                ANSI[usize::from(index)]
+            }
+            Color::Indexed(index @ 16..=231) => {
+                const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+                let cube = index - 16;
+                (
+                    LEVELS[usize::from(cube / 36)],
+                    LEVELS[usize::from((cube / 6) % 6)],
+                    LEVELS[usize::from(cube % 6)],
+                )
+            }
+            Color::Indexed(index) => {
+                let gray = 8 + (index - 232) * 10;
+                (gray, gray, gray)
+            }
+        };
+        format!("#{red:02x}{green:02x}{blue:02x}")
+    }
+
+    fn v2_compatibility_app() -> AppState {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("examples")
+            .join("dashboards")
+            .join("grafana_v2_compatibility.json");
+        let dashboard = crate::grafana::load_grafana_dashboard(&path).unwrap();
+        let skipped_panels = dashboard.skipped_panels;
+        let title = dashboard.title;
+        let panels = dashboard
+            .queries
+            .into_iter()
+            .map(|panel| {
+                let series = match panel.panel_type {
+                    PanelType::Graph => vec![SeriesView {
+                        name: "200".to_string(),
+                        value: Some(4.0),
+                        points: vec![
+                            (1_699_999_940.0, 1.0),
+                            (1_699_999_970.0, 3.0),
+                            (1_700_000_000.0, 4.0),
+                        ],
+                        visible: true,
+                    }],
+                    PanelType::Stat => vec![SeriesView {
+                        name: "Memory".to_string(),
+                        value: Some(128.0),
+                        points: vec![
+                            (1_699_999_940.0, 120.0),
+                            (1_699_999_970.0, 124.0),
+                            (1_700_000_000.0, 128.0),
+                        ],
+                        visible: true,
+                    }],
+                    other => panic!("unexpected V2 example panel type: {other:?}"),
+                };
+                PanelState {
+                    title: panel.title,
+                    exprs: panel.exprs,
+                    legends: panel.legends,
+                    query_modes: panel.query_modes,
+                    series,
+                    last_error: None,
+                    last_url: None,
+                    last_samples: 3,
+                    grid: panel.grid.map(|grid| GridUnit {
+                        x: grid.x,
+                        y: grid.y,
+                        w: grid.w,
+                        h: grid.h,
+                    }),
+                    y_axis_mode: YAxisMode::Auto,
+                    panel_type: panel.panel_type,
+                    thresholds: panel.thresholds,
+                    min: panel.min,
+                    max: panel.max,
+                    autogrid: panel.autogrid,
+                    display: panel.display,
+                    options: panel.options,
+                }
+            })
+            .collect();
+        let mut app = AppState::new(
+            PromClient::new("http://127.0.0.1:9".to_string()),
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(5),
+            format!("{title} (imported)"),
+            panels,
+            skipped_panels,
+            Theme::default(),
+            "dashed-line".to_string(),
+            ExportOptions::default(),
+        );
+        app.view_end_ts = 1_700_000_000;
+        app
+    }
+
+    fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area;
+        (area.y..area.bottom())
+            .map(|y| {
+                (area.x..area.right())
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn rect_text(terminal: &Terminal<TestBackend>, rect: Rect) -> String {
+        let buffer = terminal.backend().buffer();
+        (rect.y..rect.bottom())
+            .map(|y| {
+                (rect.x..rect.right())
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn rows_render_disclosures_indentation_selection_and_visible_count() {
+        let mut app = nested_row_app();
+        let row_rects =
+            super::super::layout::visible_dashboard_rects(Rect::new(0, 0, 100, 40), &app);
+        let expanded = row_rects[0].rect;
+        let nested = row_rects[2].rect;
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+
+        terminal.draw(|frame| draw_ui(frame, &mut app)).unwrap();
+
+        let text = terminal_text(&terminal);
+        assert!(text.contains("▼ Expanded"));
+        assert!(text.contains("▶   Nested"));
+        assert!(text.contains("Visible child"));
+        assert!(!text.contains("Collapsed child"));
+        assert!(text.contains("panels=1/2"));
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((expanded.x, expanded.y))
+                .unwrap()
+                .fg,
+            app.theme.border_selected
+        );
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((nested.x, nested.y))
+                .unwrap()
+                .fg,
+            app.theme.border
+        );
+    }
+
+    #[test]
+    fn row_free_dashboard_uses_legacy_count_without_fraction() {
+        let mut app = test_app();
+        app.panels = vec![graph_panel("CPU"), graph_panel("Memory")];
+        app.apply_layout(crate::dashboard::DashboardLayout::flat(2));
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+
+        terminal.draw(|frame| draw_ui(frame, &mut app)).unwrap();
+
+        let text = terminal_text(&terminal);
+        assert!(text.contains("panels=2"));
+        assert!(!text.contains("panels=2/2"));
+        assert!(!text.contains('▼'));
+        assert!(!text.contains('▶'));
+    }
+
+    #[test]
+    fn structurally_flat_layout_growth_uses_rendered_panel_count() {
+        let mut app = test_app();
+        app.panels = vec![graph_panel("CPU")];
+        app.apply_layout(crate::dashboard::DashboardLayout::flat(1));
+        app.panels.push(graph_panel("Memory"));
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+
+        terminal.draw(|frame| draw_ui(frame, &mut app)).unwrap();
+
+        let text = terminal_text(&terminal);
+        assert!(text.contains("panels=2"));
+        assert!(!text.contains("panels=1/2"));
+        assert!(text.contains("CPU"));
+        assert!(text.contains("Memory"));
+    }
+
+    #[test]
+    fn row_search_overlay_renders_visible_row_candidate_at_narrow_viewport() {
+        let mut app = nested_row_app();
+        app.mode = AppMode::Search;
+        app.search_query = "Expanded".to_string();
+        app.search_results = vec![crate::dashboard::DashboardItemId::Row(
+            crate::dashboard::RowId::new(0),
+        )];
+        let size = Rect::new(0, 0, 72, 24);
+        let overlay = centered_rect(60, 20, size);
+        let mut terminal = Terminal::new(TestBackend::new(size.width, size.height)).unwrap();
+
+        terminal.draw(|frame| draw_ui(frame, &mut app)).unwrap();
+
+        let text = rect_text(&terminal, overlay);
+        assert!(text.contains("Search Dashboard"));
+        assert!(text.contains("> Expanded"));
+        assert!(text.contains("▼ Expanded"));
+    }
+
+    #[test]
+    fn v2_example_fixed_grid_renders_at_supported_viewports() {
+        for (width, height) in [(120, 30), (80, 24)] {
+            let mut app = v2_compatibility_app();
+            assert_eq!(app.panels.len(), 2);
+            assert_eq!(app.selected_panel_index(), Some(0));
+            assert_eq!(app.skipped_panels, 0);
+            assert_eq!(app.panels[0].panel_type, PanelType::Graph);
+            assert_eq!(app.panels[1].panel_type, PanelType::Stat);
+            assert_eq!(
+                app.panels[0]
+                    .grid
+                    .map(|grid| (grid.x, grid.y, grid.w, grid.h)),
+                Some((0, 0, 16, 8))
+            );
+            assert_eq!(
+                app.panels[1]
+                    .grid
+                    .map(|grid| (grid.x, grid.y, grid.w, grid.h)),
+                Some((16, 0, 8, 8))
+            );
+
+            let rects = crate::ui::visible_panel_rects(Rect::new(0, 0, width, height), &app);
+            assert_eq!(rects.len(), 2);
+            assert_eq!((rects[0].1, rects[1].1), (0, 1));
+            let (left, right) = (rects[0].0, rects[1].0);
+            assert_eq!(left.y, right.y);
+            assert_eq!(left.height, right.height);
+            assert_eq!(left.width, right.width * 2);
+            assert!(left.right() <= right.x);
+
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw_ui(frame, &mut app)).unwrap();
+            let text = terminal_text(&terminal);
+            assert!(text.contains("HTTP Request Rate by Status Code"));
+            assert!(text.contains("Process Resident"));
+            assert!(text.contains("panels=2 (skipped 0)"));
+            assert!(!text.contains("No panels"));
+            assert!(!text.contains("panic"));
+            assert_eq!(
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((left.x, left.y))
+                    .unwrap()
+                    .fg,
+                app.theme.border_selected
+            );
+            assert_eq!(
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((right.x, right.y))
+                    .unwrap()
+                    .fg,
+                app.theme.border
+            );
+        }
+    }
+
+    #[test]
+    fn draw_caches_only_selected_panels_active_filtered_cluster() {
+        let mut cpu_deploy = crate::annotations::test_event_at(50.0, "cpu deploy");
+        cpu_deploy.tags = vec!["deploy".to_string()];
+        cpu_deploy.target = crate::annotations::AnnotationTarget::PanelTitles(
+            ["CPU".to_string()].into_iter().collect(),
+        );
+        let mut cpu_incident = crate::annotations::test_event_at(50.0, "cpu incident");
+        cpu_incident.tags = vec!["incident".to_string()];
+        cpu_incident.target = crate::annotations::AnnotationTarget::PanelTitles(
+            ["CPU".to_string()].into_iter().collect(),
+        );
+        let mut memory_incident = crate::annotations::test_event_at(50.0, "memory incident");
+        memory_incident.tags = vec!["incident".to_string()];
+        memory_incident.target = crate::annotations::AnnotationTarget::PanelTitles(
+            ["Memory".to_string()].into_iter().collect(),
+        );
+        let mut app = test_app();
+        app.panels = vec![graph_panel("CPU"), graph_panel("Memory")];
+        app.apply_layout(crate::dashboard::DashboardLayout::flat(app.panels.len()));
+        app.view_end_ts = 100;
+        app.range = std::time::Duration::from_secs(100);
+        app.mode = AppMode::Inspect;
+        app.cursor_x = Some(50.0);
+        app.annotations = crate::annotations::AnnotationState::from_events_for_test(vec![
+            cpu_deploy,
+            cpu_incident,
+            memory_incident,
+        ]);
+        app.annotations
+            .set_filter(crate::annotations::TagFilter::from_selected([
+                "deploy".to_string()
+            ]));
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+
+        terminal.draw(|frame| draw_ui(frame, &mut app)).unwrap();
+        assert_eq!(
+            app.rendered_annotation_cluster
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|event| event.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cpu deploy"]
+        );
+
+        app.selected_item = Some(crate::dashboard::DashboardItemId::Panel(1));
+        terminal.draw(|frame| draw_ui(frame, &mut app)).unwrap();
+        assert!(app.rendered_annotation_cluster.is_none());
+
+        let mut memory_deploy = crate::annotations::test_event_at(50.0, "memory deploy");
+        memory_deploy.tags = vec!["deploy".to_string()];
+        memory_deploy.target = crate::annotations::AnnotationTarget::PanelTitles(
+            ["Memory".to_string()].into_iter().collect(),
+        );
+        app.annotations =
+            crate::annotations::AnnotationState::from_events_for_test(vec![memory_deploy]);
+        app.panels[1].panel_type = crate::app::PanelType::Unknown;
+        terminal.draw(|frame| draw_ui(frame, &mut app)).unwrap();
+        assert!(app.rendered_annotation_cluster.is_none());
+    }
+
+    #[test]
+    fn footer_composes_annotation_warning_with_export_and_inspect_status() {
+        let mut app = test_app();
+        app.export_status = Some("Exported frame.svg".to_string());
+        app.mode = AppMode::Inspect;
+        app.cursor_x = Some(1_700_000_000.0);
+        app.annotations =
+            crate::annotations::AnnotationState::warning_for_test("events.jsonl:2: invalid time");
+
+        let detail = build_footer_detail(&app);
+
+        assert!(detail.contains("Cursor:"));
+        assert!(detail.contains("Annotations: events.jsonl:2: invalid time"));
+        assert!(detail.contains("Exported frame.svg"));
+    }
+
+    #[test]
+    fn footer_composes_annotation_warning_with_sorted_filter_summary() {
+        let mut event = crate::annotations::test_event_at(10.0, "deploy");
+        event.target = crate::annotations::AnnotationTarget::PanelTitles(
+            ["CPU".to_string()].into_iter().collect(),
+        );
+        let mut app = test_app();
+        app.annotations = crate::annotations::AnnotationState::from_events_for_test(vec![event]);
+        app.annotations
+            .reconcile_targets(&["CPU".to_string(), "CPU".to_string()]);
+        app.annotations
+            .set_filter(crate::annotations::TagFilter::from_selected([
+                "incident".to_string(),
+                "deploy".to_string(),
+            ]));
+
+        assert_eq!(
+            build_footer_detail(&app),
+            "Annotations: target \"CPU\" matches 2 graph/timeseries panels; applied to all | tags deploy|incident"
+        );
+    }
+
+    #[test]
+    fn footer_omits_annotation_status_when_disabled() {
+        let app = test_app();
+        assert!(!build_footer_detail(&app).contains("Annotations:"));
+    }
+}

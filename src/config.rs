@@ -1,0 +1,185 @@
+/*
+ * Copyright 2026 Federico D'Ambrosio
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+use anyhow::Result;
+use directories::ProjectDirs;
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub(crate) struct Config {
+    pub(crate) prometheus_url: Option<String>,
+    pub(crate) refresh_rate: Option<u64>,
+    pub(crate) time_range: Option<String>,
+    pub(crate) step: Option<String>,
+    pub(crate) theme: Option<String>,
+    pub(crate) grafana_json: Option<PathBuf>,
+    pub(crate) annotations_file: Option<PathBuf>,
+    #[allow(dead_code)]
+    pub(crate) annotations_command: Option<crate::annotations::AnnotationCommandConfig>,
+    pub(crate) threshold_marker: Option<String>,
+    pub(crate) export_dir: Option<PathBuf>,
+    pub(crate) export_format: Option<crate::export::ExportFormat>,
+    pub(crate) record_max_frames: Option<usize>,
+    pub(crate) autogrid: Option<bool>,
+    pub(crate) autogrid_color: Option<String>,
+    pub(crate) vars: Option<HashMap<String, String>>,
+}
+
+impl Config {
+    pub(crate) fn load(cli_path: Option<PathBuf>) -> Result<Self> {
+        let config_path = cli_path
+            .map(|p| expand_path(&p))
+            .or_else(Self::get_config_path);
+        if let Some(path) = config_path
+            && path.exists()
+        {
+            let content = fs::read_to_string(path)?;
+            let config: Config = toml::from_str(&content)?;
+            return Ok(config);
+        }
+        Ok(Config::default())
+    }
+
+    fn get_config_path() -> Option<PathBuf> {
+        if let Some(base_dirs) = ProjectDirs::from("", "", "grafatui") {
+            let config_path = base_dirs.config_dir().join("config.toml");
+            if config_path.exists() {
+                return Some(config_path);
+            }
+            let config_path = base_dirs.config_dir().join("grafatui.toml");
+            if config_path.exists() {
+                return Some(config_path);
+            }
+        }
+
+        let cwd_path = PathBuf::from("./grafatui.toml");
+        if cwd_path.exists() {
+            return Some(cwd_path.to_path_buf());
+        }
+
+        None
+    }
+}
+
+/// Expands a path starting with `~` to the user's home directory.
+pub(crate) fn expand_path(path: &std::path::Path) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    if path_str.starts_with("~")
+        && let Some(dirs) = directories::UserDirs::new()
+    {
+        let home = dirs.home_dir();
+        if path_str == "~" {
+            return home.to_path_buf();
+        }
+        if path_str.starts_with("~/") || path_str.starts_with("~\\") {
+            return home.join(&path_str[2..]);
+        }
+    }
+    path.to_path_buf()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_config_deserialization() {
+        let toml_str = r#"
+            prometheus_url = "http://localhost:9090"
+            refresh_rate = 5000
+            theme = "dracula"
+            export_format = "svg"
+            autogrid = false
+            autogrid_color = "gray"
+            annotations_file = "~/events.jsonl"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.prometheus_url,
+            Some("http://localhost:9090".to_string())
+        );
+        assert_eq!(config.refresh_rate, Some(5000));
+        assert_eq!(config.theme, Some("dracula".to_string()));
+        assert_eq!(config.export_format, Some(crate::export::ExportFormat::Svg));
+        assert_eq!(config.autogrid, Some(false));
+        assert_eq!(config.autogrid_color, Some("gray".to_string()));
+        assert_eq!(
+            config.annotations_file,
+            Some(PathBuf::from("~/events.jsonl"))
+        );
+    }
+
+    #[test]
+    fn parses_annotation_command_table_and_defaults() {
+        let config: Config = toml::from_str(
+            r#"
+            [annotations_command]
+            program = "./provider"
+            args = ["--environment", "prod"]
+            "#,
+        )
+        .unwrap();
+
+        let command = config.annotations_command.unwrap();
+        assert_eq!(command.program, "./provider");
+        assert_eq!(command.args, ["--environment", "prod"]);
+        assert_eq!(command.timeout, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn parses_annotation_command_human_timeout() {
+        let config: Config = toml::from_str(
+            r#"
+            [annotations_command]
+            program = "./provider"
+            timeout = "750ms"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.annotations_command.unwrap().timeout,
+            Duration::from_millis(750)
+        );
+    }
+
+    #[test]
+    fn test_expand_path() {
+        if let Some(dirs) = directories::UserDirs::new() {
+            let home = dirs.home_dir();
+
+            // Test ~
+            let p = PathBuf::from("~");
+            assert_eq!(expand_path(&p), home);
+
+            // Test ~/foo
+            let p = PathBuf::from("~/foo/bar.json");
+            assert_eq!(expand_path(&p), home.join("foo/bar.json"));
+
+            // Test path without ~
+            let p = PathBuf::from("./local.json");
+            assert_eq!(expand_path(&p), p);
+
+            // Test /absolute
+            let p = PathBuf::from("/etc/config");
+            assert_eq!(expand_path(&p), p);
+        }
+    }
+}

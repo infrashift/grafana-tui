@@ -1,0 +1,1475 @@
+/*
+ * Copyright 2026 Federico D'Ambrosio
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+use super::state::{AppMode, AppState, YAxisMode};
+use crate::annotations::AnnotationModal;
+use crate::dashboard::DashboardItemId;
+use crate::ui;
+use anyhow::Result;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Rect, Size};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum InputAction {
+    Redraw,
+    Quit,
+    ExportCurrent,
+    ToggleRecording,
+}
+
+enum SharedKeyResult {
+    Handled,
+    Quit,
+    Unhandled,
+}
+
+pub(super) async fn handle_key(
+    key: KeyEvent,
+    terminal_size: Size,
+    app: &mut AppState,
+) -> Result<InputAction> {
+    if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Ok(InputAction::ToggleRecording);
+    }
+
+    if key.code == KeyCode::Char('e') && key.modifiers.is_empty() && app.mode != AppMode::Search {
+        return Ok(InputAction::ExportCurrent);
+    }
+
+    if app.annotation_modal.is_some() {
+        return Ok(handle_annotation_modal_key(key, terminal_size, app));
+    }
+
+    if key.code == KeyCode::Char('t') && key.modifiers.is_empty() && app.mode != AppMode::Search {
+        app.open_tag_filter_modal();
+        return Ok(InputAction::Redraw);
+    }
+
+    if key.code == KeyCode::Char('a') && key.modifiers.is_empty() && app.mode != AppMode::Search {
+        app.annotations.toggle_visibility();
+        return Ok(InputAction::Redraw);
+    }
+
+    let action = match app.mode {
+        AppMode::Search => handle_search_key(key, terminal_size, app),
+        AppMode::Inspect => handle_inspect_key(key, app),
+        AppMode::Fullscreen => handle_fullscreen_key(key, app).await?,
+        AppMode::FullscreenInspect => handle_fullscreen_inspect_key(key, app),
+        AppMode::Normal => handle_normal_key(key, terminal_size, app).await?,
+    };
+    Ok(action)
+}
+
+fn handle_annotation_modal_key(
+    key: KeyEvent,
+    terminal_size: Size,
+    app: &mut AppState,
+) -> InputAction {
+    match key.code {
+        KeyCode::Esc => app.annotation_modal = None,
+        KeyCode::Enter => {
+            let next_filter = match app.annotation_modal.as_ref() {
+                Some(AnnotationModal::TagFilter(state)) => Some(state.draft().clone()),
+                Some(AnnotationModal::Cluster(_)) | None => None,
+            };
+            app.annotation_modal = None;
+            if let Some(filter) = next_filter {
+                app.annotations.set_filter(filter);
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => match app.annotation_modal.as_mut() {
+            Some(AnnotationModal::Cluster(state)) => state.move_by(-1),
+            Some(AnnotationModal::TagFilter(state)) => state.move_by(-1),
+            None => {}
+        },
+        KeyCode::Down | KeyCode::Char('j') => match app.annotation_modal.as_mut() {
+            Some(AnnotationModal::Cluster(state)) => state.move_by(1),
+            Some(AnnotationModal::TagFilter(state)) => state.move_by(1),
+            None => {}
+        },
+        KeyCode::PageUp | KeyCode::PageDown => {
+            let direction = if key.code == KeyCode::PageUp { -1 } else { 1 };
+            let rows = ui::annotation_cluster_page_size(terminal_size);
+            if let Some(AnnotationModal::Cluster(state)) = app.annotation_modal.as_mut() {
+                state.move_page(direction, rows);
+            }
+        }
+        KeyCode::Char(' ') => {
+            if let Some(AnnotationModal::TagFilter(state)) = app.annotation_modal.as_mut() {
+                state.toggle_selected();
+            }
+        }
+        KeyCode::Char('c') => {
+            if let Some(AnnotationModal::TagFilter(state)) = app.annotation_modal.as_mut() {
+                state.clear();
+            }
+        }
+        _ => {}
+    }
+    InputAction::Redraw
+}
+
+pub(super) async fn handle_mouse(
+    mouse: MouseEvent,
+    terminal_size: Size,
+    app: &mut AppState,
+) -> Result<InputAction> {
+    if app.annotation_modal.is_some() {
+        return Ok(InputAction::Redraw);
+    }
+
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left) => {
+            let rect = Rect::new(0, 0, terminal_size.width, terminal_size.height);
+            if let Some(item) = ui::hit_test(app, rect, mouse.column, mouse.row) {
+                let tab_target = if app.mode == AppMode::Normal
+                    && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                {
+                    match item.kind {
+                        ui::DashboardRectKind::Tabs { group_id, depth } => app
+                            .layout
+                            .tabs(group_id)
+                            .and_then(|group| {
+                                let titles = group
+                                    .tabs
+                                    .iter()
+                                    .map(|tab| tab.title.clone())
+                                    .collect::<Vec<_>>();
+                                let geometry =
+                                    ui::tab_bar_geometry(item.rect, &titles, group.active, depth);
+                                ui::tab_at(
+                                    &geometry,
+                                    ratatui::layout::Position {
+                                        x: mouse.column,
+                                        y: mouse.row,
+                                    },
+                                )
+                            })
+                            .map(|index| (group_id, index)),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                let clicked_disclosure =
+                    matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                        && item.disclosure_rect.is_some_and(|disclosure| {
+                            disclosure.contains(ratatui::layout::Position {
+                                x: mouse.column,
+                                y: mouse.row,
+                            })
+                        });
+                app.selected_item = Some(item.id);
+                if clicked_disclosure {
+                    app.toggle_selected_row().await?;
+                }
+                if let Some((group_id, index)) = tab_target {
+                    app.activate_tab(group_id, index).await?;
+                }
+
+                match app.mode {
+                    AppMode::Normal | AppMode::Inspect => {}
+                    AppMode::Fullscreen | AppMode::FullscreenInspect => {
+                        app.mode = AppMode::FullscreenInspect;
+
+                        let chart_width = item.rect.width.saturating_sub(2) as f64;
+                        if chart_width > 0.0 {
+                            let relative_x = (mouse.column.saturating_sub(item.rect.x + 1)) as f64;
+                            let fraction = (relative_x / chart_width).clamp(0.0, 1.0);
+                            let (start_ts, _) = app.time_bounds();
+                            app.cursor_x = Some(start_ts + fraction * app.range.as_secs_f64());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(InputAction::Redraw)
+        }
+        MouseEventKind::ScrollDown => {
+            app.vertical_scroll = app.vertical_scroll.saturating_add(1);
+            Ok(InputAction::Redraw)
+        }
+        MouseEventKind::ScrollUp => {
+            app.vertical_scroll = app.vertical_scroll.saturating_sub(1);
+            Ok(InputAction::Redraw)
+        }
+        _ => Ok(InputAction::Redraw),
+    }
+}
+
+fn handle_search_key(key: KeyEvent, terminal_size: Size, app: &mut AppState) -> InputAction {
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+            app.search_query.clear();
+            app.search_results.clear();
+        }
+        KeyCode::Enter => {
+            if let Some(&item) = app.search_results.first() {
+                app.selected_item = Some(item);
+                app.mode = match item {
+                    DashboardItemId::Row(_) | DashboardItemId::Tabs(_) => AppMode::Normal,
+                    DashboardItemId::Panel(_) => AppMode::Fullscreen,
+                };
+                app.search_query.clear();
+                app.search_results.clear();
+                if matches!(item, DashboardItemId::Row(_) | DashboardItemId::Tabs(_)) {
+                    ensure_selected_item_visible(terminal_size, app);
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            app.search_query.pop();
+            update_search_results(app);
+        }
+        KeyCode::Char(c) => {
+            app.search_query.push(c);
+            update_search_results(app);
+        }
+        _ => {}
+    }
+    InputAction::Redraw
+}
+
+fn handle_inspect_key(key: KeyEvent, app: &mut AppState) -> InputAction {
+    match key.code {
+        KeyCode::Enter => {
+            app.open_rendered_annotation_cluster();
+            InputAction::Redraw
+        }
+        KeyCode::Esc | KeyCode::Char('v') => {
+            app.mode = AppMode::Normal;
+            app.cursor_x = None;
+            InputAction::Redraw
+        }
+        KeyCode::Left => {
+            app.move_cursor(-1);
+            InputAction::Redraw
+        }
+        KeyCode::Right => {
+            app.move_cursor(1);
+            InputAction::Redraw
+        }
+        KeyCode::Char('q') => InputAction::Quit,
+        _ => InputAction::Redraw,
+    }
+}
+
+async fn handle_fullscreen_key(key: KeyEvent, app: &mut AppState) -> Result<InputAction> {
+    let action = match key.code {
+        KeyCode::Esc | KeyCode::Char('f') | KeyCode::Enter => {
+            app.mode = AppMode::Normal;
+            InputAction::Redraw
+        }
+        KeyCode::Char('v') => {
+            app.mode = AppMode::FullscreenInspect;
+            app.center_cursor();
+            InputAction::Redraw
+        }
+        KeyCode::PageUp => {
+            app.select_previous_panel();
+            InputAction::Redraw
+        }
+        KeyCode::PageDown => {
+            app.select_next_panel();
+            InputAction::Redraw
+        }
+        _ => shared_key_action(handle_shared_keys(key, app).await?),
+    };
+    Ok(action)
+}
+
+fn handle_fullscreen_inspect_key(key: KeyEvent, app: &mut AppState) -> InputAction {
+    match key.code {
+        KeyCode::Enter => {
+            app.open_rendered_annotation_cluster();
+            InputAction::Redraw
+        }
+        KeyCode::Esc | KeyCode::Char('v') => {
+            app.mode = AppMode::Fullscreen;
+            app.cursor_x = None;
+            InputAction::Redraw
+        }
+        KeyCode::Char('g') => {
+            app.autogrid_enabled = !app.autogrid_enabled;
+            InputAction::Redraw
+        }
+        KeyCode::Left => {
+            app.move_cursor(-1);
+            InputAction::Redraw
+        }
+        KeyCode::Right => {
+            app.move_cursor(1);
+            InputAction::Redraw
+        }
+        KeyCode::Char('q') => InputAction::Quit,
+        _ => InputAction::Redraw,
+    }
+}
+
+async fn handle_normal_key(
+    key: KeyEvent,
+    terminal_size: Size,
+    app: &mut AppState,
+) -> Result<InputAction> {
+    let action = match key.code {
+        KeyCode::Char('f') if app.selected_panel_index().is_some() => {
+            app.mode = AppMode::Fullscreen;
+            InputAction::Redraw
+        }
+        KeyCode::Char('v') if app.selected_panel_index().is_some() => {
+            app.mode = AppMode::Inspect;
+            app.center_cursor();
+            InputAction::Redraw
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.select_previous_item();
+            ensure_selected_item_visible(terminal_size, app);
+            InputAction::Redraw
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.select_next_item();
+            ensure_selected_item_visible(terminal_size, app);
+            InputAction::Redraw
+        }
+        KeyCode::Enter | KeyCode::Char(' ') if key.modifiers.is_empty() => {
+            if app.selected_tab_group_id().is_some() {
+                app.enter_selected_tab();
+            } else {
+                app.toggle_selected_row().await?;
+            }
+            ensure_selected_item_visible(terminal_size, app);
+            InputAction::Redraw
+        }
+        KeyCode::Left if key.modifiers.is_empty() => {
+            if app.selected_tab_group_id().is_some() {
+                app.move_selected_tab(-1).await?;
+            } else {
+                app.set_selected_row_collapsed(true).await?;
+            }
+            ensure_selected_item_visible(terminal_size, app);
+            InputAction::Redraw
+        }
+        KeyCode::Right if key.modifiers.is_empty() => {
+            if app.selected_tab_group_id().is_some() {
+                app.move_selected_tab(1).await?;
+            } else {
+                app.set_selected_row_collapsed(false).await?;
+            }
+            ensure_selected_item_visible(terminal_size, app);
+            InputAction::Redraw
+        }
+        KeyCode::PageUp => {
+            app.vertical_scroll = app.vertical_scroll.saturating_sub(10);
+            InputAction::Redraw
+        }
+        KeyCode::PageDown => {
+            app.vertical_scroll = app.vertical_scroll.saturating_add(10);
+            InputAction::Redraw
+        }
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            toggle_series_visibility(app, c);
+            InputAction::Redraw
+        }
+        KeyCode::Home => {
+            app.vertical_scroll = 0;
+            InputAction::Redraw
+        }
+        KeyCode::End => {
+            app.vertical_scroll = usize::MAX;
+            InputAction::Redraw
+        }
+        KeyCode::Char('?') => {
+            app.debug_bar = !app.debug_bar;
+            InputAction::Redraw
+        }
+        KeyCode::Char('/') => {
+            app.mode = AppMode::Search;
+            app.search_query.clear();
+            app.search_results.clear();
+            InputAction::Redraw
+        }
+        _ => shared_key_action(handle_shared_keys(key, app).await?),
+    };
+    Ok(action)
+}
+
+fn ensure_selected_item_visible(terminal_size: Size, app: &mut AppState) {
+    let area = Rect::new(0, 0, terminal_size.width, terminal_size.height);
+    ui::scroll_selected_into_view(area, app);
+}
+
+async fn handle_shared_keys(key: KeyEvent, app: &mut AppState) -> Result<SharedKeyResult> {
+    match key.code {
+        KeyCode::Char('q') => Ok(SharedKeyResult::Quit),
+        KeyCode::Char('r') | KeyCode::Char('R') => {
+            app.refresh().await?;
+            Ok(SharedKeyResult::Handled)
+        }
+        KeyCode::Char('+') => {
+            app.zoom_out();
+            app.refresh().await?;
+            Ok(SharedKeyResult::Handled)
+        }
+        KeyCode::Char('-') => {
+            app.zoom_in();
+            app.refresh().await?;
+            Ok(SharedKeyResult::Handled)
+        }
+        KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            app.pan_left();
+            app.refresh().await?;
+            Ok(SharedKeyResult::Handled)
+        }
+        KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            app.pan_left();
+            app.refresh().await?;
+            Ok(SharedKeyResult::Handled)
+        }
+        KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            app.pan_right();
+            app.refresh().await?;
+            Ok(SharedKeyResult::Handled)
+        }
+        KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            app.pan_right();
+            app.refresh().await?;
+            Ok(SharedKeyResult::Handled)
+        }
+        KeyCode::Char('0') => {
+            app.reset_to_live();
+            app.refresh().await?;
+            Ok(SharedKeyResult::Handled)
+        }
+        KeyCode::Char('y') => {
+            if let Some(panel) = app
+                .selected_panel_index()
+                .and_then(|index| app.panels.get_mut(index))
+            {
+                panel.y_axis_mode = match panel.y_axis_mode {
+                    YAxisMode::Auto => YAxisMode::ZeroBased,
+                    YAxisMode::ZeroBased => YAxisMode::Auto,
+                };
+            }
+            Ok(SharedKeyResult::Handled)
+        }
+        KeyCode::Char('g') => {
+            app.autogrid_enabled = !app.autogrid_enabled;
+            Ok(SharedKeyResult::Handled)
+        }
+        _ => Ok(SharedKeyResult::Unhandled),
+    }
+}
+
+fn shared_key_action(result: SharedKeyResult) -> InputAction {
+    match result {
+        SharedKeyResult::Handled | SharedKeyResult::Unhandled => InputAction::Redraw,
+        SharedKeyResult::Quit => InputAction::Quit,
+    }
+}
+
+fn update_search_results(app: &mut AppState) {
+    if app.search_query.is_empty() {
+        app.search_results.clear();
+        return;
+    }
+
+    let query = app.search_query.to_lowercase();
+    app.search_results = app
+        .layout
+        .visible_items()
+        .into_iter()
+        .filter(|item| match item.id {
+            DashboardItemId::Row(row_id) => app
+                .layout
+                .row(row_id)
+                .is_some_and(|row| row.title.to_lowercase().contains(&query)),
+            DashboardItemId::Tabs(group_id) => app.layout.tabs(group_id).is_some_and(|group| {
+                group
+                    .active
+                    .and_then(|index| group.tabs.get(index).map(|tab| (index, tab)))
+                    .map_or_else(
+                        || "no tabs".contains(&query),
+                        |(index, tab)| {
+                            ui::tab_title(&tab.title, index)
+                                .to_lowercase()
+                                .contains(&query)
+                        },
+                    )
+            }),
+            DashboardItemId::Panel(index) => app
+                .panels
+                .get(index)
+                .is_some_and(|panel| panel.title.to_lowercase().contains(&query)),
+        })
+        .map(|item| item.id)
+        .collect();
+}
+
+fn toggle_series_visibility(app: &mut AppState, c: char) {
+    let Some(digit) = c.to_digit(10) else {
+        return;
+    };
+    let Some(panel) = app
+        .selected_panel_index()
+        .and_then(|index| app.panels.get_mut(index))
+    else {
+        return;
+    };
+
+    if digit == 0 {
+        for series in &mut panel.series {
+            series.visible = true;
+        }
+    } else {
+        let idx = (digit - 1) as usize;
+        if let Some(series) = panel.series.get_mut(idx) {
+            series.visible = !series.visible;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{GraphOptions, PanelOptions, PanelState, PanelType, SeriesView};
+    use crate::dashboard::{
+        DashboardItemId, DashboardLayout, DashboardLayoutItem, DashboardRow, DashboardTab,
+        DashboardTabs, RowId, TabGroupId,
+    };
+    use crate::export::ExportOptions;
+    use crate::prom;
+    use crate::theme::Theme;
+    use std::time::Duration;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    fn shift_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::SHIFT)
+    }
+
+    fn size() -> Size {
+        Size::new(100, 40)
+    }
+
+    fn test_app() -> AppState {
+        AppState::new(
+            prom::PromClient::new("http://localhost:9090".to_string()),
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            Duration::from_millis(1000),
+            "Test".to_string(),
+            vec![test_panel("CPU"), test_panel("Memory")],
+            0,
+            Theme::default(),
+            "dashed".to_string(),
+            ExportOptions::default(),
+        )
+    }
+
+    fn test_panel(title: &str) -> PanelState {
+        PanelState {
+            title: title.to_string(),
+            exprs: vec![],
+            legends: vec![],
+            query_modes: vec![],
+            series: vec![
+                SeriesView {
+                    name: "a".to_string(),
+                    value: Some(1.0),
+                    points: vec![],
+                    visible: true,
+                },
+                SeriesView {
+                    name: "b".to_string(),
+                    value: Some(2.0),
+                    points: vec![],
+                    visible: false,
+                },
+            ],
+            last_error: None,
+            last_url: None,
+            last_samples: 0,
+            grid: None,
+            y_axis_mode: YAxisMode::Auto,
+            panel_type: PanelType::Graph,
+            thresholds: None,
+            min: None,
+            max: None,
+            autogrid: None,
+            display: crate::ui::DisplayFormat::default(),
+            options: PanelOptions::Graph(GraphOptions::default()),
+        }
+    }
+
+    fn row_selected_app() -> AppState {
+        let mut app = test_app();
+        app.apply_layout(DashboardLayout::new(vec![DashboardLayoutItem::Row(
+            DashboardRow::new(
+                RowId::new(0),
+                "Row",
+                false,
+                false,
+                vec![DashboardLayoutItem::Panel(0), DashboardLayoutItem::Panel(1)],
+            ),
+        )]));
+        assert_eq!(app.selected_item, Some(DashboardItemId::Row(RowId::new(0))));
+        app
+    }
+
+    #[tokio::test]
+    async fn panel_only_normal_actions_no_op_when_a_row_is_selected() {
+        for code in [
+            KeyCode::Char('f'),
+            KeyCode::Char('v'),
+            KeyCode::Char('y'),
+            KeyCode::Char('0'),
+            KeyCode::Char('1'),
+        ] {
+            let mut app = row_selected_app();
+            let series_visibility = app.panels[0]
+                .series
+                .iter()
+                .map(|series| series.visible)
+                .collect::<Vec<_>>();
+
+            handle_key(key(code), size(), &mut app).await.unwrap();
+
+            assert_eq!(app.mode, AppMode::Normal, "key {code:?} changed mode");
+            assert_eq!(app.cursor_x, None, "key {code:?} created a cursor");
+            assert_eq!(
+                app.panels[0].y_axis_mode,
+                YAxisMode::Auto,
+                "key {code:?} changed y axis"
+            );
+            assert_eq!(
+                app.panels[0]
+                    .series
+                    .iter()
+                    .map(|series| series.visible)
+                    .collect::<Vec<_>>(),
+                series_visibility,
+                "key {code:?} changed series visibility"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn row_keys_toggle_collapse_and_preserve_shift_time_panning() {
+        let mut app = row_selected_app();
+
+        handle_key(key(KeyCode::Enter), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(app.layout.row(RowId::new(0)).unwrap().collapsed);
+        assert_eq!(app.selected_item, Some(DashboardItemId::Row(RowId::new(0))));
+
+        handle_key(key(KeyCode::Char(' ')), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(!app.layout.row(RowId::new(0)).unwrap().collapsed);
+
+        handle_key(key(KeyCode::Left), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(app.layout.row(RowId::new(0)).unwrap().collapsed);
+
+        handle_key(key(KeyCode::Right), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(!app.layout.row(RowId::new(0)).unwrap().collapsed);
+
+        handle_key(shift_key(KeyCode::Left), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.time_offset, app.range / 4);
+        assert!(!app.layout.row(RowId::new(0)).unwrap().collapsed);
+
+        handle_key(shift_key(KeyCode::Right), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.time_offset, Duration::ZERO);
+        assert!(!app.layout.row(RowId::new(0)).unwrap().collapsed);
+    }
+
+    #[tokio::test]
+    async fn tabs_keyboard_switch_keeps_bar_focus_and_enter_opens_content() {
+        let mut app = test_app();
+        let id = TabGroupId::new(0);
+        app.apply_layout(DashboardLayout::new(vec![DashboardLayoutItem::Tabs(
+            DashboardTabs::new(
+                id,
+                vec![
+                    DashboardTab {
+                        title: "CPU".into(),
+                        children: vec![DashboardLayoutItem::Panel(0)],
+                    },
+                    DashboardTab {
+                        title: "Memory".into(),
+                        children: vec![DashboardLayoutItem::Panel(1)],
+                    },
+                ],
+            ),
+        )]));
+
+        handle_key(key(KeyCode::Right), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.layout.tabs(id).unwrap().active, Some(1));
+        assert_eq!(app.selected_item, Some(DashboardItemId::Tabs(id)));
+        assert_eq!(app.visible_panel_indices(), vec![1]);
+
+        handle_key(key(KeyCode::Enter), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.selected_item, Some(DashboardItemId::Panel(1)));
+    }
+
+    #[tokio::test]
+    async fn tab_label_click_activates_but_drag_only_focuses() {
+        let mut app = test_app();
+        let id = TabGroupId::new(0);
+        app.apply_layout(DashboardLayout::new(vec![DashboardLayoutItem::Tabs(
+            DashboardTabs::new(
+                id,
+                vec![
+                    DashboardTab {
+                        title: "CPU".into(),
+                        children: vec![DashboardLayoutItem::Panel(0)],
+                    },
+                    DashboardTab {
+                        title: "Memory".into(),
+                        children: vec![DashboardLayoutItem::Panel(1)],
+                    },
+                ],
+            ),
+        )]));
+        let area = Rect::new(0, 0, size().width, size().height);
+        let bar = ui::visible_dashboard_rects(area, &app)
+            .into_iter()
+            .find(|item| item.id == DashboardItemId::Tabs(id))
+            .unwrap();
+        let geometry = ui::tab_bar_geometry(bar.rect, &["CPU".into(), "Memory".into()], Some(0), 0);
+        let memory = geometry
+            .segments
+            .iter()
+            .find(|segment| segment.activate == Some(1))
+            .unwrap()
+            .rect;
+
+        handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: memory.x,
+                row: memory.y,
+                modifiers: KeyModifiers::NONE,
+            },
+            size(),
+            &mut app,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.layout.tabs(id).unwrap().active, Some(1));
+
+        let cpu_x = bar.rect.x;
+        handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: cpu_x,
+                row: bar.rect.y,
+                modifiers: KeyModifiers::NONE,
+            },
+            size(),
+            &mut app,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.layout.tabs(id).unwrap().active, Some(1));
+        assert_eq!(app.selected_item, Some(DashboardItemId::Tabs(id)));
+    }
+
+    #[tokio::test]
+    async fn navigation_keys_traverse_visible_rows_and_panels() {
+        let mut app = row_selected_app();
+
+        for code in [KeyCode::Char('j'), KeyCode::Down] {
+            handle_key(key(code), size(), &mut app).await.unwrap();
+        }
+        assert_eq!(app.selected_item, Some(DashboardItemId::Panel(1)));
+        handle_key(key(KeyCode::Down), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.selected_item, Some(DashboardItemId::Panel(1)));
+
+        for code in [KeyCode::Char('k'), KeyCode::Up] {
+            handle_key(key(code), size(), &mut app).await.unwrap();
+        }
+        assert_eq!(app.selected_item, Some(DashboardItemId::Row(RowId::new(0))));
+        handle_key(key(KeyCode::Up), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.selected_item, Some(DashboardItemId::Row(RowId::new(0))));
+    }
+
+    #[tokio::test]
+    async fn navigation_scrolls_mixed_items_into_a_short_viewport() {
+        let mut app = test_app();
+        app.panels.truncate(1);
+        app.panels[0].grid = Some(crate::app::GridUnit {
+            x: 0,
+            y: 0,
+            w: 24,
+            h: 2,
+        });
+        app.apply_layout(DashboardLayout::new(vec![
+            DashboardLayoutItem::Panel(0),
+            DashboardLayoutItem::Row(DashboardRow::new(
+                RowId::new(0),
+                "Lower row",
+                true,
+                false,
+                vec![],
+            )),
+        ]));
+        let short = Size::new(100, 12);
+        let area = Rect::new(0, 0, short.width, short.height);
+
+        handle_key(key(KeyCode::Char('j')), short, &mut app)
+            .await
+            .unwrap();
+
+        assert_eq!(app.selected_item, Some(DashboardItemId::Row(RowId::new(0))));
+        assert!(
+            ui::visible_dashboard_rects(area, &app)
+                .iter()
+                .any(|item| item.id == DashboardItemId::Row(RowId::new(0)))
+        );
+
+        handle_key(key(KeyCode::Char('k')), short, &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.selected_item, Some(DashboardItemId::Panel(0)));
+        assert!(
+            ui::visible_dashboard_rects(area, &app)
+                .iter()
+                .any(|item| item.id == DashboardItemId::Panel(0))
+        );
+    }
+
+    #[tokio::test]
+    async fn search_acceptance_scrolls_selected_row_into_a_short_viewport() {
+        let mut app = test_app();
+        app.panels.truncate(1);
+        app.apply_layout(DashboardLayout::new(vec![
+            DashboardLayoutItem::Row(DashboardRow::new(
+                RowId::new(0),
+                "Top row",
+                false,
+                false,
+                vec![DashboardLayoutItem::Panel(0)],
+            )),
+            DashboardLayoutItem::Row(DashboardRow::new(
+                RowId::new(1),
+                "Offscreen row",
+                true,
+                false,
+                vec![],
+            )),
+        ]));
+        let short = Size::new(100, 12);
+        let area = Rect::new(0, 0, short.width, short.height);
+
+        handle_key(key(KeyCode::Char('/')), short, &mut app)
+            .await
+            .unwrap();
+        for character in "Offscreen row".chars() {
+            handle_key(key(KeyCode::Char(character)), short, &mut app)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            app.search_results,
+            vec![DashboardItemId::Row(RowId::new(1))]
+        );
+
+        handle_key(key(KeyCode::Enter), short, &mut app)
+            .await
+            .unwrap();
+
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.selected_item, Some(DashboardItemId::Row(RowId::new(1))));
+        assert!(app.search_query.is_empty());
+        assert!(app.search_results.is_empty());
+        assert!(app.vertical_scroll > 0);
+        assert!(
+            ui::visible_dashboard_rects(area, &app)
+                .iter()
+                .any(|item| item.id == DashboardItemId::Row(RowId::new(1)))
+        );
+    }
+
+    #[tokio::test]
+    async fn search_includes_visible_rows_and_panels_with_type_specific_acceptance() {
+        let mut app = row_selected_app();
+
+        handle_key(key(KeyCode::Char('/')), size(), &mut app)
+            .await
+            .unwrap();
+        for character in "row".chars() {
+            handle_key(key(KeyCode::Char(character)), size(), &mut app)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            app.search_results,
+            vec![DashboardItemId::Row(RowId::new(0))]
+        );
+        handle_key(key(KeyCode::Enter), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.selected_item, Some(DashboardItemId::Row(RowId::new(0))));
+
+        handle_key(key(KeyCode::Char('/')), size(), &mut app)
+            .await
+            .unwrap();
+        for character in "cpu".chars() {
+            handle_key(key(KeyCode::Char(character)), size(), &mut app)
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.search_results, vec![DashboardItemId::Panel(0)]);
+        handle_key(key(KeyCode::Enter), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.mode, AppMode::Fullscreen);
+        assert_eq!(app.selected_item, Some(DashboardItemId::Panel(0)));
+    }
+
+    fn tagged_event(text: &str, tag: &str) -> crate::annotations::AnnotationEvent {
+        let mut event = crate::annotations::test_event_at(50.0, text);
+        event.tags = vec![tag.to_string()];
+        event
+    }
+
+    #[tokio::test]
+    async fn t_opens_tag_filter_except_in_search_or_when_disabled() {
+        let mut app = test_app();
+        app.annotations =
+            crate::annotations::AnnotationState::from_events_for_test(vec![tagged_event(
+                "release", "deploy",
+            )]);
+
+        handle_key(key(KeyCode::Char('t')), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(matches!(
+            app.annotation_modal,
+            Some(crate::annotations::AnnotationModal::TagFilter(_))
+        ));
+
+        app.annotation_modal = None;
+        app.mode = AppMode::Search;
+        handle_key(key(KeyCode::Char('t')), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.search_query, "t");
+
+        let mut disabled = test_app();
+        handle_key(key(KeyCode::Char('t')), size(), &mut disabled)
+            .await
+            .unwrap();
+        assert!(disabled.annotation_modal.is_none());
+    }
+
+    #[tokio::test]
+    async fn t_opens_tag_filter_while_annotation_markers_are_hidden() {
+        let mut app = test_app();
+        app.annotations =
+            crate::annotations::AnnotationState::from_events_for_test(vec![tagged_event(
+                "release", "deploy",
+            )]);
+        app.annotations.toggle_visibility();
+
+        handle_key(key(KeyCode::Char('t')), size(), &mut app)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            app.annotation_modal,
+            Some(crate::annotations::AnnotationModal::TagFilter(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn enter_opens_only_the_rendered_selected_cluster_in_inspect_modes() {
+        let mut app = test_app();
+        app.rendered_annotation_cluster =
+            Some(vec![crate::annotations::test_event_at(50.0, "deploy")]);
+
+        handle_key(key(KeyCode::Enter), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(app.annotation_modal.is_none());
+
+        app.mode = AppMode::Inspect;
+        handle_key(key(KeyCode::Enter), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(matches!(
+            app.annotation_modal,
+            Some(crate::annotations::AnnotationModal::Cluster(_))
+        ));
+
+        app.annotation_modal = None;
+        app.mode = AppMode::FullscreenInspect;
+        handle_key(key(KeyCode::Enter), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(matches!(
+            app.annotation_modal,
+            Some(crate::annotations::AnnotationModal::Cluster(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn modal_navigation_consumes_dashboard_navigation_and_zoom_keys() {
+        let mut app = test_app();
+        app.mode = AppMode::Inspect;
+        app.cursor_x = Some(50.0);
+        app.rendered_annotation_cluster = Some(vec![
+            crate::annotations::test_event_at(50.0, "one"),
+            crate::annotations::test_event_at(50.0, "two"),
+            crate::annotations::test_event_at(50.0, "three"),
+        ]);
+        let original_range = app.range;
+        let original_cursor = app.cursor_x;
+
+        handle_key(key(KeyCode::Enter), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::Char('j')), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::PageDown), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::Left), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::Char('+')), size(), &mut app)
+            .await
+            .unwrap();
+
+        let Some(crate::annotations::AnnotationModal::Cluster(modal)) =
+            app.annotation_modal.as_ref()
+        else {
+            panic!("cluster modal should remain open");
+        };
+        assert_eq!(modal.selected_event().unwrap().text, "three");
+        assert_eq!(app.range, original_range);
+        assert_eq!(app.cursor_x, original_cursor);
+
+        app.annotation_modal = None;
+        app.mode = AppMode::Normal;
+        app.annotations = crate::annotations::AnnotationState::from_events_for_test(vec![
+            tagged_event("release", "deploy"),
+            tagged_event("alert", "incident"),
+        ]);
+        handle_key(key(KeyCode::Char('t')), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::Char('j')), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::PageDown), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::Char('+')), size(), &mut app)
+            .await
+            .unwrap();
+
+        let Some(crate::annotations::AnnotationModal::TagFilter(modal)) =
+            app.annotation_modal.as_ref()
+        else {
+            panic!("tag modal should remain open");
+        };
+        assert_eq!(modal.selected(), 1);
+        assert_eq!(app.selected_panel_index(), Some(0));
+        assert_eq!(app.range, original_range);
+    }
+
+    #[tokio::test]
+    async fn tag_filter_apply_cancel_and_clear_are_draft_isolated() {
+        let mut app = test_app();
+        app.annotations = crate::annotations::AnnotationState::from_events_for_test(vec![
+            tagged_event("release", "deploy"),
+            tagged_event("alert", "incident"),
+        ]);
+
+        handle_key(key(KeyCode::Char('t')), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::Char(' ')), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(app.annotations.applied_filter().unwrap().is_empty());
+        handle_key(key(KeyCode::Enter), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(app.annotation_modal.is_none());
+        assert_eq!(
+            app.annotations.applied_filter().unwrap().summary(),
+            "deploy"
+        );
+
+        handle_key(key(KeyCode::Char('t')), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::Char('j')), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::Char(' ')), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::Esc), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.annotations.applied_filter().unwrap().summary(),
+            "deploy"
+        );
+
+        handle_key(key(KeyCode::Char('t')), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::Char('c')), size(), &mut app)
+            .await
+            .unwrap();
+        let Some(crate::annotations::AnnotationModal::TagFilter(modal)) =
+            app.annotation_modal.as_ref()
+        else {
+            panic!("tag modal should remain open");
+        };
+        assert!(modal.draft().is_empty());
+        assert_eq!(
+            app.annotations.applied_filter().unwrap().summary(),
+            "deploy"
+        );
+    }
+
+    #[tokio::test]
+    async fn enter_and_escape_close_cluster_without_changing_cursor_or_mode() {
+        let mut app = test_app();
+        app.mode = AppMode::Inspect;
+        app.cursor_x = Some(50.0);
+        app.rendered_annotation_cluster =
+            Some(vec![crate::annotations::test_event_at(50.0, "deploy")]);
+
+        handle_key(key(KeyCode::Enter), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::Enter), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(app.annotation_modal.is_none());
+        assert_eq!(app.mode, AppMode::Inspect);
+        assert_eq!(app.cursor_x, Some(50.0));
+
+        app.open_rendered_annotation_cluster();
+        handle_key(key(KeyCode::Esc), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(app.annotation_modal.is_none());
+        assert_eq!(app.mode, AppMode::Inspect);
+        assert_eq!(app.cursor_x, Some(50.0));
+    }
+
+    #[tokio::test]
+    async fn export_shortcuts_take_precedence_while_modal_is_open() {
+        let mut app = test_app();
+        app.annotations =
+            crate::annotations::AnnotationState::from_events_for_test(vec![tagged_event(
+                "release", "deploy",
+            )]);
+        app.open_tag_filter_modal();
+
+        let action = handle_key(key(KeyCode::Char('e')), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(action, InputAction::ExportCurrent);
+        assert!(app.annotation_modal.is_some());
+
+        let action = handle_key(ctrl_key(KeyCode::Char('e')), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(action, InputAction::ToggleRecording);
+        assert!(app.annotation_modal.is_some());
+    }
+
+    #[tokio::test]
+    async fn mouse_events_do_not_mutate_dashboard_state_while_modal_is_open() {
+        let mut app = test_app();
+        app.annotations =
+            crate::annotations::AnnotationState::from_events_for_test(vec![tagged_event(
+                "release", "deploy",
+            )]);
+        app.open_tag_filter_modal();
+        app.mode = AppMode::FullscreenInspect;
+        app.selected_item = Some(DashboardItemId::Panel(1));
+        app.cursor_x = Some(50.0);
+        app.vertical_scroll = 3;
+
+        for kind in [
+            MouseEventKind::ScrollDown,
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+        ] {
+            let action = handle_mouse(
+                MouseEvent {
+                    kind,
+                    column: 10,
+                    row: 10,
+                    modifiers: KeyModifiers::NONE,
+                },
+                size(),
+                &mut app,
+            )
+            .await
+            .unwrap();
+            assert_eq!(action, InputAction::Redraw);
+            assert_eq!(app.selected_panel_index(), Some(1));
+            assert_eq!(app.cursor_x, Some(50.0));
+            assert_eq!(app.vertical_scroll, 3);
+        }
+    }
+
+    #[tokio::test]
+    async fn header_click_selects_row_and_disclosure_click_toggles_it() {
+        let mut app = row_selected_app();
+        app.selected_item = Some(DashboardItemId::Panel(0));
+        let area = Rect::new(0, 0, size().width, size().height);
+        let row_hit = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                let item = ui::hit_test(&app, area, x, y)?;
+                (item.id == DashboardItemId::Row(RowId::new(0))).then_some(item)
+            })
+            .unwrap();
+        let disclosure = row_hit.disclosure_rect.unwrap();
+
+        handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: row_hit.rect.right() - 1,
+                row: row_hit.rect.y,
+                modifiers: KeyModifiers::NONE,
+            },
+            size(),
+            &mut app,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.selected_item, Some(DashboardItemId::Row(RowId::new(0))));
+        assert!(!app.layout.row(RowId::new(0)).unwrap().collapsed);
+
+        handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: disclosure.x,
+                row: disclosure.y,
+                modifiers: KeyModifiers::NONE,
+            },
+            size(),
+            &mut app,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.selected_item, Some(DashboardItemId::Row(RowId::new(0))));
+        assert!(app.layout.row(RowId::new(0)).unwrap().collapsed);
+    }
+
+    #[tokio::test]
+    async fn normal_navigation_updates_selected_panel() {
+        let mut app = test_app();
+
+        handle_key(key(KeyCode::Char('j')), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.selected_panel_index(), Some(1));
+
+        handle_key(key(KeyCode::Char('k')), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.selected_panel_index(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn export_shortcuts_return_export_actions() {
+        let mut app = test_app();
+
+        let action = handle_key(key(KeyCode::Char('e')), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(action, InputAction::ExportCurrent);
+
+        let action = handle_key(ctrl_key(KeyCode::Char('e')), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(action, InputAction::ToggleRecording);
+    }
+
+    #[tokio::test]
+    async fn search_mode_e_keeps_typing_but_ctrl_e_toggles_recording() {
+        let mut app = test_app();
+        app.mode = AppMode::Search;
+
+        let action = handle_key(key(KeyCode::Char('e')), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(action, InputAction::Redraw);
+        assert_eq!(app.search_query, "e");
+
+        let action = handle_key(ctrl_key(KeyCode::Char('e')), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(action, InputAction::ToggleRecording);
+        assert_eq!(app.search_query, "e");
+    }
+
+    #[tokio::test]
+    async fn annotations_toggle_in_normal_and_inspect_modes_but_types_in_search() {
+        let mut app = test_app();
+        app.annotations = crate::annotations::AnnotationState::from_events_for_test(vec![]);
+
+        handle_key(key(KeyCode::Char('a')), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(!app.annotations.is_visible());
+
+        app.mode = AppMode::Inspect;
+        handle_key(key(KeyCode::Char('a')), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(app.annotations.is_visible());
+
+        app.mode = AppMode::Search;
+        handle_key(key(KeyCode::Char('a')), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.search_query, "a");
+    }
+
+    #[tokio::test]
+    async fn normal_digit_keys_toggle_series_and_zero_shows_all() {
+        let mut app = test_app();
+
+        handle_key(key(KeyCode::Char('1')), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(!app.panels[0].series[0].visible);
+
+        handle_key(key(KeyCode::Char('0')), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(app.panels[0].series.iter().all(|series| series.visible));
+    }
+
+    #[tokio::test]
+    async fn search_keys_update_query_results_and_selection() {
+        let mut app = test_app();
+
+        handle_key(key(KeyCode::Char('/')), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.mode, AppMode::Search);
+
+        handle_key(key(KeyCode::Char('m')), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.search_query, "m");
+        assert_eq!(app.search_results, vec![DashboardItemId::Panel(1)]);
+
+        handle_key(key(KeyCode::Backspace), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(app.search_query.is_empty());
+        assert!(app.search_results.is_empty());
+
+        handle_key(key(KeyCode::Char('c')), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::Enter), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.selected_panel_index(), Some(0));
+        assert_eq!(app.mode, AppMode::Fullscreen);
+
+        handle_key(key(KeyCode::Esc), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.mode, AppMode::Normal);
+    }
+
+    #[tokio::test]
+    async fn fullscreen_keys_update_mode_and_selection() {
+        let mut app = test_app();
+        app.mode = AppMode::Fullscreen;
+
+        handle_key(key(KeyCode::PageDown), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.selected_panel_index(), Some(1));
+
+        handle_key(key(KeyCode::PageUp), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.selected_panel_index(), Some(0));
+
+        handle_key(key(KeyCode::Char('v')), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.mode, AppMode::FullscreenInspect);
+        assert!(app.cursor_x.is_some());
+
+        handle_key(key(KeyCode::Esc), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.mode, AppMode::Fullscreen);
+        assert!(app.cursor_x.is_none());
+    }
+
+    #[tokio::test]
+    async fn shared_keys_toggle_autogrid_and_y_axis_mode() {
+        let mut app = test_app();
+
+        handle_key(key(KeyCode::Char('g')), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(!app.autogrid_enabled);
+
+        handle_key(key(KeyCode::Char('y')), size(), &mut app)
+            .await
+            .unwrap();
+        assert_eq!(app.panels[0].y_axis_mode, YAxisMode::ZeroBased);
+    }
+}

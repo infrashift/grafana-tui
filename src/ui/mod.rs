@@ -1,0 +1,33 @@
+/*
+ * Copyright 2026 Federico D'Ambrosio
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+mod annotations;
+mod draw;
+mod format;
+mod layout;
+mod panels;
+mod tabs;
+
+pub(crate) use annotations::{annotation_cluster_page_size, render_annotation_modal};
+pub(crate) use draw::draw_ui;
+pub(crate) use format::{DisplayFormat, format_time, get_hash_color, value_to_heatmap_color};
+#[allow(unused_imports)]
+pub(crate) use layout::{
+    DashboardRect, DashboardRectKind, hit_test, scroll_selected_into_view, visible_dashboard_rects,
+    visible_panel_rects,
+};
+pub(crate) use panels::calculate_y_bounds;
+pub(crate) use tabs::{render_tab_bar, tab_at, tab_bar_geometry, tab_title};

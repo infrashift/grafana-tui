@@ -1,0 +1,223 @@
+/*
+ * Copyright 2026 Federico D'Ambrosio
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+use ratatui::style::Color;
+
+#[derive(Debug, Clone)]
+pub(crate) struct Theme {
+    #[allow(dead_code)]
+    pub(crate) background: Color,
+    pub(crate) text: Color,
+    pub(crate) title: Color,
+    pub(crate) border: Color,
+    pub(crate) border_selected: Color,
+    #[allow(dead_code)]
+    pub(crate) legend_text: Color,
+    #[allow(dead_code)]
+    pub(crate) legend_dim: Color,
+    pub(crate) palette: Vec<Color>,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            background: Color::Reset,
+            text: Color::Reset,
+            title: Color::Cyan,
+            border: Color::DarkGray,
+            border_selected: Color::Yellow,
+            legend_text: Color::White,
+            legend_dim: Color::DarkGray,
+            palette: vec![
+                Color::Green,
+                Color::Yellow,
+                Color::Blue,
+                Color::Magenta,
+                Color::Cyan,
+                Color::Red,
+                Color::LightGreen,
+                Color::LightYellow,
+                Color::LightBlue,
+                Color::LightMagenta,
+                Color::LightCyan,
+                Color::LightRed,
+            ],
+        }
+    }
+}
+
+impl Theme {
+    pub(crate) fn from_str(name: &str) -> Self {
+        match name.to_lowercase().as_str() {
+            "dracula" => Self {
+                background: Color::Rgb(40, 42, 54),
+                text: Color::Rgb(248, 248, 242),
+                title: Color::Rgb(189, 147, 249),           // Purple
+                border: Color::Rgb(98, 114, 164),           // Comment
+                border_selected: Color::Rgb(255, 121, 198), // Pink
+                legend_text: Color::Rgb(248, 248, 242),
+                legend_dim: Color::Rgb(98, 114, 164),
+                palette: vec![
+                    Color::Rgb(139, 233, 253), // Cyan
+                    Color::Rgb(80, 250, 123),  // Green
+                    Color::Rgb(255, 184, 108), // Orange
+                    Color::Rgb(255, 121, 198), // Pink
+                    Color::Rgb(189, 147, 249), // Purple
+                    Color::Rgb(255, 85, 85),   // Red
+                ],
+            },
+            "monokai" => Self {
+                background: Color::Rgb(39, 40, 34),
+                text: Color::Rgb(248, 248, 242),
+                title: Color::Rgb(102, 217, 239), // Blue
+                border: Color::Rgb(117, 113, 94),
+                border_selected: Color::Rgb(253, 151, 31), // Orange
+                legend_text: Color::Rgb(248, 248, 242),
+                legend_dim: Color::Rgb(117, 113, 94),
+                palette: vec![
+                    Color::Rgb(166, 226, 46),  // Green
+                    Color::Rgb(102, 217, 239), // Blue
+                    Color::Rgb(249, 38, 114),  // Pink
+                    Color::Rgb(253, 151, 31),  // Orange
+                    Color::Rgb(174, 129, 255), // Purple
+                ],
+            },
+            "solarized-dark" => Self {
+                background: Color::Rgb(0, 43, 54),
+                text: Color::Rgb(131, 148, 150),
+                title: Color::Rgb(38, 139, 210), // Blue
+                border: Color::Rgb(88, 110, 117),
+                border_selected: Color::Rgb(181, 137, 0), // Yellow
+                legend_text: Color::Rgb(131, 148, 150),
+                legend_dim: Color::Rgb(88, 110, 117),
+                palette: vec![
+                    Color::Rgb(181, 137, 0),   // Yellow
+                    Color::Rgb(203, 75, 22),   // Orange
+                    Color::Rgb(220, 50, 47),   // Red
+                    Color::Rgb(211, 54, 130),  // Magenta
+                    Color::Rgb(108, 113, 196), // Violet
+                    Color::Rgb(38, 139, 210),  // Blue
+                    Color::Rgb(42, 161, 152),  // Cyan
+                    Color::Rgb(133, 153, 0),   // Green
+                ],
+            },
+            "solarized-light" => Self {
+                background: Color::Rgb(253, 246, 227),
+                text: Color::Rgb(101, 123, 131),
+                title: Color::Rgb(38, 139, 210), // Blue
+                border: Color::Rgb(147, 161, 161),
+                border_selected: Color::Rgb(181, 137, 0), // Yellow
+                legend_text: Color::Rgb(101, 123, 131),
+                legend_dim: Color::Rgb(147, 161, 161),
+                palette: vec![
+                    Color::Rgb(181, 137, 0),   // Yellow
+                    Color::Rgb(203, 75, 22),   // Orange
+                    Color::Rgb(220, 50, 47),   // Red
+                    Color::Rgb(211, 54, 130),  // Magenta
+                    Color::Rgb(108, 113, 196), // Violet
+                    Color::Rgb(38, 139, 210),  // Blue
+                    Color::Rgb(42, 161, 152),  // Cyan
+                    Color::Rgb(133, 153, 0),   // Green
+                ],
+            },
+            "gruvbox" => Self {
+                background: Color::Rgb(40, 40, 40),
+                text: Color::Rgb(235, 219, 178),
+                title: Color::Rgb(215, 153, 33), // Yellow
+                border: Color::Rgb(146, 131, 116),
+                border_selected: Color::Rgb(254, 128, 25), // Orange
+                legend_text: Color::Rgb(235, 219, 178),
+                legend_dim: Color::Rgb(146, 131, 116),
+                palette: vec![
+                    Color::Rgb(204, 36, 29),   // Red
+                    Color::Rgb(152, 151, 26),  // Green
+                    Color::Rgb(215, 153, 33),  // Yellow
+                    Color::Rgb(69, 133, 136),  // Blue
+                    Color::Rgb(177, 98, 134),  // Purple
+                    Color::Rgb(104, 157, 106), // Aqua
+                    Color::Rgb(254, 128, 25),  // Orange
+                ],
+            },
+            "tokyo-night" => Self {
+                background: Color::Rgb(26, 27, 38),
+                text: Color::Rgb(169, 177, 214),
+                title: Color::Rgb(122, 162, 247), // Blue
+                border: Color::Rgb(86, 95, 137),
+                border_selected: Color::Rgb(255, 158, 100), // Orange
+                legend_text: Color::Rgb(169, 177, 214),
+                legend_dim: Color::Rgb(86, 95, 137),
+                palette: vec![
+                    Color::Rgb(247, 118, 142), // Red
+                    Color::Rgb(158, 206, 106), // Green
+                    Color::Rgb(224, 175, 104), // Yellow
+                    Color::Rgb(122, 162, 247), // Blue
+                    Color::Rgb(187, 154, 247), // Magenta
+                    Color::Rgb(125, 207, 255), // Cyan
+                    Color::Rgb(255, 158, 100), // Orange
+                ],
+            },
+            "catppuccin" => Self {
+                background: Color::Rgb(30, 30, 46),
+                text: Color::Rgb(205, 214, 244),
+                title: Color::Rgb(137, 180, 250), // Blue
+                border: Color::Rgb(88, 91, 112),
+                border_selected: Color::Rgb(249, 226, 175), // Yellow
+                legend_text: Color::Rgb(205, 214, 244),
+                legend_dim: Color::Rgb(88, 91, 112),
+                palette: vec![
+                    Color::Rgb(243, 139, 168), // Red
+                    Color::Rgb(166, 227, 161), // Green
+                    Color::Rgb(249, 226, 175), // Yellow
+                    Color::Rgb(137, 180, 250), // Blue
+                    Color::Rgb(203, 166, 247), // Mauve
+                    Color::Rgb(148, 226, 213), // Teal
+                    Color::Rgb(250, 179, 135), // Peach
+                ],
+            },
+            _ => Self::default(),
+        }
+    }
+}
+
+pub(crate) fn parse_grafana_color(c: &str) -> Color {
+    if c.starts_with('#') && c.len() >= 7 {
+        let r = u8::from_str_radix(&c[1..3], 16).unwrap_or(0);
+        let g = u8::from_str_radix(&c[3..5], 16).unwrap_or(0);
+        let b = u8::from_str_radix(&c[5..7], 16).unwrap_or(0);
+        return Color::Rgb(r, g, b);
+    }
+
+    match c.to_lowercase().as_str() {
+        "green" | "dark-green" => Color::Green,
+        "super-light-green" | "light-green" => Color::LightGreen,
+        "yellow" | "dark-yellow" => Color::Yellow,
+        "super-light-yellow" | "light-yellow" => Color::LightYellow,
+        "red" | "dark-red" => Color::Red,
+        "super-light-red" | "light-red" => Color::LightRed,
+        "blue" | "dark-blue" => Color::Blue,
+        "super-light-blue" | "light-blue" => Color::LightBlue,
+        "purple" | "dark-purple" => Color::Magenta,
+        "super-light-purple" | "light-purple" => Color::LightMagenta,
+        "orange" | "dark-orange" => Color::Rgb(255, 165, 0),
+        "light-orange" => Color::Rgb(255, 200, 100),
+        "cyan" => Color::Cyan,
+        "gray" | "grey" => Color::Gray,
+        "dark-gray" | "dark-grey" => Color::DarkGray,
+        "white" => Color::White,
+        "black" => Color::Black,
+        _ => Color::Reset,
+    }
+}

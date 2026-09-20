@@ -1,0 +1,24 @@
+# Grafatui Demo Configuration
+
+# Prometheus URL (pointing to the docker-compose instance)
+prometheus_url = "http://localhost:19090"
+
+# Default Dashboard
+grafana_json = "vllm/grafana.json"
+
+# Refresh rate in milliseconds
+refresh_rate = 1000
+
+# Query step resolution
+step = "5s"
+
+# Variables
+[vars]
+model_name = "FILL ME IN"
+engine = "FILL ME IN"
+
+# Time range
+time_range = "30m"
+
+# Theme (optional)
+theme = "monokai"
