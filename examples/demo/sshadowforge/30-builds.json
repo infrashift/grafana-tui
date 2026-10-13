@@ -252,7 +252,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "histogram_quantile(0.95, sum by (le) (rate(sfd_build_duration_seconds_bucket[24h])))",
+                        "expr": "histogram_quantile(0.95, sum by (le) (((increase(sfd_build_duration_seconds_bucket[24h]) + (min_over_time(sfd_build_duration_seconds_bucket[24h]) unless sfd_build_duration_seconds_bucket offset 24h)) or increase(sfd_build_duration_seconds_bucket[24h]))))",
                         "legendFormat": "Build p95",
                         "range": true
                       }
@@ -727,6 +727,7 @@
                       }
                     ]
                   },
+                  "decimals": 0,
                   "min": 0,
                   "noValue": "no failed build (healthy)"
                 },
@@ -760,7 +761,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "histogram_quantile(0.5, sum by (le) (rate(sfd_build_duration_seconds_bucket[1h])))",
+                        "expr": "histogram_quantile(0.5, sum by (le) (((increase(sfd_build_duration_seconds_bucket[1h]) + (min_over_time(sfd_build_duration_seconds_bucket[1h]) unless sfd_build_duration_seconds_bucket offset 1h)) or increase(sfd_build_duration_seconds_bucket[1h]))))",
                         "legendFormat": "p50",
                         "range": true
                       }
@@ -780,7 +781,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "histogram_quantile(0.95, sum by (le) (rate(sfd_build_duration_seconds_bucket[1h])))",
+                        "expr": "histogram_quantile(0.95, sum by (le) (((increase(sfd_build_duration_seconds_bucket[1h]) + (min_over_time(sfd_build_duration_seconds_bucket[1h]) unless sfd_build_duration_seconds_bucket offset 1h)) or increase(sfd_build_duration_seconds_bucket[1h]))))",
                         "legendFormat": "p95",
                         "range": true
                       }
@@ -1054,6 +1055,7 @@
                       }
                     ]
                   },
+                  "decimals": 0,
                   "min": 0,
                   "noValue": "no scan read since the workflow started"
                 },
