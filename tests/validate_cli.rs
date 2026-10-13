@@ -426,15 +426,21 @@ fn validate_strict_rejects_v2_unsupported_datasource_warning() {
     assert!(stderr.contains("validation failed with 1 warning(s)"));
 }
 
-#[test]
-fn validate_strict_accepts_every_hashistack_rdw_dashboard() {
-    let mut paths: Vec<PathBuf> = fs::read_dir(demo_dir("hashistack-rdw"))
+fn demo_set_paths(set: &str) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = fs::read_dir(demo_dir(set))
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
         .collect();
     paths.sort();
-    assert_eq!(paths.len(), 9, "{paths:?}");
+    paths
+}
+
+/// Every dashboard of a demo set validates strictly on its own, under the set's
+/// title prefix and with at least `min_panels` panels.
+fn assert_demo_set_validates(set: &str, count: usize, title_prefix: &str, min_panels: u64) {
+    let paths = demo_set_paths(set);
+    assert_eq!(paths.len(), count, "{paths:?}");
 
     for path in paths {
         let output = Command::new(env!("CARGO_BIN_EXE_grafana-tui"))
@@ -457,15 +463,12 @@ fn validate_strict_accepts_every_hashistack_rdw_dashboard() {
         );
         let summary: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert!(
-            summary["title"]
-                .as_str()
-                .unwrap()
-                .starts_with("HashiStack / "),
+            summary["title"].as_str().unwrap().starts_with(title_prefix),
             "{}",
             path.display()
         );
         assert!(
-            summary["panel_count"].as_u64().unwrap() >= 20,
+            summary["panel_count"].as_u64().unwrap() >= min_panels,
             "{}",
             path.display()
         );
@@ -478,14 +481,9 @@ fn validate_strict_accepts_every_hashistack_rdw_dashboard() {
     }
 }
 
-#[test]
-fn validate_strict_accepts_all_hashistack_rdw_dashboards_at_once() {
-    let mut paths: Vec<PathBuf> = fs::read_dir(demo_dir("hashistack-rdw"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-        .collect();
-    paths.sort();
+/// The whole set opens at once, one tab per dashboard, with no diagnostics.
+fn assert_demo_set_validates_at_once(set: &str, title_prefix: &str) {
+    let paths = demo_set_paths(set);
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_grafana-tui"));
     command.args(["--validate", "--strict", "--format", "json"]);
@@ -508,10 +506,30 @@ fn validate_strict_accepts_all_hashistack_rdw_dashboards_at_once() {
             dashboard["title"]
                 .as_str()
                 .unwrap()
-                .starts_with("HashiStack / ")
+                .starts_with(title_prefix)
         );
         assert!(dashboard["diagnostics"].as_array().unwrap().is_empty());
     }
+}
+
+#[test]
+fn validate_strict_accepts_every_hashistack_rdw_dashboard() {
+    assert_demo_set_validates("hashistack-rdw", 8, "HashiStack / ", 20);
+}
+
+#[test]
+fn validate_strict_accepts_all_hashistack_rdw_dashboards_at_once() {
+    assert_demo_set_validates_at_once("hashistack-rdw", "HashiStack / ");
+}
+
+#[test]
+fn validate_strict_accepts_every_sshadowforge_dashboard() {
+    assert_demo_set_validates("sshadowforge", 6, "SSHadowForge / ", 15);
+}
+
+#[test]
+fn validate_strict_accepts_all_sshadowforge_dashboards_at_once() {
+    assert_demo_set_validates_at_once("sshadowforge", "SSHadowForge / ");
 }
 
 #[test]
