@@ -373,7 +373,9 @@ builds = dashboard(
                                       '{{parent}}')], unit="short", decimals=2, w=12, stack=True),
             ts("Dispatched runs failed (Nomad)", [(f'sum by (parent) ({PARENT.format("nomad_nomad_job_summary_failed{" + SFD_NS + "," + RUNNERS + "}")})',
                                                    '{{parent}}')], unit="short", w=12,
-               desc="Failed allocations of dispatched runs Nomad still holds (until garbage collection)."),
+               desc="Failed allocations of dispatched runs Nomad still holds (until garbage collection). "
+                    "make verify adds some on purpose: the probe repositories of checks 28, 39 and 40 "
+                    "(prupd-*, dcprobe/*, svcprobe/*) build red by design. Anything else is worth a look."),
             ts("Build requests", [('sum by (reason) (rate(sfd_build_requests_total[5m]))', '{{reason}}'),
                                   ('sum(rate(sfd_stats_total{service="sshadowforge-workflow-metrics",'
                                    'name="builds_from_bus"}[5m]))', 'scheduled from the bus')], unit="ops", w=12,

@@ -113,6 +113,11 @@ forbidden.
   what the alert checks.
 - **`SshadowforgeEventsRefused` fires after every `make verify`.** Check 45
   publishes forged events on purpose. Match their ids against the verify output.
+- **`make verify` also leaves failed builds behind, on purpose.** The probe
+  repositories of checks 28, 39 and 40 (`prupd-*`, `dcprobe/*`, `svcprobe/*`)
+  build red by design, so they appear in "Dispatched runs failed (Nomad)" until
+  Nomad garbage-collects them, and as `build_failed` in the build panels. A
+  failure in any other repository is worth a look.
 
 ## Editing
 
