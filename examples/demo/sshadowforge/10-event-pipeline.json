@@ -1550,7 +1550,7 @@
                       },
                       "spec": {
                         "expr": "sfd_progress_idle_seconds{service=~\"sshadowforge-(projector|notifier)\"}",
-                        "legendFormat": "{{service}}",
+                        "legendFormat": "{{service}} ({{instance}})",
                         "range": true
                       }
                     }

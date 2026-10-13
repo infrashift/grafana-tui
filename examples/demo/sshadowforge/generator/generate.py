@@ -68,11 +68,17 @@ def _young(m):
     return f"((increase({sel}[{w}]) + (min_over_time({sel}[{w}]) unless {sel} offset {w})) or increase({sel}[{w}]))"
 
 
+# The same for the per-repository build-time histogram: a repository's buckets are born at its first
+# build, so rate() over them is 0 and histogram_quantile() says nothing until its SECOND build. The
+# quantile needs only the buckets' ratio, so the young-aware increase stands in for rate().
+_HIST = re.compile(r"\brate\((sfd_build_duration_seconds_bucket)(\{[^}]*\})?\[(\w+)\]\)")
+
+
 def young_counters(dash):
     for el in dash["spec"]["elements"].values():
         for q in el["spec"]["data"]["spec"]["queries"]:
             spec = q["spec"]["query"]["spec"]
-            spec["expr"] = _INC.sub(_young, spec["expr"])
+            spec["expr"] = _HIST.sub(_young, _INC.sub(_young, spec["expr"]))
     return dash
 
 
@@ -213,7 +219,7 @@ pipeline = dashboard(
                                       '{{name}}')], unit="ops", w=12,
                desc="consumed / notified / ignored / retried / abandoned / rejected (chat posts to chit-server)."),
             ts("Stall clocks", [(f'sfd_progress_idle_seconds{{service=~"sshadowforge-(projector|notifier)"}}',
-                                 '{{service}}')], unit="s", w=12,
+                                 '{{service}} ({{instance}})')], unit="s", w=12,
                desc="Seconds since each consumer last completed work. It grows on an idle forge; it matters only "
                "with a backlog."),
         ]),
@@ -266,7 +272,7 @@ nats = dashboard(
                            desc="Durables with an unacknowledged message and no ack progress for 10m. Empty is "
                            "healthy."), "none (healthy)"),
             table("Pending by durable", [(f'max by ({DUR}) (jetstream_consumer_num_pending{{{CONSUMER}}})',
-                                          '{{consumer_name}}')], w=12, th=ZERO_GOOD_AMBER,
+                                          '{{consumer_name}}')], w=12, th=ZERO_GOOD_AMBER, decimals=0,
                   desc="Messages each durable has yet to receive. 0 is caught up."),
             ts("Pending", [(f'max by (consumer_name) (jetstream_consumer_num_pending{{{CONSUMER}}})',
                             '{{consumer_name}}')], unit="short", w=12),
@@ -340,7 +346,7 @@ builds = dashboard(
                desc="passed, build_failed, scan_rejected, scan_error, refused."),
             empty_ok(bargauge("Failed at stage (24h)", [('sum by (failed_stage) (increase(sfd_builds_finished_total'
                                                 '{result="build_failed"}[24h]))', '{{failed_stage}}')],
-                     th=steps(AMBER), w=12, desc="The runner task a failed build stopped at. The sentinel chain makes "
+                     th=steps(AMBER), w=12, decimals=0, desc="The runner task a failed build stopped at. The sentinel chain makes "
                      "the first failed task the cause; later ones are skipped."), "no failed build (healthy)"),
             ts("Build duration p50 / p95", [('histogram_quantile(0.5, sum by (le) (rate(sfd_build_duration_seconds_bucket[1h])))',
                                              'p50'),
@@ -351,7 +357,7 @@ builds = dashboard(
         ]),
         ("Scans", [
             empty_ok(bargauge("CVE matches, latest scan", [('max by (repo) (sfd_scan_matches)', '{{repo}}')],
-                     th=steps(GREEN, (1, AMBER), (25, RED)), w=8,
+                     th=steps(GREEN, (1, AMBER), (25, RED)), w=8, decimals=0,
                      desc="Matches in the most recent scan of each repository: a build's scan or a re-scan."), "no scan read since the workflow started"),
             empty_ok(ts("Re-scan sweep (per day)", [('sum by (result) (increase(sfd_rescans_finished_total[24h]))', '{{result}}')],
                unit="short", w=8, desc="Published revisions re-scanned by the nightly sweep: clean, matches, failed."), "no sweep since the workflow started (nightly, 03:00)"),
@@ -386,12 +392,12 @@ developer = dashboard(
     ["developer"],
     [
         ("Is it me or the forge?", [
-            stat("Forge accepting", gateway_5xx_ratio("5m"), unit="percentunit", th=RATIO_ERR, decimals=1,
+            stat("Gateway 5xx (forge-wide)", gateway_5xx_ratio("5m"), unit="percentunit", th=RATIO_ERR, decimals=1,
                  desc="Share of gateway requests failing with 5xx across EVERY repository. Green here and a refusal "
                  "in your repository: look at your command's result below."),
-            stat("Submit p95", f'histogram_quantile(0.95, sum by (le) (rate(sfd_http_request_duration_seconds_bucket'
+            empty_ok(stat("Submit p95", f'histogram_quantile(0.95, sum by (le) (rate(sfd_http_request_duration_seconds_bucket'
                  f'{{{GW},route="/v1/commands"}}[{LAT}])))', unit="s", th=steps(GREEN, (1, AMBER), (2.5, RED)),
-                 decimals=2, desc="How long `sfd-submit` waits for the gateway, forge-wide."),
+                 decimals=2, desc="How long `sfd-submit` waits for the gateway, forge-wide."), "no submissions (5m)"),
             stat("Forge alerts", 'count(ALERTS{alertstate="firing",alertname=~"Sshadowforge.+|Nats.+"}) or vector(0)',
                  th=ZERO_GOOD_AMBER, graph=False, desc="Anything the operators are being paged about."),
             stat("Merge queue", 'max(jetstream_consumer_num_pending{consumer_name="sshadowforge-dispatcher"}) or vector(0)',
@@ -424,13 +430,13 @@ developer = dashboard(
                                      '{{repo}} {{result}}')], unit="short", w=12, draw="bars", fill=60, stack=True),
             empty_ok(bargauge("Where my builds failed (24h)", [(f'sum by (failed_stage) (increase(sfd_builds_finished_total'
                                                        f'{{{REPO},result="build_failed"}}[24h]))', '{{failed_stage}}')],
-                     th=steps(AMBER), w=8, desc="The runner stage a failed build stopped at. `sfd-tui` shows the "
+                     th=steps(AMBER), w=8, decimals=0, desc="The runner stage a failed build stopped at. `sfd-tui` shows the "
                      "pull request's status; the operator can read that stage's log."), "no failed build (healthy)"),
             ts("Build time p50 by repository", [(f'histogram_quantile(0.5, sum by (repo, le) (rate('
                                                  f'sfd_build_duration_seconds_bucket{{{REPO}}}[6h])))', '{{repo}}')],
                unit="s", w=8),
             empty_ok(bargauge("CVE matches by repository", [(f'max by (repo) (sfd_scan_matches{{{REPO}}})', '{{repo}}')],
-                     th=steps(GREEN, (1, AMBER), (25, RED)), w=8), "no scan read for these repositories yet"),
+                     th=steps(GREEN, (1, AMBER), (25, RED)), w=8, decimals=0), "no scan read for these repositories yet"),
         ]),
         ("Pull requests and activity", [
             ts("Merge decisions", [(f'sum by (repo, decision) (increase(sfd_merge_decisions_total{{{REPO}}}[1h]))',
@@ -439,10 +445,10 @@ developer = dashboard(
                "after approval, re-approve. stale_base / conflict / not_fast_forward: rebase and re-approve."),
             ts("Commands by kind", [(f'sum by (kind) (increase(sfd_commands_total{{{REPO}}}[1h]))', '{{kind}}')],
                unit="short", w=12, desc="Issues, pull requests, comments, approvals, retries..."),
-            ts("Refused commands", [(f'sum by (result) (increase(sfd_commands_total{{{REPO},result!="accepted"}}[1h]))',
+            empty_ok(ts("Refused commands", [(f'sum by (result) (increase(sfd_commands_total{{{REPO},result!="accepted"}}[1h]))',
                                      '{{result}}')], unit="short", w=12,
                desc="Refused AFTER authorization (enrolment, wrong key, parent missing, an outage). A refusal before "
-               "authorization carries no repository: see 'Refused before authorization'."),
+               "authorization carries no repository: see 'Refused before authorization'."), "none refused"),
             ts("Refused before authorization (forge-wide)", [('sum by (result) (increase(sfd_commands_total{repo="",'
                                                               'result!="accepted"}[1h]))', '{{result}}')],
                unit="short", w=12, desc="Not enrolled, wrong key, forbidden, unauthenticated: usually a credential "
