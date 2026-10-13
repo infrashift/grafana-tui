@@ -434,7 +434,7 @@ fn validate_strict_accepts_every_hashistack_rdw_dashboard() {
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
         .collect();
     paths.sort();
-    assert_eq!(paths.len(), 8, "{paths:?}");
+    assert_eq!(paths.len(), 9, "{paths:?}");
 
     for path in paths {
         let output = Command::new(env!("CARGO_BIN_EXE_grafana-tui"))

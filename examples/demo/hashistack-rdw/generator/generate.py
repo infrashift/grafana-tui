@@ -863,8 +863,91 @@ prom = dashboard(
         ]),
     ])
 
+# ---------------------------------------------------------------- 70 sshadowforge
+# Metric names checked against gcloud-dc 2026-10-12 (PLAN-SSHadowForge-Review-20261012 E1-E6):
+# the four Consul-registered metrics doors arrive as job="app", the workflow's as job="nomad-app"
+# (service="sshadowforge-workflow-metrics"); every sfd_* series carries the door's `service' label.
+SFD = 'service=~"sshadowforge-.+"'
+SFD_NS = 'namespace="sshadowforge"'
+sfd = dashboard(
+    "hashistack-sshadowforge", "HashiStack / SSHadowForge",
+    "The forge's event pipeline: the gateway admitting commands, the projector and notifier consuming "
+    "the bus, the dispatcher merging and requesting builds, the workflow building -- with the seal "
+    "refusals (ADR-0145) and the dispatcher's per-step timings that say where its time goes.",
+    ["sshadowforge", "forge"],
+    [
+        ("Health -- every tile should be green", [
+            stat("Doors up", f'count(up{{job=~"app|nomad-app",{SFD}}} == 1) or vector(0)',
+                 th=steps(RED, (5, GREEN)), desc="Metrics doors answering: gateway, projector, notifier, dispatcher "
+                 "and the workflow's (Nomad-registered). Fewer than 5 is a service down or a door refusing Prometheus.",
+                 graph=False),
+            stat("Firing forge alerts", 'count(ALERTS{alertstate="firing",alertname=~"Sshadowforge.+"}) or vector(0)',
+                 th=ZERO_GOOD, desc="SshadowforgeProjectorStalled / EventsRefused / GatewayErrors. EventsRefused fires "
+                 "on purpose after every `make verify` (check 45's forgeries).", graph=False),
+            stat("Projector backlog", f'max(sfd_consumer_pending{{{SFD}}}) or vector(0)', th=ZERO_GOOD_AMBER,
+                 desc="Events on the bus the projector has not applied yet."),
+            stat("Projector idle", f'max(sfd_progress_idle_seconds{{service="sshadowforge-projector"}})', unit="s",
+                 desc="Seconds since the projector last completed work. Only a stall WITH a backlog is a problem."),
+            stat("Gateway 5xx ratio", f'(sum(rate(sfd_http_request_duration_seconds_count{{service="sshadowforge-gateway",'
+                 f'code=~"5.."}}[{RI}])) or vector(0)) / clamp_min(sum(rate(sfd_http_request_duration_seconds_count'
+                 f'{{service="sshadowforge-gateway"}}[{RI}])), 1e-9)', unit="percentunit", th=RATIO_ERR, decimals=2,
+                 desc="A 503 here is often the auth seal failing closed: the gateway could not reach Vault to sign."),
+            stat("Refused events (1h)", f'sum(increase(sfd_stats_total{{name=~"rejected|dropped_unsealed",{SFD}}}[1h])) '
+                 'or vector(0)', th=ZERO_GOOD_AMBER, desc="Events the consumers refused: no valid gateway seal, a bad "
+                 "signature or a contract violation. Nothing the gateway admits is refused."),
+        ]),
+        ("Gateway", [
+            ts("Requests by route", [(f'sum by (route) (rate(sfd_http_request_duration_seconds_count'
+                                      f'{{service="sshadowforge-gateway",route!~"/healthz|/progressz|/stats"}}[{RI}]))',
+                                      '{{route}}')], unit="reqps", w=12,
+               desc="Route PATTERNS (bounded cardinality), never raw paths."),
+            ts("Latency p95 by route", [(f'histogram_quantile(0.95, sum by (route, le) (rate('
+                                         f'sfd_http_request_duration_seconds_bucket{{service="sshadowforge-gateway",'
+                                         f'route!~"/healthz|/progressz|/stats"}}[{LAT}])))', '{{route}}')], unit="s", w=12,
+               desc="POST /v1/commands includes introspection, the Keto check, the Vault seal and the bus publish."),
+            ts("Authz latency p95", [(f'histogram_quantile(0.95, sum by (call, le) (rate('
+                                      f'sfd_authz_call_duration_seconds_bucket[{LAT}])))', '{{call}}')], unit="s", w=12,
+               desc="Hydra introspection and Keto checks, per gateway request (measured p50 ~9 ms each)."),
+            ts("Admissions and refusals", [(f'sum by (name) (rate(sfd_stats_total{{service="sshadowforge-gateway",'
+                                            f'name=~"accepted|rejected_.+"}}[{RI}]))', '{{name}}')], unit="ops", w=12,
+               desc="accepted vs each refusal reason (schema, signature, forbidden, unauthenticated, wrong key)."),
+        ]),
+        ("Projector and notifier", [
+            ts("Projection rate by outcome", [(f'sum by (outcome) (rate(sfd_projection_seconds_count[{RI}]))',
+                                               '{{outcome}}')], unit="ops", w=12,
+               desc="applied / skipped / transient (retried, R9) / rejected (poison, Term'd)."),
+            ts("Projection p95 by kind", [(f'histogram_quantile(0.95, sum by (kind, le) (rate('
+                                           f'sfd_projection_seconds_bucket[{LAT}])))', '{{kind}}')], unit="s", w=12),
+            ts("Consumer backlog", [(f'sfd_consumer_pending{{{SFD}}}', '{{service}}')], unit="short", w=12),
+            ts("Notifier outcomes", [(f'sum by (name) (rate(sfd_stats_total{{service="sshadowforge-notifier"}}[{RI}]))',
+                                      '{{name}}')], unit="ops", w=12,
+               desc="consumed / notified / ignored / rejected (chat posts to chit-server)."),
+        ]),
+        ("Dispatcher and workflow", [
+            ts("Dispatcher step p95", [(f'histogram_quantile(0.95, sum by (step, le) (rate('
+                                        f'sfd_dispatcher_step_seconds_bucket[{LAT}])))', '{{step}}')], unit="s", w=12,
+               desc="Where one event's time goes. The dispatcher handles events one at a time (MaxAckPending 1), "
+               "so a slow step delays every repository. Measured: head_resolve (git ls-remote) is the tail."),
+            ts("Dispatcher step time share", [(f'sum by (step) (rate(sfd_dispatcher_step_seconds_sum[{LAT}]))',
+                                               '{{step}}')], unit="s", w=12,
+               desc="Seconds per second spent in each step: the budget, not the latency."),
+            ts("Dispatcher decisions", [(f'sum by (name) (rate(sfd_stats_total{{service="sshadowforge-dispatcher"}}[{RI}]))',
+                                         '{{name}}')], unit="ops", w=12,
+               desc="builds_requested, merge_gated, dropped_unsealed, pr_lookup_failed..."),
+            ts("Workflow builds", [(f'sum by (name) (rate(sfd_stats_total{{service="sshadowforge-workflow-metrics"}}[{RI}]))',
+                                    '{{name}}')], unit="ops", w=12, desc="builds_from_bus, build_requests_deduped."),
+        ]),
+        ("Resources", [
+            ts("Memory by job", [(f'sum by (exported_job) (nomad_client_allocs_memory_usage{{{SFD_NS}}})',
+                                  '{{exported_job}}')], unit="bytes", w=12,
+               desc="Includes the build runners (sshadowforge-runner-*): a devcontainer build reserves ~3.8 GB."),
+            ts("CPU by job", [(f'sum by (exported_job) (nomad_client_allocs_cpu_total_percent{{{SFD_NS}}}) / 100',
+                               '{{exported_job}}')], unit="short", decimals=2, w=12),
+        ]),
+    ])
+
 for fname, d in [("00-overview.json", overview), ("10-nodes.json", nodes), ("20-nomad.json", nomad),
                  ("30-consul.json", consul), ("40-vault.json", vault), ("50-service-mesh.json", mesh),
-                 ("60-rdw-workspaces.json", rdw), ("90-prometheus.json", prom)]:
+                 ("60-rdw-workspaces.json", rdw), ("70-sshadowforge.json", sfd), ("90-prometheus.json", prom)]:
     write(os.path.join(OUT, fname), d)
     print(fname, len(d["spec"]["elements"]), "panels")
