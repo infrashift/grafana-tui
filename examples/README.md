@@ -22,6 +22,15 @@ against a real datacenter's mTLS Prometheus (client certificate required), not
 the bundled demo stack. The README covers issuing the reader certificate and
 building the config.
 
+## SSHadowForge Dashboards
+
+[`demo/sshadowforge/`](demo/sshadowforge/README.md) holds six dashboards for
+SSHadowForge, the event-sourced Git forge that runs on the same platform, and
+its NATS JetStream event bus. Five are for the operator: overview, event
+pipeline, NATS JetStream, builds and resources. The sixth is a developer
+dashboard, filtered by repository. They need the same mTLS Prometheus as the
+HashiStack set.
+
 ## External Annotations
 
 [`annotations.jsonl`](annotations.jsonl) is a read-only external JSONL event

@@ -143,8 +143,12 @@ def _slug(s):
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
 
 
-def dashboard(name, title, desc, tags, rows, variables=(), refresh="30s", time_from="now-3h"):
-    """rows: [(row title, [Panel, ...]), ...]; panels pack left-to-right, wrapping at 24 columns."""
+def dashboard(name, title, desc, tags, rows, variables=(), refresh="30s", time_from="now-3h",
+              base_tags=("hashistack", "rdw", "gcloud-dc")):
+    """rows: [(row title, [Panel, ...]), ...]; panels pack left-to-right, wrapping at 24 columns.
+
+    base_tags lead every dashboard's tags; another set reusing this builder passes its own.
+    """
     elements, out_rows, pid = {}, [], 0
     for row_title, panels in rows:
         items, x, y, line_h = [], 0, 0, 0
@@ -169,7 +173,7 @@ def dashboard(name, title, desc, tags, rows, variables=(), refresh="30s", time_f
         "spec": {
             "title": title,
             "description": desc,
-            "tags": ["hashistack", "rdw", "gcloud-dc"] + list(tags),
+            "tags": list(base_tags) + list(tags),
             "editable": True,
             "preload": False,
             "liveNow": False,
