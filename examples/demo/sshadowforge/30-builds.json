@@ -1457,7 +1457,7 @@
         "spec": {
           "id": 16,
           "title": "Dispatched runs failed (Nomad)",
-          "description": "Failed allocations of dispatched runs Nomad still holds (until garbage collection).",
+          "description": "Failed allocations of dispatched runs Nomad still holds (until garbage collection). make verify adds some on purpose: the probe repositories of checks 28, 39 and 40 (prupd-*, dcprobe/*, svcprobe/*) build red by design. Anything else is worth a look.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
