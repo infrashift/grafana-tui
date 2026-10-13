@@ -366,6 +366,20 @@ builds = dashboard(
                desc="Weekly rebuilds of published revisions compared with what was published: bit_identical, "
                "content_equivalent, divergent, failed, not_applicable."), "no challenge since the workflow started (Sundays, 04:00)"),
         ]),
+        ("Build pins (reproducibility)", [
+            empty_ok(stat("Pins held", 'sum(sfd_build_pins)', decimals=0,
+                 desc="refs/sfd/built/<sha>: one per built revision, kept forever so every attestation stays "
+                      "challengeable. Recounted by the dispatcher at start and every 6h."), "no pin pass since the dispatcher started"),
+            stat("Stranded attestations", 'sum(sfd_stats_total{name="pin_backfill_stranded"}) or vector(0)',
+                 th=ZERO_GOOD_AMBER, decimals=0,
+                 desc="Attested revisions on no branch and never pinned (built before pins existed): their challenges "
+                      "cannot fetch the source. Counted once per dispatcher start; the dispatcher log names each one."),
+            empty_ok(ts("Pins held over time", [('sum(sfd_build_pins)', 'pins')], unit="short", w=8,
+               desc="Grows by one per build request. A step down means a repository was deleted with its pins."),
+               "no pin pass since the dispatcher started"),
+            empty_ok(table("Pins by repository", [('sort_desc(sfd_build_pins)', '{{repo}}')], w=8, decimals=0),
+                     "no pin pass since the dispatcher started"),
+        ]),
         ("Runners", [
             ts("Runner memory by stage", [(f'sum by (task) (nomad_client_allocs_memory_usage{{{RUNNERS}}})', '{{task}}')],
                unit="bytes", w=12, stack=True, desc="Memory in use by each runner stage, every dispatched job summed."),

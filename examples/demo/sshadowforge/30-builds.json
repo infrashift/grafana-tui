@@ -1259,10 +1259,392 @@
           }
         }
       },
-      "p14-runner-memory-by-stage": {
+      "p14-pins-held": {
         "kind": "Panel",
         "spec": {
           "id": 14,
+          "title": "Pins held",
+          "description": "refs/sfd/built/<sha>: one per built revision, kept forever so every attestation stays challengeable. Recounted by the dispatcher at start and every 6h.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(sfd_build_pins)",
+                        "legendFormat": "Pins held",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "decimals": 0,
+                  "noValue": "no pin pass since the dispatcher started"
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p15-stranded-attestations": {
+        "kind": "Panel",
+        "spec": {
+          "id": 15,
+          "title": "Stranded attestations",
+          "description": "Attested revisions on no branch and never pinned (built before pins existed): their challenges cannot fetch the source. Counted once per dispatcher start; the dispatcher log names each one.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(sfd_stats_total{name=\"pin_backfill_stranded\"}) or vector(0)",
+                        "legendFormat": "Stranded attestations",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      },
+                      {
+                        "value": 1,
+                        "color": "orange"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p16-pins-held-over-time": {
+        "kind": "Panel",
+        "spec": {
+          "id": 16,
+          "title": "Pins held over time",
+          "description": "Grows by one per build request. A step down means a repository was deleted with its pins.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(sfd_build_pins)",
+                        "legendFormat": "pins",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  },
+                  "noValue": "no pin pass since the dispatcher started"
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p17-pins-by-repository": {
+        "kind": "Panel",
+        "spec": {
+          "id": 17,
+          "title": "Pins by repository",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sort_desc(sfd_build_pins)",
+                        "legendFormat": "{{repo}}",
+                        "range": false,
+                        "instant": true,
+                        "format": "table"
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "table",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "showHeader": true,
+                "cellHeight": "sm",
+                "footer": {
+                  "show": false,
+                  "reducer": [
+                    "sum"
+                  ],
+                  "fields": ""
+                },
+                "sortBy": [
+                  {
+                    "displayName": "Value",
+                    "desc": true
+                  }
+                ]
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "decimals": 0,
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "inspect": false,
+                    "filterable": true
+                  },
+                  "noValue": "no pin pass since the dispatcher started"
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Time"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.hidden",
+                        "value": true
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Value"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "type": "color-background",
+                          "mode": "basic"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "p18-runner-memory-by-stage": {
+        "kind": "Panel",
+        "spec": {
+          "id": 18,
           "title": "Runner memory by stage",
           "description": "Memory in use by each runner stage, every dispatched job summed.",
           "links": [],
@@ -1355,10 +1737,10 @@
           }
         }
       },
-      "p15-runner-cpu-by-job": {
+      "p19-runner-cpu-by-job": {
         "kind": "Panel",
         "spec": {
-          "id": 15,
+          "id": 19,
           "title": "Runner CPU by job",
           "description": "",
           "links": [],
@@ -1452,10 +1834,10 @@
           }
         }
       },
-      "p16-dispatched-runs-failed-nomad": {
+      "p20-dispatched-runs-failed-nomad": {
         "kind": "Panel",
         "spec": {
-          "id": 16,
+          "id": 20,
           "title": "Dispatched runs failed (Nomad)",
           "description": "Failed allocations of dispatched runs Nomad still holds (until garbage collection). make verify adds some on purpose: the probe repositories of checks 28, 39 and 40 (prupd-*, dcprobe/*, svcprobe/*) build red by design. Anything else is worth a look.",
           "links": [],
@@ -1548,10 +1930,10 @@
           }
         }
       },
-      "p17-build-requests": {
+      "p21-build-requests": {
         "kind": "Panel",
         "spec": {
-          "id": 17,
+          "id": 21,
           "title": "Build requests",
           "description": "Requested by the dispatcher (kind 30007) and picked up by the workflow.",
           "links": [],
@@ -1886,6 +2268,73 @@
           {
             "kind": "RowsLayoutRow",
             "spec": {
+              "title": "Build pins (reproducibility)",
+              "collapse": false,
+              "hideHeader": false,
+              "layout": {
+                "kind": "GridLayout",
+                "spec": {
+                  "items": [
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 0,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p14-pins-held"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 4,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p15-stranded-attestations"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 8,
+                        "y": 0,
+                        "width": 8,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p16-pins-held-over-time"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 16,
+                        "y": 0,
+                        "width": 8,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p17-pins-by-repository"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "kind": "RowsLayoutRow",
+            "spec": {
               "title": "Runners",
               "collapse": false,
               "hideHeader": false,
@@ -1902,7 +2351,7 @@
                         "height": 7,
                         "element": {
                           "kind": "ElementReference",
-                          "name": "p14-runner-memory-by-stage"
+                          "name": "p18-runner-memory-by-stage"
                         }
                       }
                     },
@@ -1915,7 +2364,7 @@
                         "height": 7,
                         "element": {
                           "kind": "ElementReference",
-                          "name": "p15-runner-cpu-by-job"
+                          "name": "p19-runner-cpu-by-job"
                         }
                       }
                     },
@@ -1928,7 +2377,7 @@
                         "height": 7,
                         "element": {
                           "kind": "ElementReference",
-                          "name": "p16-dispatched-runs-failed-nomad"
+                          "name": "p20-dispatched-runs-failed-nomad"
                         }
                       }
                     },
@@ -1941,7 +2390,7 @@
                         "height": 7,
                         "element": {
                           "kind": "ElementReference",
-                          "name": "p17-build-requests"
+                          "name": "p21-build-requests"
                         }
                       }
                     }
