@@ -8,7 +8,7 @@ This document provides a comprehensive feature-parity table between the
 and what grafana-tui currently supports.
 
 > **Snapshot**: grafana-tui `main` after v0.1.12, with Grafana V2 support. The roadmap prioritizes Grafana parity first,
-> then user-visible product value. See the [roadmap](https://github.com/ryancraig/grafana-tui/blob/main/ROADMAP.md) for milestone
+> then user-visible product value. See the [roadmap](https://github.com/infrashift/grafana-tui/blob/main/ROADMAP.md) for milestone
 > slices built from this compatibility ladder.
 
 **Legend**:

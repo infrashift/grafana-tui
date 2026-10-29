@@ -95,7 +95,7 @@ a Consul/Nomad/Vault platform with a Consul Connect (Envoy) mesh and remote
 developer workspaces: fleet overview, nodes, Nomad, Consul, Vault, service
 mesh, workspaces and Prometheus. They target a real datacenter's mTLS
 Prometheus, not the bundled demo stack. See its
-[README](https://github.com/ryancraig/grafana-tui/blob/main/examples/demo/hashistack-rdw/README.md)
+[README](https://github.com/infrashift/grafana-tui/blob/main/examples/demo/hashistack-rdw/README.md)
 for the reader-certificate setup. Open all eight at once, one per tab:
 
 ```bash
@@ -107,6 +107,6 @@ cargo run --release -- --config ~/.config/grafana-tui/gcloud-dc.toml \
 
 See the repository example docs:
 
-- [examples/README.md](https://github.com/ryancraig/grafana-tui/blob/main/examples/README.md)
-- [examples/demo/README.md](https://github.com/ryancraig/grafana-tui/blob/main/examples/demo/README.md)
-- [examples/demo/hashistack-rdw/README.md](https://github.com/ryancraig/grafana-tui/blob/main/examples/demo/hashistack-rdw/README.md)
+- [examples/README.md](https://github.com/infrashift/grafana-tui/blob/main/examples/README.md)
+- [examples/demo/README.md](https://github.com/infrashift/grafana-tui/blob/main/examples/demo/README.md)
+- [examples/demo/hashistack-rdw/README.md](https://github.com/infrashift/grafana-tui/blob/main/examples/demo/hashistack-rdw/README.md)

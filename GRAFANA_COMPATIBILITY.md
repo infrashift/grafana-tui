@@ -3,6 +3,6 @@
 The Grafana compatibility matrix now lives in the user guide:
 
 - [Source Markdown](docs/src/content/docs/grafana-compatibility.md)
-- [Published guide](https://ryancraig.github.io/grafana-tui/grafana-compatibility/)
+- [Published guide](https://infrashift.github.io/grafana-tui/grafana-compatibility/)
 
 This pointer is kept at the repository root so existing README, issue, and release links continue to resolve.

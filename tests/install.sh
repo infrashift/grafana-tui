@@ -116,7 +116,7 @@ test_installs_latest_linux_x86_64_release() {
   assert_file_contains "${INSTALL_DIR}/grafana-tui" 'fixture grafana-tui binary'
   [[ -x "${INSTALL_DIR}/grafana-tui" ]] || fail 'installed binary is not executable'
   assert_contains "$(<"${DOWNLOAD_LOG}")" \
-    'https://github.com/ryancraig/grafana-tui/releases/latest/download/grafana-tui-x86_64-unknown-linux-gnu.tar.gz'
+    'https://github.com/infrashift/grafana-tui/releases/latest/download/grafana-tui-x86_64-unknown-linux-gnu.tar.gz'
   assert_contains "${output}" "Installed grafana-tui to ${INSTALL_DIR}/grafana-tui"
 }
 
@@ -145,9 +145,9 @@ test_installs_pinned_macos_arm64_release() {
 
   assert_file_contains "${INSTALL_DIR}/grafana-tui" 'fixture grafana-tui binary'
   assert_contains "$(<"${DOWNLOAD_LOG}")" \
-    'https://github.com/ryancraig/grafana-tui/releases/download/v0.2.0/grafana-tui-aarch64-apple-darwin.tar.gz'
+    'https://github.com/infrashift/grafana-tui/releases/download/v0.2.0/grafana-tui-aarch64-apple-darwin.tar.gz'
   assert_contains "$(<"${DOWNLOAD_LOG}")" \
-    'https://github.com/ryancraig/grafana-tui/releases/download/v0.2.0/grafana-tui-checksums.txt'
+    'https://github.com/infrashift/grafana-tui/releases/download/v0.2.0/grafana-tui-checksums.txt'
 }
 
 test_rejects_a_legacy_release_without_checksums() {
@@ -226,7 +226,7 @@ test_uses_wget_and_the_default_install_directory() {
 
   assert_file_contains "${HOME_DIR}/.local/bin/grafana-tui" 'fixture grafana-tui binary'
   assert_contains "$(<"${DOWNLOAD_LOG}")" \
-    'https://github.com/ryancraig/grafana-tui/releases/latest/download/grafana-tui-x86_64-apple-darwin.tar.gz'
+    'https://github.com/infrashift/grafana-tui/releases/latest/download/grafana-tui-x86_64-apple-darwin.tar.gz'
 }
 
 test_wget_rejects_a_pinned_future_release_without_checksums() {
