@@ -130,7 +130,7 @@ make docs-preview
 ```
 
 CI builds the site on every pull request, and `docs-release.yml` publishes it
-to <https://ryancraig.github.io/grafana-tui/> from `main`.
+to <https://infrashift.github.io/grafana-tui/> from `main`.
 
 ## Code Style
 
