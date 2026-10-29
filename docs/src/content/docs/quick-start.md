@@ -46,7 +46,7 @@ grafana-tui --grafana-json ./dash.json --var job=node --var instance=server-01
 The repository includes a Prometheus demo stack and sample dashboards:
 
 ```bash
-git clone https://github.com/ryancraig/grafana-tui.git
+git clone https://github.com/infrashift/grafana-tui.git
 cd grafana-tui
 cd examples/demo && docker-compose up -d && sleep 5 && cd ../..
 cargo run -- --grafana-json examples/dashboards/prometheus_demo.json --prometheus-url http://localhost:19090

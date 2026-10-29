@@ -98,7 +98,7 @@ help: ## Show this help
 
 # The user guide in docs/ is an Astro Starlight site, built with bun. CI
 # builds it on every pull request, and .github/workflows/docs-release.yml
-# publishes it to https://ryancraig.github.io/grafana-tui/ from main.
+# publishes it to https://infrashift.github.io/grafana-tui/ from main.
 
 docs/node_modules: docs/package.json docs/bun.lock
 	cd docs && bun install --frozen-lockfile
