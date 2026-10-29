@@ -1,6 +1,6 @@
 # grafana-tui
 
-[![CI](https://github.com/ryancraig/grafana-tui/workflows/CI/badge.svg)](https://github.com/ryancraig/grafana-tui/actions/workflows/ci.yml)
+[![CI](https://github.com/infrashift/grafana-tui/workflows/CI/badge.svg)](https://github.com/infrashift/grafana-tui/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Rust Version](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 
@@ -13,10 +13,10 @@
 Install the latest prebuilt binary into `~/.local/bin`:
 
 ```bash
-bash -o pipefail -c 'curl --proto =https --tlsv1.2 -LsSf https://raw.githubusercontent.com/ryancraig/grafana-tui/main/install.sh | bash'
+bash -o pipefail -c 'curl --proto =https --tlsv1.2 -LsSf https://raw.githubusercontent.com/infrashift/grafana-tui/main/install.sh | bash'
 ```
 
-See [Installation](https://ryancraig.github.io/grafana-tui/installation/) for other directories, pinned versions, manual downloads, and building from source.
+See [Installation](https://infrashift.github.io/grafana-tui/installation/) for other directories, pinned versions, manual downloads, and building from source.
 
 Run against a Prometheus instance:
 
@@ -27,7 +27,7 @@ grafana-tui --prometheus-url http://localhost:9090
 Or try the included demo:
 
 ```bash
-git clone https://github.com/ryancraig/grafana-tui.git
+git clone https://github.com/infrashift/grafana-tui.git
 cd grafana-tui
 cd examples/demo && docker-compose up -d && sleep 5 && cd ../..
 cargo run -- --grafana-json examples/dashboards/prometheus_demo.json --prometheus-url http://localhost:19090
@@ -46,13 +46,13 @@ cargo run -- --grafana-json examples/dashboards/prometheus_demo.json --prometheu
 
 ## Documentation
 
-- [User guide](https://ryancraig.github.io/grafana-tui/)
-- [Installation](https://ryancraig.github.io/grafana-tui/installation/)
-- [Quick start](https://ryancraig.github.io/grafana-tui/quick-start/)
-- [Configuration](https://ryancraig.github.io/grafana-tui/configuration/)
-- [External annotations](https://ryancraig.github.io/grafana-tui/annotations/)
-- [Grafana dashboard import](https://ryancraig.github.io/grafana-tui/grafana-dashboard-import/)
-- [Grafana compatibility matrix](https://ryancraig.github.io/grafana-tui/grafana-compatibility/)
+- [User guide](https://infrashift.github.io/grafana-tui/)
+- [Installation](https://infrashift.github.io/grafana-tui/installation/)
+- [Quick start](https://infrashift.github.io/grafana-tui/quick-start/)
+- [Configuration](https://infrashift.github.io/grafana-tui/configuration/)
+- [External annotations](https://infrashift.github.io/grafana-tui/annotations/)
+- [Grafana dashboard import](https://infrashift.github.io/grafana-tui/grafana-dashboard-import/)
+- [Grafana compatibility matrix](https://infrashift.github.io/grafana-tui/grafana-compatibility/)
 - [Examples](examples/README.md)
 
 ## Common Commands
@@ -87,7 +87,7 @@ resource with recursive `GridLayout`, `AutoGridLayout`, `RowsLayout`, and
 rendering, and row and tab variables. Exports reference library panels by uid
 only, so enable **Share dashboard with another instance** when exporting to
 inline them. See the
-[dashboard import guide](https://ryancraig.github.io/grafana-tui/grafana-dashboard-import/)
+[dashboard import guide](https://infrashift.github.io/grafana-tui/grafana-dashboard-import/)
 for the current format requirements.
 
 ## Contributing

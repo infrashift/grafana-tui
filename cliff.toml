@@ -41,7 +41,7 @@ footer = """
 
 # postprocessors
 postprocessors = [
-  { pattern = '\$REPO', replace = "https://github.com/ryancraig/grafana-tui" }, # replace with actual repo
+  { pattern = '\$REPO', replace = "https://github.com/infrashift/grafana-tui" }, # replace with actual repo
 ]
 
 [git]
@@ -58,7 +58,7 @@ commit_preprocessors = [
   # lists each change once.
   { pattern = '(?m)[ \t]+\(#[0-9]+\)$', replace = "" },
   # Replace issue numbers
-  #{ pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](https://github.com/ryancraig/grafana-tui/issues/${2}))" },
+  #{ pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](https://github.com/infrashift/grafana-tui/issues/${2}))" },
 ]
 # regex for parsing and grouping commits
 commit_parsers = [

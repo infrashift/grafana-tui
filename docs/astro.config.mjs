@@ -1,10 +1,10 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
-// Published at https://ryancraig.github.io/grafana-tui/ by
+// Published at https://infrashift.github.io/grafana-tui/ by
 // .github/workflows/docs-release.yml. Links between pages use the /grafana-tui/ base.
 export default defineConfig({
-  site: 'https://ryancraig.github.io',
+  site: 'https://infrashift.github.io',
   base: '/grafana-tui',
   integrations: [
     starlight({
@@ -14,11 +14,11 @@ export default defineConfig({
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/ryancraig/grafana-tui',
+          href: 'https://github.com/infrashift/grafana-tui',
         },
       ],
       editLink: {
-        baseUrl: 'https://github.com/ryancraig/grafana-tui/edit/main/docs/',
+        baseUrl: 'https://github.com/infrashift/grafana-tui/edit/main/docs/',
       },
       customCss: ['./src/styles/custom.css'],
       sidebar: [

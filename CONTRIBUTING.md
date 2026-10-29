@@ -18,7 +18,7 @@ All types of contributions are encouraged and valued. See the [Table of Contents
 
 If you want to ask a question, we assume that you have read the available [Documentation](README.md).
 
-Before you ask a question, it is best to search for existing [Issues](https://github.com/ryancraig/grafana-tui/issues) that might help you. In case you've found a suitable issue and still need clarification, you can write your question in this issue. It is also advisable to search the internet for answers first.
+Before you ask a question, it is best to search for existing [Issues](https://github.com/infrashift/grafana-tui/issues) that might help you. In case you've found a suitable issue and still need clarification, you can write your question in this issue. It is also advisable to search the internet for answers first.
 
 ## I Want To Contribute
 
@@ -46,8 +46,8 @@ This section guides you through submitting an enhancement suggestion for grafana
 
 Unsure where to begin contributing to grafana-tui? You can start by looking through these `good-first-issue` and `help-wanted` issues:
 
-- [Good First Issues](https://github.com/ryancraig/grafana-tui/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) - issues which should only require a few lines of code, and a test or two.
-- [Help Wanted Issues](https://github.com/ryancraig/grafana-tui/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22) - issues which should be a bit more involved than beginner issues.
+- [Good First Issues](https://github.com/infrashift/grafana-tui/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) - issues which should only require a few lines of code, and a test or two.
+- [Help Wanted Issues](https://github.com/infrashift/grafana-tui/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22) - issues which should be a bit more involved than beginner issues.
 
 ## Development Workflow
 

@@ -3,7 +3,7 @@
 set -eu
 
 PROGRAM='grafana-tui'
-REPOSITORY='ryancraig/grafana-tui'
+REPOSITORY='infrashift/grafana-tui'
 tmp_dir=''
 staged_binary=''
 
