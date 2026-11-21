@@ -131,21 +131,7 @@ fn parse_auto_grid_layout(
         .enumerate()
     {
         let item_path = format!("{items_path}[{index}]");
-        let item = item.as_object().ok_or_else(|| {
-            anyhow!("invalid Grafana V2 auto grid item at {item_path}: expected an object")
-        })?;
-        require_expected_kind(item, &item_path, "AutoGridLayoutItem")?;
-        let item_spec_path = format!("{item_path}.spec");
-        let item_spec = require_object_from(item, "spec", &item_spec_path)?;
-        let condition = parse_condition_group(item_spec, &item_spec_path, diagnostics)?;
-        let repeat = parse_repeat(item_spec, &item_spec_path)?;
-        let (element_name, element) =
-            resolve_element_reference(item_spec, elements, &item_spec_path)?;
-        let element_path = format!("spec.elements[{element_name:?}]");
-        // Auto grid items are positioned when projected, so the panel has no grid.
-        if let Some(mut panel) = parse_panel(element, &element_path, None, diagnostics)? {
-            panel.repeat = repeat;
-            panel.condition = condition;
+        if let Some(panel) = parse_auto_grid_item(item, &item_path, elements, diagnostics)? {
             panels.push(panel);
         }
     }
@@ -156,6 +142,32 @@ fn parse_auto_grid_layout(
         row_height_px,
         panels,
     })])
+}
+
+/// Parses one auto grid item into its panel, with the repeat and the condition.
+fn parse_auto_grid_item(
+    item: &Value,
+    item_path: &str,
+    elements: &JsonObject,
+    diagnostics: &mut Vec<super::ImportDiagnostic>,
+) -> Result<Option<model::Panel>> {
+    let item = item.as_object().ok_or_else(|| {
+        anyhow!("invalid Grafana V2 auto grid item at {item_path}: expected an object")
+    })?;
+    require_expected_kind(item, item_path, "AutoGridLayoutItem")?;
+    let item_spec_path = format!("{item_path}.spec");
+    let item_spec = require_object_from(item, "spec", &item_spec_path)?;
+    let condition = parse_condition_group(item_spec, &item_spec_path, diagnostics)?;
+    let repeat = parse_repeat(item_spec, &item_spec_path)?;
+    let (element_name, element) = resolve_element_reference(item_spec, elements, &item_spec_path)?;
+    let element_path = format!("spec.elements[{element_name:?}]");
+    // Auto grid items are positioned when projected, so the panel has no grid.
+    let panel = parse_panel(element, &element_path, None, diagnostics)?;
+    Ok(panel.map(|mut panel| {
+        panel.repeat = repeat;
+        panel.condition = condition;
+        panel
+    }))
 }
 
 /// Resolves an auto grid size from its `*Mode` name, or the custom pixel value.
@@ -367,9 +379,33 @@ fn normalize_query_variable(
     }
     let query_spec_path = format!("{query_path}.spec");
     let query_spec = require_object_from(query, "spec", &query_spec_path)?;
+    let query = query_variable_text(spec, query_spec, &source_path);
+
+    Ok(Some(model::Variable {
+        name,
+        kind: is_prometheus.then_some("query".to_string()),
+        current: current_from_option(spec),
+        query: query.as_ref().map(|(query, _)| query.clone()),
+        regex: optional_string(spec, "regex"),
+        all_value: optional_string(spec, "allValue"),
+        multi: optional_bool_from(spec, "multi", &source_path)?,
+        include_all: optional_bool_from(spec, "includeAll", &source_path)?,
+        options: option_values(spec),
+        source_path,
+        query_path: query.map(|(_, path)| path),
+        refresh: query_variable_refresh(spec),
+    }))
+}
+
+/// Returns the query text of a query variable and the path that holds it.
+fn query_variable_text(
+    spec: &JsonObject,
+    query_spec: &JsonObject,
+    source_path: &str,
+) -> Option<(String, String)> {
     // Grafana stores a Classic variable's plain string query, when it converts
     // the dashboard to V2, as `__legacyStringValue`.
-    let query = ["query", "__legacyStringValue"]
+    ["query", "__legacyStringValue"]
         .into_iter()
         .find_map(|key| {
             let query = query_spec.get(key)?.as_str()?.trim();
@@ -391,27 +427,17 @@ fn normalize_query_variable(
                         format!("{source_path}.spec.definition"),
                     )
                 })
-        });
+        })
+}
 
-    Ok(Some(model::Variable {
-        name,
-        kind: is_prometheus.then_some("query".to_string()),
-        current: current_from_option(spec),
-        query: query.as_ref().map(|(query, _)| query.clone()),
-        regex: optional_string(spec, "regex"),
-        all_value: optional_string(spec, "allValue"),
-        multi: optional_bool_from(spec, "multi", &source_path)?,
-        include_all: optional_bool_from(spec, "includeAll", &source_path)?,
-        options: option_values(spec),
-        source_path,
-        query_path: query.map(|(_, path)| path),
-        refresh: match spec.get("refresh").and_then(Value::as_str) {
-            Some("never") => Some(model::VariableRefresh::Never),
-            Some("onDashboardLoad") => Some(model::VariableRefresh::OnDashboardLoad),
-            Some("onTimeRangeChanged") => Some(model::VariableRefresh::OnTimeRangeChange),
-            _ => None,
-        },
-    }))
+/// Returns when a query variable refreshes, from its `refresh` name.
+fn query_variable_refresh(spec: &JsonObject) -> Option<model::VariableRefresh> {
+    match spec.get("refresh").and_then(Value::as_str) {
+        Some("never") => Some(model::VariableRefresh::Never),
+        Some("onDashboardLoad") => Some(model::VariableRefresh::OnDashboardLoad),
+        Some("onTimeRangeChanged") => Some(model::VariableRefresh::OnTimeRangeChange),
+        _ => None,
+    }
 }
 
 fn normalize_option_variable(
@@ -645,8 +671,6 @@ fn parse_condition_group(
     spec_path: &str,
     diagnostics: &mut Vec<super::ImportDiagnostic>,
 ) -> Result<Option<crate::conditions::ConditionGroup>> {
-    use crate::conditions::{Condition, ConditionGroup, VariableOperator};
-
     let path = format!("{spec_path}.conditionalRendering");
     let Some(group) = optional_object_from(spec, "conditionalRendering", &path)? else {
         return Ok(None);
@@ -680,65 +704,85 @@ fn parse_condition_group(
         .enumerate()
     {
         let item_path = format!("{items_path}[{index}]");
-        let item = item.as_object().ok_or_else(|| {
-            anyhow!("invalid Grafana V2 condition at {item_path}: expected an object")
-        })?;
-        let kind = require_string_from(item, "kind", &format!("{item_path}.kind"))?;
-        let item_spec_path = format!("{item_path}.spec");
-        let condition = match kind {
-            "ConditionalRenderingVariable" => {
-                let item_spec = require_object_from(item, "spec", &item_spec_path)?;
-                let operator = match optional_string_from(item_spec, "operator", &item_spec_path)?
-                    .as_deref()
-                {
-                    None | Some("equals") => VariableOperator::Equals,
-                    Some("notEquals") => VariableOperator::NotEquals,
-                    Some("matches") => VariableOperator::Matches,
-                    Some("notMatches") => VariableOperator::NotMatches,
-                    Some(other) => anyhow::bail!(
-                        "invalid Grafana V2 condition operator `{other}` at {item_spec_path}.operator"
-                    ),
-                };
-                let name_path = format!("{item_spec_path}.variable");
-                Condition::Variable {
-                    name: require_string_from(item_spec, "variable", &name_path)?.to_string(),
-                    operator,
-                    value: optional_string_from(item_spec, "value", &item_spec_path)?
-                        .unwrap_or_default(),
-                }
-            }
-            "ConditionalRenderingData" => {
-                let item_spec = require_object_from(item, "spec", &item_spec_path)?;
-                Condition::Data {
-                    has_data: optional_bool_from(item_spec, "value", &item_spec_path)?,
-                }
-            }
-            "ConditionalRenderingTimeRangeSize" => {
-                let item_spec = require_object_from(item, "spec", &item_spec_path)?;
-                let value = optional_string_from(item_spec, "value", &item_spec_path)?;
-                Condition::TimeRangeAtMost(
-                    value
-                        .as_deref()
-                        .and_then(crate::conditions::parse_time_range_size),
-                )
-            }
-            other => {
-                diagnostics.push(super::ImportDiagnostic::new(
-                    "unsupported_condition",
-                    &item_path,
-                    format!("unsupported Grafana V2 condition kind `{other}` is ignored"),
-                ));
-                continue;
-            }
-        };
-        conditions.push(condition);
+        if let Some(condition) = parse_condition_item(item, &item_path, diagnostics)? {
+            conditions.push(condition);
+        }
     }
 
-    Ok(Some(ConditionGroup {
+    Ok(Some(crate::conditions::ConditionGroup {
         show,
         match_all,
         conditions,
     }))
+}
+
+/// Parses one condition of a condition group. An unknown kind gives `None`.
+fn parse_condition_item(
+    item: &Value,
+    item_path: &str,
+    diagnostics: &mut Vec<super::ImportDiagnostic>,
+) -> Result<Option<crate::conditions::Condition>> {
+    use crate::conditions::Condition;
+
+    let item = item.as_object().ok_or_else(|| {
+        anyhow!("invalid Grafana V2 condition at {item_path}: expected an object")
+    })?;
+    let kind = require_string_from(item, "kind", &format!("{item_path}.kind"))?;
+    let item_spec_path = format!("{item_path}.spec");
+    let condition = match kind {
+        "ConditionalRenderingVariable" => {
+            let item_spec = require_object_from(item, "spec", &item_spec_path)?;
+            parse_variable_condition(item_spec, &item_spec_path)?
+        }
+        "ConditionalRenderingData" => {
+            let item_spec = require_object_from(item, "spec", &item_spec_path)?;
+            Condition::Data {
+                has_data: optional_bool_from(item_spec, "value", &item_spec_path)?,
+            }
+        }
+        "ConditionalRenderingTimeRangeSize" => {
+            let item_spec = require_object_from(item, "spec", &item_spec_path)?;
+            let value = optional_string_from(item_spec, "value", &item_spec_path)?;
+            Condition::TimeRangeAtMost(
+                value
+                    .as_deref()
+                    .and_then(crate::conditions::parse_time_range_size),
+            )
+        }
+        other => {
+            diagnostics.push(super::ImportDiagnostic::new(
+                "unsupported_condition",
+                item_path,
+                format!("unsupported Grafana V2 condition kind `{other}` is ignored"),
+            ));
+            return Ok(None);
+        }
+    };
+    Ok(Some(condition))
+}
+
+/// Parses the spec of a variable condition: the variable, operator and value.
+fn parse_variable_condition(
+    item_spec: &JsonObject,
+    item_spec_path: &str,
+) -> Result<crate::conditions::Condition> {
+    use crate::conditions::VariableOperator;
+
+    let operator = match optional_string_from(item_spec, "operator", item_spec_path)?.as_deref() {
+        None | Some("equals") => VariableOperator::Equals,
+        Some("notEquals") => VariableOperator::NotEquals,
+        Some("matches") => VariableOperator::Matches,
+        Some("notMatches") => VariableOperator::NotMatches,
+        Some(other) => anyhow::bail!(
+            "invalid Grafana V2 condition operator `{other}` at {item_spec_path}.operator"
+        ),
+    };
+    let name_path = format!("{item_spec_path}.variable");
+    Ok(crate::conditions::Condition::Variable {
+        name: require_string_from(item_spec, "variable", &name_path)?.to_string(),
+        operator,
+        value: optional_string_from(item_spec, "value", item_spec_path)?.unwrap_or_default(),
+    })
 }
 
 /// Reads the `element` reference of a grid or auto grid item spec.
@@ -786,18 +830,7 @@ fn parse_panel(
     let kind_path = format!("{path}.kind");
     let kind = require_string_from(element, "kind", &kind_path)?;
     if kind != "Panel" {
-        let message = if kind == "LibraryPanel" {
-            "Grafana V2 library panel skipped: exports reference library panels by uid only; \
-             re-export with \"Share dashboard with another instance\" enabled to inline them"
-                .to_string()
-        } else {
-            format!("unsupported Grafana V2 element kind `{kind}` skipped")
-        };
-        diagnostics.push(super::ImportDiagnostic::new(
-            "unsupported_element",
-            path,
-            message,
-        ));
+        report_unsupported_element(kind, path, diagnostics);
         return Ok(None);
     }
     validate_panel_structure(element, path)?;
@@ -808,13 +841,78 @@ fn parse_panel(
     let panel_path = format!("{path}.spec");
     let data_path = format!("{panel_path}.data.spec.queries");
     let query_options = raw.spec.data.spec.query_options;
-    let mut targets = Vec::new();
-    let mut has_visible_target = false;
-    let mut has_supported_visible_target = false;
-    for (index, query) in raw.spec.data.spec.queries.into_iter().enumerate() {
+    let parsed = parse_panel_targets(raw.spec.data.spec.queries, &data_path, diagnostics);
+    let viz_spec = raw.spec.viz_config.spec;
+    let field_defaults = field_defaults_from(viz_spec.field_config.defaults, &panel_path);
+
+    Ok(Some(model::Panel {
+        repeat: None,
+        condition: None,
+        kind: raw.spec.viz_config.group,
+        title: raw.spec.title,
+        source_path: path.to_string(),
+        targets: parsed.targets,
+        count_as_skipped_if_empty: parsed.has_visible_target
+            && !parsed.has_supported_visible_target,
+        grid,
+        field_defaults: Some(field_defaults),
+        reduce_options_path: viz_spec
+            .options
+            .reduce_options
+            .is_some_and(|options| model::reduce_options_are_custom(&options))
+            .then(|| format!("{panel_path}.vizConfig.spec.options.reduceOptions")),
+        transformations_path: (!raw.spec.data.spec.transformations.is_empty())
+            .then(|| format!("{panel_path}.data.spec.transformations")),
+        min_interval: model::MinInterval::new(
+            query_options.interval,
+            format!("{panel_path}.data.spec.queryOptions.interval"),
+        ),
+        max_data_points: model::max_data_points(query_options.max_data_points.as_ref()),
+    }))
+}
+
+/// Adds a diagnostic for an element that is not an inline panel.
+fn report_unsupported_element(
+    kind: &str,
+    path: &str,
+    diagnostics: &mut Vec<super::ImportDiagnostic>,
+) {
+    let message = if kind == "LibraryPanel" {
+        "Grafana V2 library panel skipped: exports reference library panels by uid only; \
+         re-export with \"Share dashboard with another instance\" enabled to inline them"
+            .to_string()
+    } else {
+        format!("unsupported Grafana V2 element kind `{kind}` skipped")
+    };
+    diagnostics.push(super::ImportDiagnostic::new(
+        "unsupported_element",
+        path,
+        message,
+    ));
+}
+
+/// The targets of a V2 panel, and which of its queries are visible.
+struct PanelTargets {
+    targets: Vec<model::Target>,
+    has_visible_target: bool,
+    has_supported_visible_target: bool,
+}
+
+/// Converts the queries of a V2 panel to targets. It skips other datasources.
+fn parse_panel_targets(
+    queries: Vec<RawPanelQuery>,
+    data_path: &str,
+    diagnostics: &mut Vec<super::ImportDiagnostic>,
+) -> PanelTargets {
+    let mut parsed = PanelTargets {
+        targets: Vec::new(),
+        has_visible_target: false,
+        has_supported_visible_target: false,
+    };
+    for (index, query) in queries.into_iter().enumerate() {
         let query_path = format!("{data_path}[{index}].spec.query");
         if !query.spec.hidden {
-            has_visible_target = true;
+            parsed.has_visible_target = true;
         }
         if !is_prometheus_group(&query.spec.query.group) {
             diagnostics.push(super::ImportDiagnostic::new(
@@ -828,38 +926,51 @@ fn parse_panel(
             continue;
         }
         if !query.spec.hidden {
-            has_supported_visible_target = true;
+            parsed.has_supported_visible_target = true;
         }
-
-        let expr_path = format!("{query_path}.spec.expr");
-        let expr = query
-            .spec
-            .query
-            .spec
-            .expr
-            .filter(|expr| !expr.trim().is_empty());
-        if !query.spec.hidden && expr.is_none() {
-            diagnostics.push(super::ImportDiagnostic::new(
-                "missing_query_expression",
-                &expr_path,
-                "visible Prometheus query has no expression and was skipped",
-            ));
-        }
-        targets.push(model::Target {
-            expr,
-            expr_path,
-            legend_format: query.spec.query.spec.legend_format,
-            instant: query.spec.query.spec.instant,
-            hidden: query.spec.hidden,
-            min_interval: model::MinInterval::new(
-                query.spec.query.spec.interval,
-                format!("{query_path}.spec.interval"),
-            ),
-        });
+        parsed
+            .targets
+            .push(prometheus_target(query, &query_path, diagnostics));
     }
-    let viz_spec = raw.spec.viz_config.spec;
-    let defaults = viz_spec.field_config.defaults;
-    let field_defaults = model::FieldDefaults {
+    parsed
+}
+
+/// Converts one Prometheus query of a V2 panel to a target.
+fn prometheus_target(
+    query: RawPanelQuery,
+    query_path: &str,
+    diagnostics: &mut Vec<super::ImportDiagnostic>,
+) -> model::Target {
+    let expr_path = format!("{query_path}.spec.expr");
+    let expr = query
+        .spec
+        .query
+        .spec
+        .expr
+        .filter(|expr| !expr.trim().is_empty());
+    if !query.spec.hidden && expr.is_none() {
+        diagnostics.push(super::ImportDiagnostic::new(
+            "missing_query_expression",
+            &expr_path,
+            "visible Prometheus query has no expression and was skipped",
+        ));
+    }
+    model::Target {
+        expr,
+        expr_path,
+        legend_format: query.spec.query.spec.legend_format,
+        instant: query.spec.query.spec.instant,
+        hidden: query.spec.hidden,
+        min_interval: model::MinInterval::new(
+            query.spec.query.spec.interval,
+            format!("{query_path}.spec.interval"),
+        ),
+    }
+}
+
+/// Converts the field config defaults of a V2 panel.
+fn field_defaults_from(defaults: RawFieldDefaults, panel_path: &str) -> model::FieldDefaults {
+    model::FieldDefaults {
         unit: defaults.unit,
         decimals: defaults.decimals,
         no_value: defaults.no_value,
@@ -891,31 +1002,7 @@ fn parse_panel(
             .as_ref()
             .is_some_and(non_empty_json_value)
             .then(|| format!("{panel_path}.vizConfig.spec.fieldConfig.defaults.mappings")),
-    };
-
-    Ok(Some(model::Panel {
-        repeat: None,
-        condition: None,
-        kind: raw.spec.viz_config.group,
-        title: raw.spec.title,
-        source_path: path.to_string(),
-        targets,
-        count_as_skipped_if_empty: has_visible_target && !has_supported_visible_target,
-        grid,
-        field_defaults: Some(field_defaults),
-        reduce_options_path: viz_spec
-            .options
-            .reduce_options
-            .is_some_and(|options| model::reduce_options_are_custom(&options))
-            .then(|| format!("{panel_path}.vizConfig.spec.options.reduceOptions")),
-        transformations_path: (!raw.spec.data.spec.transformations.is_empty())
-            .then(|| format!("{panel_path}.data.spec.transformations")),
-        min_interval: model::MinInterval::new(
-            query_options.interval,
-            format!("{panel_path}.data.spec.queryOptions.interval"),
-        ),
-        max_data_points: model::max_data_points(query_options.max_data_points.as_ref()),
-    }))
+    }
 }
 
 /// Validates the shape of an inline V2 panel before typed deserialization.

@@ -364,40 +364,9 @@ fn normalize_classic_panel(
 ) -> model::LayoutNode {
     let repeat = panel.repeat();
     let field_defaults = panel.field_config.and_then(|config| {
-        config.defaults.map(|defaults| model::FieldDefaults {
-            unit: defaults.unit,
-            decimals: defaults.decimals,
-            no_value: defaults.no_value,
-            min: defaults.min,
-            max: defaults.max,
-            thresholds: defaults.thresholds.map(|thresholds| model::Thresholds {
-                mode: thresholds.mode,
-                steps: thresholds
-                    .steps
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|step| model::ThresholdStep {
-                        value: step.value,
-                        color: step.color,
-                    })
-                    .collect(),
-            }),
-            custom: defaults.custom.map(|custom| model::GraphCustom {
-                draw_style: custom.draw_style,
-                show_points: custom.show_points,
-                fill_opacity: custom.fill_opacity,
-                axis_placement: custom.axis_placement,
-                line_interpolation: custom.line_interpolation,
-                stacking_mode: custom.stacking.and_then(|stacking| stacking.mode),
-                axis_grid_show: custom.axis_grid_show,
-                thresholds_style_mode: custom.thresholds_style.and_then(|style| style.mode),
-            }),
-            mappings_path: defaults
-                .mappings
-                .as_ref()
-                .is_some_and(non_empty_json_value)
-                .then(|| format!("{source_path}.fieldConfig.defaults.mappings")),
-        })
+        config
+            .defaults
+            .map(|defaults| classic_field_defaults(defaults, &source_path))
     });
     model::LayoutNode::Panel(model::Panel {
         repeat,
@@ -405,23 +374,7 @@ fn normalize_classic_panel(
         kind: panel.panel_type,
         title: panel.title.unwrap_or_default(),
         source_path: source_path.clone(),
-        targets: panel
-            .targets
-            .unwrap_or_default()
-            .into_iter()
-            .enumerate()
-            .map(|(index, target)| model::Target {
-                expr: target.expr,
-                expr_path: format!("{source_path}.targets[{index}].expr"),
-                legend_format: target.legend_format,
-                instant: target.instant,
-                hidden: target.hide == Some(true),
-                min_interval: model::MinInterval::new(
-                    target.interval,
-                    format!("{source_path}.targets[{index}].interval"),
-                ),
-            })
-            .collect(),
+        targets: classic_targets(panel.targets.unwrap_or_default(), &source_path),
         count_as_skipped_if_empty: false,
         grid: panel.grid_pos.map(|grid| model::GridPos {
             x: grid.x,
@@ -441,6 +394,66 @@ fn normalize_classic_panel(
         min_interval: model::MinInterval::new(panel.interval, format!("{source_path}.interval")),
         max_data_points: model::max_data_points(panel.max_data_points.as_ref()),
     })
+}
+
+/// Converts the field config defaults of a classic panel.
+fn classic_field_defaults(
+    defaults: RawFieldConfigDefaults,
+    source_path: &str,
+) -> model::FieldDefaults {
+    model::FieldDefaults {
+        unit: defaults.unit,
+        decimals: defaults.decimals,
+        no_value: defaults.no_value,
+        min: defaults.min,
+        max: defaults.max,
+        thresholds: defaults.thresholds.map(|thresholds| model::Thresholds {
+            mode: thresholds.mode,
+            steps: thresholds
+                .steps
+                .unwrap_or_default()
+                .into_iter()
+                .map(|step| model::ThresholdStep {
+                    value: step.value,
+                    color: step.color,
+                })
+                .collect(),
+        }),
+        custom: defaults.custom.map(|custom| model::GraphCustom {
+            draw_style: custom.draw_style,
+            show_points: custom.show_points,
+            fill_opacity: custom.fill_opacity,
+            axis_placement: custom.axis_placement,
+            line_interpolation: custom.line_interpolation,
+            stacking_mode: custom.stacking.and_then(|stacking| stacking.mode),
+            axis_grid_show: custom.axis_grid_show,
+            thresholds_style_mode: custom.thresholds_style.and_then(|style| style.mode),
+        }),
+        mappings_path: defaults
+            .mappings
+            .as_ref()
+            .is_some_and(non_empty_json_value)
+            .then(|| format!("{source_path}.fieldConfig.defaults.mappings")),
+    }
+}
+
+/// Converts the targets of a classic panel, with the path of each field.
+fn classic_targets(targets: Vec<RawTarget>, source_path: &str) -> Vec<model::Target> {
+    targets
+        .into_iter()
+        .enumerate()
+        .map(|(index, target)| model::Target {
+            expr: target.expr,
+            expr_path: format!("{source_path}.targets[{index}].expr"),
+            legend_format: target.legend_format,
+            instant: target.instant,
+            hidden: target.hide == Some(true),
+            min_interval: model::MinInterval::new(
+                target.interval,
+                format!("{source_path}.targets[{index}].interval"),
+            ),
+        })
+        .collect()
 }
 
 fn non_empty_json_value(value: &Value) -> bool {
