@@ -14,13 +14,17 @@
  * limitations under the License.
  */
 
-use crate::app::{AppState, PanelState};
+use crate::app::{AppState, PanelState, PanelType};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph, Row, Table},
 };
 
 pub(super) fn render_table(frame: &mut Frame, area: Rect, p: &PanelState, app: &AppState) {
+    debug_assert!(
+        matches!(p.panel_type, PanelType::Table),
+        "the panel is a table"
+    );
     let theme = &app.theme;
 
     let header = ["Series", "Value"];
@@ -41,6 +45,10 @@ pub(super) fn render_table(frame: &mut Frame, area: Rect, p: &PanelState, app: &
             ])
         })
         .collect();
+    debug_assert!(
+        rows.len() <= p.series.len(),
+        "the table has one row for each visible series"
+    );
 
     if rows.is_empty() {
         let para = Paragraph::new(p.display.no_data_text()).style(Style::default().fg(theme.text));

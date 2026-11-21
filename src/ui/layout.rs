@@ -51,7 +51,18 @@ pub(crate) enum DashboardRectKind {
     },
 }
 
+/// Returns true when `inner` is empty or lies inside `outer`.
+pub(crate) fn rect_inside(outer: Rect, inner: Rect) -> bool {
+    let inside = inner.x >= outer.x && inner.y >= outer.y;
+    inner.is_empty()
+        || (inside && inner.right() <= outer.right() && inner.bottom() <= outer.bottom())
+}
+
 pub(crate) fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    debug_assert!(
+        percent_x <= 100 && percent_y <= 100,
+        "the percentages are 100 or less"
+    );
     let [_, middle, _] = Layout::vertical([
         Constraint::Percentage((100 - percent_y) / 2),
         Constraint::Percentage(percent_y),
@@ -65,6 +76,14 @@ pub(crate) fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect 
         Constraint::Percentage((100 - percent_x) / 2),
     ])
     .areas(middle);
+    debug_assert!(
+        rect_inside(area, center),
+        "the centered rect is inside the area"
+    );
+    debug_assert!(
+        center.width <= area.width && center.height <= area.height,
+        "the centered rect is not larger than the area"
+    );
     center
 }
 
@@ -98,6 +117,14 @@ pub(crate) fn calculate_grid_layout(area: Rect, app: &AppState) -> Vec<(Rect, us
     }
 
     results.extend(grid_extras_layout(area, app, &shown, cell_h));
+    debug_assert!(
+        results.iter().all(|(rect, _)| rect_inside(area, *rect)),
+        "each grid panel is inside the area"
+    );
+    debug_assert!(
+        results.iter().all(|(_, index)| *index < app.panels.len()),
+        "each grid panel is in the panel list"
+    );
     results
 }
 
@@ -111,6 +138,10 @@ struct GridCells {
 
 /// Returns the clamped rect of a grid panel, or `None` when the panel is not in view.
 fn scrolled_grid_rect(cells: &GridCells, g: GridUnit) -> Option<Rect> {
+    debug_assert!(
+        cells.cell_w >= 1 && cells.cell_h >= 1,
+        "a grid cell is one column and one row or more"
+    );
     let area = cells.area;
     if g.x < 0 || g.y < 0 || g.w <= 0 || g.h <= 0 {
         return None;
@@ -144,6 +175,10 @@ fn scrolled_grid_rect(cells: &GridCells, g: GridUnit) -> Option<Rect> {
         width: w.min(area.right().saturating_sub(x)),
         height: h.min(area.bottom().saturating_sub(y)),
     };
+    debug_assert!(
+        rect_inside(area, rect),
+        "the clamped panel is inside the area"
+    );
     (rect.width >= 8 && rect.height >= 4).then_some(rect)
 }
 
@@ -186,11 +221,20 @@ fn grid_extras_layout(
         width: area.width,
         height: area.bottom().saturating_sub(start_y_px),
     };
+    debug_assert!(
+        rect_inside(area, extras_area),
+        "the extras area is inside the area"
+    );
 
     // Reuse two-column layout for extras
     // We need to pass the subset of panels but keep their original indices.
     let extra_indices: Vec<usize> = extras.iter().map(|(i, _)| *i).collect();
-    calculate_two_column_layout_subset(extras_area, app, &extra_indices)
+    let placed = calculate_two_column_layout_subset(extras_area, app, &extra_indices);
+    debug_assert!(
+        placed.len() <= extra_indices.len(),
+        "each extra panel has one rect or none"
+    );
+    placed
 }
 
 pub(crate) fn calculate_two_column_layout(area: Rect, app: &AppState) -> Vec<(Rect, usize)> {
@@ -223,6 +267,10 @@ pub(crate) fn calculate_two_column_layout_subset(
         .vertical_scroll
         .min(panel_indices.len().saturating_sub(rows_fit));
     let end = (start + rows_fit).min(panel_indices.len());
+    debug_assert!(
+        start <= end && end <= panel_indices.len(),
+        "the visible window is inside the panel list"
+    );
 
     let visible_indices = panel_indices.get(start..end).unwrap_or_default();
 
@@ -240,6 +288,10 @@ pub(crate) fn calculate_two_column_layout_subset(
     stack_column(left_column, &left_indices, panel_height, &mut results);
     stack_column(right_column, &right_indices, panel_height, &mut results);
 
+    debug_assert!(
+        results.len() <= rows_fit && results.iter().all(|(rect, _)| rect_inside(area, *rect)),
+        "the columns show the panels that fit, inside the area"
+    );
     results
 }
 
@@ -250,10 +302,19 @@ fn stack_column(
     panel_height: u16,
     results: &mut Vec<(Rect, usize)>,
 ) {
+    debug_assert!(panel_height >= 1, "a panel is one row high or more");
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(vec![Constraint::Length(panel_height); indices.len()])
         .split(column);
+    debug_assert!(
+        chunks.len() == indices.len(),
+        "the layout gives one chunk for each panel"
+    );
+    debug_assert!(
+        chunks.iter().all(|chunk| rect_inside(column, *chunk)),
+        "each chunk is inside the column"
+    );
     for (rect, &idx) in chunks.iter().zip(indices.iter()) {
         results.push((*rect, idx));
     }
@@ -267,10 +328,19 @@ fn dashboard_inner_area(area: Rect) -> Rect {
     ])
     .areas(area);
 
-    body.inner(Margin {
+    let inner = body.inner(Margin {
         vertical: 1,
         horizontal: 1,
-    })
+    });
+    debug_assert!(
+        rect_inside(area, inner),
+        "the dashboard body is inside the area"
+    );
+    debug_assert!(
+        inner.width <= area.width.saturating_sub(2),
+        "the margin takes one column on each side"
+    );
+    inner
 }
 
 pub(crate) fn visible_dashboard_rects(area: Rect, app: &AppState) -> Vec<DashboardRect> {
@@ -296,27 +366,16 @@ pub(crate) fn visible_dashboard_rects(area: Rect, app: &AppState) -> Vec<Dashboa
         .iter()
         .all(|item| matches!(item, DashboardLayoutItem::Panel(_)));
     if structurally_flat {
-        let panel_rects = if app.flat_panel_indices().into_iter().any(|index| {
-            app.panels
-                .get(index)
-                .is_some_and(|panel| panel.grid.is_some())
-        }) {
-            calculate_grid_layout(inner_area, app)
-        } else {
-            calculate_two_column_layout(inner_area, app)
-        };
-        return panel_rects
-            .into_iter()
-            .map(|(rect, index)| panel_rect(index, rect))
-            .collect();
+        return flat_dashboard_rects(inner_area, app);
     }
 
     let projection = project_dashboard(inner_area, app);
+    let pinned = projection.pinned.is_some();
 
     let scroll_offset = u16::try_from(app.vertical_scroll)
         .unwrap_or(u16::MAX)
         .saturating_mul(projection.cell_h);
-    projection
+    let rects: Vec<DashboardRect> = projection
         .pinned
         .into_iter()
         .chain(
@@ -325,7 +384,48 @@ pub(crate) fn visible_dashboard_rects(area: Rect, app: &AppState) -> Vec<Dashboa
                 .into_iter()
                 .filter_map(|item| clip_scrolled_rect(item, projection.content, scroll_offset)),
         )
-        .collect()
+        .collect();
+    debug_assert!(
+        rects.iter().all(|item| rect_inside(inner_area, item.rect)),
+        "each visible item is inside the dashboard body"
+    );
+    debug_assert!(
+        !pinned
+            || rects
+                .first()
+                .is_some_and(|item| matches!(item.kind, DashboardRectKind::Tabs { .. })),
+        "the pinned tab bar comes first"
+    );
+    rects
+}
+
+/// Lays out a dashboard of panels only: on the Grafana grid when a panel has
+/// a grid position, else in two columns.
+fn flat_dashboard_rects(inner_area: Rect, app: &AppState) -> Vec<DashboardRect> {
+    let panel_rects = if app.flat_panel_indices().into_iter().any(|index| {
+        app.panels
+            .get(index)
+            .is_some_and(|panel| panel.grid.is_some())
+    }) {
+        calculate_grid_layout(inner_area, app)
+    } else {
+        calculate_two_column_layout(inner_area, app)
+    };
+    let rects: Vec<DashboardRect> = panel_rects
+        .into_iter()
+        .map(|(rect, index)| panel_rect(index, rect))
+        .collect();
+    debug_assert!(
+        rects
+            .iter()
+            .all(|item| matches!(item.kind, DashboardRectKind::Panel { .. })),
+        "a flat dashboard shows panels only"
+    );
+    debug_assert!(
+        rects.iter().all(|item| rect_inside(inner_area, item.rect)),
+        "each panel is inside the dashboard body"
+    );
+    rects
 }
 
 /// The dashboard laid out before scrolling.
@@ -342,56 +442,84 @@ struct Projection {
 
 fn project_dashboard(area: Rect, app: &AppState) -> Projection {
     if let Some(group) = pinned_dashboard_group(app) {
-        let bar = Rect::new(area.x, area.y, area.width, area.height.min(1));
-        let content = Rect::new(
-            area.x,
-            area.y.saturating_add(bar.height),
-            area.width,
-            area.height.saturating_sub(bar.height),
-        );
-        let cell_h = std::cmp::max(3, content.height / 24);
-        let mut items = Vec::new();
-        // The shown dashboard's items, laid out as a dashboard of its own.
-        match group.active.and_then(|index| group.tabs.get(index)) {
-            Some(tab) if !tab.children.is_empty() => {
-                project_layout_items(
-                    &tab.children,
-                    0,
-                    content,
-                    content.y,
-                    cell_h,
-                    app,
-                    &mut items,
-                );
-            }
-            _ => items.push(DashboardRect {
-                id: DashboardItemId::Tabs(group.id),
-                rect: Rect::new(content.x, content.y, content.width, 1),
-                disclosure_rect: None,
-                kind: DashboardRectKind::TabEmpty { group_id: group.id },
-            }),
-        }
-        return Projection {
-            pinned: Some(DashboardRect {
-                id: DashboardItemId::Tabs(group.id),
-                rect: bar,
-                disclosure_rect: None,
-                kind: DashboardRectKind::Tabs {
-                    group_id: group.id,
-                    depth: 0,
-                },
-            }),
-            content,
-            items,
-            cell_h,
-        };
+        return project_pinned(group, area, app);
     }
     let cell_h = std::cmp::max(3, area.height / 24);
     let mut items = Vec::new();
     project_layout_items(&app.layout.items, 0, area, area.y, cell_h, app, &mut items);
-    Projection {
+    let projection = Projection {
         pinned: None,
         content: area,
+        items,
+        cell_h,
+    };
+    debug_assert!(
+        projection
+            .items
+            .iter()
+            .all(|item| item.rect.y >= projection.content.y),
+        "each item starts at or below the top of the content"
+    );
+    debug_assert!(
+        projection.items.iter().all(|item| {
+            item.rect.x >= area.x && item.rect.right() <= area.right() || item.rect.is_empty()
+        }),
+        "each item is inside the columns of the area"
+    );
+    projection
+}
+
+/// Lays out the pinned tab bar of several loaded dashboards, and the shown
+/// dashboard below it.
+fn project_pinned(group: &DashboardTabs, area: Rect, app: &AppState) -> Projection {
+    debug_assert!(
+        group.active.is_none_or(|active| active < group.tabs.len()),
+        "the active dashboard is in the tab list"
+    );
+    let bar = Rect::new(area.x, area.y, area.width, area.height.min(1));
+    let content = Rect::new(
+        area.x,
+        area.y.saturating_add(bar.height),
+        area.width,
+        area.height.saturating_sub(bar.height),
+    );
+    debug_assert!(
+        rect_inside(area, bar) && rect_inside(area, content),
+        "the bar and the content are inside the area"
+    );
+    let cell_h = std::cmp::max(3, content.height / 24);
+    let mut items = Vec::new();
+    // The shown dashboard's items, laid out as a dashboard of its own.
+    match group.active.and_then(|index| group.tabs.get(index)) {
+        Some(tab) if !tab.children.is_empty() => {
+            project_layout_items(
+                &tab.children,
+                0,
+                content,
+                content.y,
+                cell_h,
+                app,
+                &mut items,
+            );
+        }
+        _ => items.push(DashboardRect {
+            id: DashboardItemId::Tabs(group.id),
+            rect: Rect::new(content.x, content.y, content.width, 1),
+            disclosure_rect: None,
+            kind: DashboardRectKind::TabEmpty { group_id: group.id },
+        }),
+    }
+    Projection {
+        pinned: Some(DashboardRect {
+            id: DashboardItemId::Tabs(group.id),
+            rect: bar,
+            disclosure_rect: None,
+            kind: DashboardRectKind::Tabs {
+                group_id: group.id,
+                depth: 0,
+            },
+        }),
+        content,
         items,
         cell_h,
     }
@@ -400,10 +528,15 @@ fn project_dashboard(area: Rect, app: &AppState) -> Projection {
 /// The tab group of several loaded dashboards, which is pinned above them.
 fn pinned_dashboard_group(app: &AppState) -> Option<&crate::dashboard::DashboardTabs> {
     let group = app.dashboard_group()?;
-    match app.layout.items.as_slice() {
+    let pinned = match app.layout.items.as_slice() {
         [DashboardLayoutItem::Tabs(tabs)] if tabs.id == group => Some(tabs),
         _ => None,
-    }
+    };
+    debug_assert!(
+        pinned.is_none_or(|tabs| tabs.active.is_none_or(|active| active < tabs.tabs.len())),
+        "the active dashboard is in the tab list"
+    );
+    pinned
 }
 
 pub(crate) fn scroll_selected_into_view(area: Rect, app: &mut AppState) {
@@ -451,6 +584,14 @@ pub(crate) fn scroll_selected_into_view(area: Rect, app: &mut AppState) {
     } else {
         app.vertical_scroll.clamp(lower, upper.max(lower))
     };
+    debug_assert!(
+        app.vertical_scroll <= upper.max(lower),
+        "the scroll does not pass the top of the selected item"
+    );
+    debug_assert!(
+        app.vertical_scroll >= lower.min(upper),
+        "the scroll reaches the bottom of the selected item when it fits"
+    );
 }
 
 /// Lays out `items` and their children from `cursor_y` down, and gives the y
@@ -464,6 +605,7 @@ fn project_layout_items(
     app: &AppState,
     output: &mut Vec<DashboardRect>,
 ) -> u16 {
+    let (start_y, first_new) = (cursor_y, output.len());
     let mut frames = Vec::with_capacity(MAX_LAYOUT_DEPTH);
     frames.push(ProjectFrame::new(items, depth));
     for _ in 0..MAX_LAYOUT_STEPS {
@@ -500,6 +642,14 @@ fn project_layout_items(
             frames.push(ProjectFrame::new(children, child_depth));
         }
     }
+    debug_assert!(cursor_y >= start_y, "the layout cursor moves down only");
+    debug_assert!(
+        output
+            .iter()
+            .skip(first_new)
+            .all(|item| item.rect.y >= start_y),
+        "each new item starts at or below the first row"
+    );
     cursor_y
 }
 
@@ -513,6 +663,10 @@ struct ProjectFrame<'a> {
 impl<'a> ProjectFrame<'a> {
     /// Starts a list of items at `depth`.
     fn new(items: &'a [DashboardLayoutItem], depth: usize) -> Self {
+        debug_assert!(
+            depth <= MAX_LAYOUT_DEPTH,
+            "a nested list is not deeper than MAX_LAYOUT_DEPTH"
+        );
         Self {
             items: items.iter(),
             depth,
@@ -538,7 +692,7 @@ fn project_item_header<'a>(
     at: &ItemCursor,
     output: &mut Vec<DashboardRect>,
 ) -> (u16, NestedItems<'a>) {
-    match item {
+    let projected = match item {
         DashboardLayoutItem::Panel(_) => (at.cursor_y, None),
         DashboardLayoutItem::AutoGrid(grid) => (
             project_auto_grid(at.area, at.cursor_y, at.cell_h, grid, output),
@@ -563,7 +717,16 @@ fn project_item_header<'a>(
             (at.cursor_y.saturating_add(1), nested)
         }
         DashboardLayoutItem::Tabs(group) => project_tabs_header(group, at, output),
-    }
+    };
+    debug_assert!(
+        projected.0 >= at.cursor_y,
+        "the layout cursor moves down only"
+    );
+    debug_assert!(
+        projected.1.is_none_or(|(_, depth)| depth <= at.depth + 1),
+        "a child list is one level deeper at most"
+    );
+    projected
 }
 
 /// Lays out a tab group bar, and the empty tab message when the active tab is empty.
@@ -572,6 +735,14 @@ fn project_tabs_header<'a>(
     at: &ItemCursor,
     output: &mut Vec<DashboardRect>,
 ) -> (u16, NestedItems<'a>) {
+    debug_assert!(
+        group.active.is_none_or(|active| active < group.tabs.len()),
+        "the active tab is in the tab list"
+    );
+    debug_assert!(
+        at.depth <= MAX_LAYOUT_DEPTH,
+        "the tab group is not deeper than MAX_LAYOUT_DEPTH"
+    );
     let mut cursor_y = at.cursor_y;
     let rect = Rect::new(at.area.x, cursor_y, at.area.width, 1);
     output.push(DashboardRect {
@@ -608,6 +779,7 @@ fn project_panel_group(
     panel_indices: &[usize],
     output: &mut Vec<DashboardRect>,
 ) -> u16 {
+    debug_assert!(cell_h >= 1, "a grid row is one terminal row or more");
     let has_grid = panel_indices.iter().any(|&index| {
         app.panels
             .get(index)
@@ -642,7 +814,9 @@ fn project_panel_group(
     }
 
     let extras_origin = origin_y.saturating_add(grid_height);
-    project_panel_columns(area, extras_origin, &extras, output)
+    let next_y = project_panel_columns(area, extras_origin, &extras, output);
+    debug_assert!(next_y >= origin_y, "the layout cursor moves down only");
+    next_y
 }
 
 /// Returns the rect of a grid panel, or `None` when it is too small to draw.
@@ -653,6 +827,14 @@ fn project_grid_rect(
     cell_h: u16,
     grid: GridUnit,
 ) -> Option<Rect> {
+    debug_assert!(
+        grid.x >= 0 && grid.y >= 0 && grid.w > 0 && grid.h > 0,
+        "the caller skips a grid position that is negative or empty"
+    );
+    debug_assert!(
+        cell_w >= 1 && cell_h >= 1,
+        "a grid cell is one column and one row or more"
+    );
     let x = area
         .x
         .saturating_add(num::i32_to_u16(grid.x).saturating_mul(cell_w));
@@ -665,6 +847,10 @@ fn project_grid_rect(
             .min(area.right().saturating_sub(x)),
         num::i32_to_u16(grid.h).saturating_mul(cell_h),
     );
+    debug_assert!(
+        rect.is_empty() || rect.right() <= area.right(),
+        "the panel is inside the columns of the area"
+    );
     (rect.width >= 8 && rect.height >= 4).then_some(rect)
 }
 
@@ -675,6 +861,7 @@ fn project_panel_columns(
     panel_indices: &[usize],
     output: &mut Vec<DashboardRect>,
 ) -> u16 {
+    let first_new = output.len();
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
             .areas(Rect::new(area.x, origin_y, area.width, u16::MAX - origin_y));
@@ -689,8 +876,17 @@ fn project_panel_columns(
         );
         output.push(panel_rect(index, rect));
     }
+    debug_assert!(
+        output
+            .iter()
+            .skip(first_new)
+            .all(|item| item.rect.width <= area.width.div_ceil(2)),
+        "each column is half of the area or less"
+    );
     let rows = num::usize_to_u16(panel_indices.len().div_ceil(2));
-    origin_y.saturating_add(rows.saturating_mul(12))
+    let next_y = origin_y.saturating_add(rows.saturating_mul(12));
+    debug_assert!(next_y >= origin_y, "the layout cursor moves down only");
+    next_y
 }
 
 /// Lays out auto grid panels row-major in equal-width columns of `row_height` grid
@@ -706,6 +902,7 @@ fn project_auto_grid(
         return origin_y;
     }
     let columns = grid.column_count(area.width);
+    debug_assert!(columns >= 1, "the auto grid has one column or more");
     let column_rects = Layout::horizontal(vec![
         Constraint::Ratio(1, u32::from(columns));
         usize::from(columns)
@@ -733,7 +930,9 @@ fn project_auto_grid(
         ));
     }
     let rows = u16::try_from(grid.panels.len().div_ceil(usize::from(columns))).unwrap_or(u16::MAX);
-    origin_y.saturating_add(rows.saturating_mul(row_height))
+    let next_y = origin_y.saturating_add(rows.saturating_mul(row_height));
+    debug_assert!(next_y >= origin_y, "the layout cursor moves down only");
+    next_y
 }
 
 fn panel_rect(index: usize, rect: Rect) -> DashboardRect {
@@ -750,6 +949,7 @@ fn clip_scrolled_rect(
     area: Rect,
     scroll_offset: u16,
 ) -> Option<DashboardRect> {
+    let columns = (item.rect.x, item.rect.width);
     let top = item.rect.y.saturating_sub(scroll_offset);
     let bottom = item.rect.bottom().saturating_sub(scroll_offset);
     if bottom <= area.y || top >= area.bottom() {
@@ -770,6 +970,19 @@ fn clip_scrolled_rect(
                 y: rect.y,
             })
         });
+    debug_assert!(
+        item.rect.y >= area.y && item.rect.bottom() <= area.bottom(),
+        "the clipped item is inside the rows of the area"
+    );
+    debug_assert!(
+        item.disclosure_rect
+            .is_none_or(|rect| rect.y >= item.rect.y && rect.y < item.rect.bottom()),
+        "the disclosure target is on a row of its item"
+    );
+    debug_assert!(
+        (item.rect.x, item.rect.width) == columns,
+        "the scroll changes only the rows of the item"
+    );
     Some(item)
 }
 
@@ -792,10 +1005,15 @@ pub(crate) fn hit_test(app: &AppState, area: Rect, x: u16, y: u16) -> Option<Das
         return None;
     }
 
-    visible_dashboard_rects(area, app).into_iter().find(|item| {
+    let hit = visible_dashboard_rects(area, app).into_iter().find(|item| {
         !matches!(item.kind, DashboardRectKind::TabEmpty { .. })
             && item.rect.contains(ratatui::layout::Position { x, y })
-    })
+    });
+    debug_assert!(
+        hit.is_none_or(|item| rect_inside(inner_area, item.rect)),
+        "the hit item is inside the dashboard body"
+    );
+    hit
 }
 
 /// Layout helpers for tests in other modules.

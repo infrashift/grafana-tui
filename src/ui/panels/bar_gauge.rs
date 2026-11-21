@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-use crate::app::{AppState, PanelState, SeriesView};
+use crate::app::{AppState, PanelState, PanelType, SeriesView};
 use crate::num;
 use ratatui::{
     prelude::*,
@@ -22,6 +22,10 @@ use ratatui::{
 };
 
 pub(super) fn render_bar_gauge(frame: &mut Frame, area: Rect, p: &PanelState, app: &AppState) {
+    debug_assert!(
+        matches!(p.panel_type, PanelType::BarGauge),
+        "the panel is a bar gauge"
+    );
     let theme = &app.theme;
 
     let mut max_label_len = 3;
@@ -32,6 +36,10 @@ pub(super) fn render_bar_gauge(frame: &mut Frame, area: Rect, p: &PanelState, ap
 
     let mut bars = Vec::with_capacity(valid_series.len());
     let (min, max) = bar_range(p, valid_series.iter().filter_map(|s| s.value));
+    debug_assert!(
+        min <= 0.0 || p.min.is_some(),
+        "the bars start at zero or below unless the panel sets a minimum"
+    );
 
     for s in valid_series {
         let Some(v) = s.value else {
@@ -90,6 +98,14 @@ fn bar_series(p: &PanelState, width: u16) -> Vec<&SeriesView> {
     // Truncate based on area width
     let max_bars = usize::from((width / 4).saturating_sub(1).max(1));
     valid_series.truncate(max_bars);
+    debug_assert!(
+        valid_series.len() <= max_bars,
+        "the bars fit the panel width"
+    );
+    debug_assert!(
+        valid_series.iter().all(|s| s.visible && s.value.is_some()),
+        "each bar is a visible series with a value"
+    );
     valid_series
 }
 
@@ -101,16 +117,27 @@ fn bar_range(p: &PanelState, values: impl Iterator<Item = f64>) -> (f64, f64) {
         .fold((0.0_f64, f64::NEG_INFINITY), |(low, high), value| {
             (low.min(value), high.max(value))
         });
+    debug_assert!(low <= 0.0, "the default range starts at zero or below");
+    debug_assert!(
+        high == f64::NEG_INFINITY || high >= low,
+        "the largest value is not below the smallest value"
+    );
     (p.min.unwrap_or(low), p.max.unwrap_or(high))
 }
 
 /// A bar's height in `0..=scale`, so negative values still draw against `min`.
 fn bar_height(value: f64, min: f64, max: f64, scale: f64) -> u64 {
-    if max > min {
+    debug_assert!(scale > 0.0, "the bar scale is more than zero");
+    let height = if max > min {
         num::f64_to_u64((((value - min) / (max - min)).clamp(0.0, 1.0) * scale).round())
     } else {
         num::f64_to_u64(scale)
-    }
+    };
+    debug_assert!(
+        height <= num::f64_to_u64(scale),
+        "the bar is not taller than the scale"
+    );
+    height
 }
 
 #[cfg(test)]

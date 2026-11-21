@@ -30,11 +30,17 @@ pub(crate) fn tab_title(title: &str, index: usize) -> String {
             }
         })
         .collect::<String>();
-    if sanitized.trim().is_empty() {
+    let label = if sanitized.trim().is_empty() {
         format!("Tab {}", index + 1)
     } else {
         sanitized
-    }
+    };
+    debug_assert!(!label.trim().is_empty(), "a tab label has text");
+    debug_assert!(
+        !label.chars().any(char::is_control),
+        "a tab label has no control characters"
+    );
+    label
 }
 
 pub(crate) fn truncate_title(title: &str, width: u16) -> String {
@@ -56,7 +62,12 @@ pub(crate) fn truncate_title(title: &str, width: u16) -> String {
         text.push_str(grapheme.symbol);
         used += size;
     }
+    debug_assert!(used <= budget, "the kept graphemes fit the budget");
     text.push('…');
+    debug_assert!(
+        text_width(&text) <= usize::from(width),
+        "the cut title fits the width"
+    );
     text
 }
 
@@ -65,7 +76,11 @@ fn text_width(text: &str) -> usize {
 }
 
 fn range_width(labels: &[String], active: usize, start: usize, end: usize) -> usize {
-    labels
+    debug_assert!(
+        start <= end && end < labels.len(),
+        "the range is inside the tab list"
+    );
+    let width = labels
         .iter()
         .enumerate()
         .take(end.saturating_add(1))
@@ -74,10 +89,53 @@ fn range_width(labels: &[String], active: usize, start: usize, end: usize) -> us
         .sum::<usize>()
         + end.saturating_sub(start)
         + usize::from(start > 0) * 2
-        + usize::from(end + 1 < labels.len()) * 2
+        + usize::from(end + 1 < labels.len()) * 2;
+    debug_assert!(
+        width >= end - start,
+        "the range has a separator between each two tabs"
+    );
+    width
+}
+
+/// Returns true when the segments go from left to right with no overlap.
+fn segments_in_order(geometry: &TabBarGeometry) -> bool {
+    let segments = &geometry.segments;
+    let mut pairs = segments.iter().zip(segments.iter().skip(1));
+    pairs.all(|(left, right)| left.rect.right() <= right.rect.x)
 }
 
 pub(crate) fn tab_bar_geometry(
+    area: Rect,
+    titles: &[String],
+    active: Option<usize>,
+    depth: usize,
+) -> TabBarGeometry {
+    let geometry = build_tab_bar(area, titles, active, depth);
+    debug_assert!(
+        geometry
+            .segments
+            .iter()
+            .all(|segment| super::layout::rect_inside(area, segment.rect)),
+        "each tab segment is inside the bar"
+    );
+    debug_assert!(
+        segments_in_order(&geometry),
+        "the tab segments go from left to right with no overlap"
+    );
+    debug_assert!(
+        geometry
+            .segments
+            .iter()
+            .filter(|segment| segment.active)
+            .count()
+            <= 1,
+        "the bar shows one active tab or none"
+    );
+    geometry
+}
+
+/// Lays out the tab bar of `titles` in `area`, indented for `depth`.
+fn build_tab_bar(
     area: Rect,
     titles: &[String],
     active: Option<usize>,
@@ -93,6 +151,7 @@ pub(crate) fn tab_bar_geometry(
     if available == 0 {
         return geometry;
     }
+    debug_assert!(x < area.right(), "the indent leaves a column for the tabs");
     let (false, Some(active)) = (titles.is_empty(), active) else {
         let text = truncate_title("No tabs", crate::num::usize_to_u16(available));
         geometry.segments.push(TabSegment {
@@ -110,6 +169,7 @@ pub(crate) fn tab_bar_geometry(
         .map(|(index, title)| tab_title(title, index))
         .collect::<Vec<_>>();
     let active = active.min(labels.len() - 1);
+    debug_assert!(active < labels.len(), "the active tab is in the tab list");
     let mut segments = SegmentWriter { geometry, area, x };
     if area.width < 3 {
         let label = labels.get(active).map_or("", String::as_str);
@@ -117,6 +177,21 @@ pub(crate) fn tab_bar_geometry(
         return segments.geometry;
     }
     let (start, end) = visible_tabs(&labels, active, available);
+    push_visible_tabs(&mut segments, &labels, active, (start, end));
+    segments.geometry
+}
+
+/// Adds the tabs from `start` to `end`, with arrows for the tabs out of view.
+fn push_visible_tabs(
+    segments: &mut SegmentWriter,
+    labels: &[String],
+    active: usize,
+    (start, end): (usize, usize),
+) {
+    debug_assert!(
+        start <= active && active <= end && end < labels.len(),
+        "the visible tabs include the active tab"
+    );
     if start > 0 {
         segments.push("< ".to_string(), false, Some(active - 1));
     }
@@ -134,7 +209,10 @@ pub(crate) fn tab_bar_geometry(
     if end + 1 < labels.len() {
         segments.push(" >".to_string(), false, Some(active + 1));
     }
-    segments.geometry
+    debug_assert!(
+        segments.x <= segments.area.right(),
+        "the tabs stop at the right edge of the bar"
+    );
 }
 
 /// Returns the first and the last tab that fit in `available` columns around the active tab.
@@ -156,6 +234,14 @@ fn visible_tabs(labels: &[String], active: usize, available: usize) -> (usize, u
             break;
         }
     }
+    debug_assert!(
+        start <= active && active <= end && end < labels.len(),
+        "the visible tabs include the active tab"
+    );
+    debug_assert!(
+        (start == active && end == active) || range_width(labels, active, start, end) <= available,
+        "the added tabs fit the available width"
+    );
     (start, end)
 }
 
@@ -169,6 +255,10 @@ struct SegmentWriter {
 impl SegmentWriter {
     /// Adds one segment, cut short to the remaining width of the bar.
     fn push(&mut self, text: String, selected: bool, activate: Option<usize>) {
+        debug_assert!(
+            self.x >= self.area.x && self.x <= self.area.right(),
+            "the writer is inside the bar"
+        );
         let remaining = self.area.right().saturating_sub(self.x);
         if remaining == 0 {
             return;
@@ -185,10 +275,18 @@ impl SegmentWriter {
             activate,
         });
         self.x = self.x.saturating_add(width);
+        debug_assert!(
+            self.x <= self.area.right(),
+            "the segment stops at the right edge of the bar"
+        );
     }
 }
 
 pub(crate) fn tab_at(geometry: &TabBarGeometry, position: Position) -> Option<usize> {
+    debug_assert!(
+        segments_in_order(geometry),
+        "the tab segments go from left to right with no overlap"
+    );
     geometry
         .segments
         .iter()
@@ -204,6 +302,14 @@ pub(crate) fn tab_style(theme: &Theme, active: bool, focused: bool) -> Style {
     if focused {
         style = style.add_modifier(Modifier::UNDERLINED);
     }
+    debug_assert!(
+        style.add_modifier.contains(Modifier::BOLD) == active,
+        "only the active tab is bold"
+    );
+    debug_assert!(
+        style.add_modifier.contains(Modifier::UNDERLINED) == focused,
+        "only a focused bar is underlined"
+    );
     style
 }
 
@@ -213,6 +319,17 @@ pub(crate) fn render_tab_bar(
     theme: &Theme,
     focused: bool,
 ) {
+    debug_assert!(
+        segments_in_order(geometry),
+        "the tab segments go from left to right with no overlap"
+    );
+    debug_assert!(
+        geometry
+            .segments
+            .iter()
+            .all(|segment| segment.rect.height == 1),
+        "each tab segment is one row high"
+    );
     for segment in &geometry.segments {
         frame.render_widget(
             Line::styled(
