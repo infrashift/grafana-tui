@@ -136,7 +136,8 @@ pub(crate) fn tab_bar_geometry(
 fn visible_tabs(labels: &[String], active: usize, available: usize) -> (usize, usize) {
     let mut start = active;
     let mut end = active;
-    loop {
+    // Each pass adds a tab or ends the loop, so the tab count bounds it.
+    for _ in 0..labels.len() {
         let mut grew = false;
         if start > 0 && range_width(labels, active, start - 1, end) <= available {
             start -= 1;

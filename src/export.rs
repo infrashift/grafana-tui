@@ -1727,7 +1727,10 @@ fn layout_legend(items: Vec<(usize, String)>, width: f64, max_rows: usize) -> Le
     let total = entries.len();
     let last_row = max_rows.max(1) - 1;
     entries.retain(|entry| entry.row <= last_row);
-    loop {
+    let mut more = (0.0, String::new());
+    // Each pass drops one entry. "+N more" always fits after the last entry
+    // goes, so one pass more than the entries is enough.
+    for _ in 0..=entries.len() {
         let label = format!("+{} more", total - entries.len());
         let x = match entries.last() {
             Some(entry) if entry.row == last_row => {
@@ -1735,14 +1738,17 @@ fn layout_legend(items: Vec<(usize, String)>, width: f64, max_rows: usize) -> Le
             }
             _ => 0.0,
         };
-        if x == 0.0 || x + text_width(&label, SMALL_FONT_SIZE) <= width {
-            return LegendLayout {
-                entries,
-                more: Some((x, label)),
-                rows: last_row + 1,
-            };
+        let fits = x == 0.0 || x + text_width(&label, SMALL_FONT_SIZE) <= width;
+        more = (x, label);
+        if fits {
+            break;
         }
         entries.pop();
+    }
+    LegendLayout {
+        entries,
+        more: Some(more),
+        rows: last_row + 1,
     }
 }
 
@@ -2078,8 +2084,9 @@ fn wrap_text(text: &str, columns: usize, max_lines: usize) -> Vec<String> {
     if lines.len() > max_lines {
         lines.truncate(max_lines);
         if let Some(last) = lines.last_mut() {
-            while last.chars().count() >= columns {
-                last.pop();
+            // Keep `columns - 1` characters, so the `…` ends the line.
+            if let Some((cut, _)) = last.char_indices().nth(columns.saturating_sub(1)) {
+                last.truncate(cut);
             }
             last.push('…');
         }

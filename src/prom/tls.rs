@@ -178,14 +178,17 @@ impl<'a> PemFile<'a> {
             sections: Vec::new(),
         };
         let mut cursor = Cursor::new(&file.bytes);
-        loop {
+        let mut sections = Vec::new();
+        // Each section uses one byte or more, so the file length bounds the loop.
+        for _ in 0..=file.bytes.len() {
             match pem::from_buf(&mut cursor) {
-                Ok(Some((kind, _))) => file.sections.push(kind),
+                Ok(Some((kind, _))) => sections.push(kind),
                 Ok(None) => break,
                 // The parser's errors can quote the file, which may be a key.
                 Err(_) => return Err(file.error("not a valid PEM file")),
             }
         }
+        file.sections = sections;
         Ok(file)
     }
 
@@ -305,7 +308,8 @@ impl TlsFailure {
     }
 }
 
-/// The most errors that `find_rustls_error` reads in a chain of sources.
+/// The most errors that `find_rustls_error` and `error_chain` read in a chain
+/// of sources. Real chains hold fewer than 8 errors.
 const MAX_ERROR_CHAIN: usize = 16;
 
 /// The rustls error among `error`'s sources, if any. rustls errors can arrive
@@ -333,14 +337,21 @@ fn find_rustls_error<'a>(
     None
 }
 
-/// `error` and its sources, joined with `: `.
+/// `error` and its sources, joined with `: `. A chain longer than
+/// `MAX_ERROR_CHAIN` ends with `: …`.
 pub(super) fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     let mut text = error.to_string();
     let mut source = error.source();
-    while let Some(error) = source {
+    for _ in 1..MAX_ERROR_CHAIN {
+        let Some(error) = source else {
+            return text;
+        };
         text.push_str(": ");
         text.push_str(&error.to_string());
         source = error.source();
+    }
+    if source.is_some() {
+        text.push_str(": …");
     }
     text
 }
@@ -806,6 +817,22 @@ pub(crate) mod tests {
         );
         let plain = std::io::Error::other("no TLS here");
         assert_eq!(find_rustls_error(&plain), None);
+    }
+
+    #[test]
+    fn the_error_text_marks_a_chain_cut_at_its_limit() {
+        let mut error = anyhow!("root");
+        for level in 1..MAX_ERROR_CHAIN {
+            error = error.context(format!("level {level}"));
+        }
+        let text = error_chain(error.as_ref());
+        assert!(text.ends_with(": root"), "{text}");
+        assert!(!text.contains('…'), "{text}");
+
+        let error = error.context("one more");
+        let text = error_chain(error.as_ref());
+        assert!(text.starts_with("one more: level 15"), "{text}");
+        assert!(text.ends_with("level 1: …"), "{text}");
     }
 
     #[test]
