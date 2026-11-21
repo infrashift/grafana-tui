@@ -61,8 +61,8 @@ while_float = "allow"                      # ISSUE-004
 large_stack_arrays = "warn"
 large_stack_frames = "warn"
 # R4: short functions.
-too_many_lines = "allow"                   # ISSUE-002
-excessive_nesting = "allow"                # ISSUE-002
+too_many_lines = "warn"
+excessive_nesting = "warn"
 too_many_arguments = "warn"
 # R5: assertions.
 missing_assert_message = "allow"           # ISSUE-009

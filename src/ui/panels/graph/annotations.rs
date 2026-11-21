@@ -19,7 +19,8 @@ use super::overlay::overlay_cell_if_blank_or_weak_area_fill;
 use crate::annotations::{AnnotationCluster, AnnotationEvent, cluster_events_by};
 use ratatui::prelude::*;
 
-pub(super) fn cluster_badge(count: usize) -> char {
+/// The marker for a cluster of `count` annotations: a dot, a digit, or `+` for 10 or more.
+pub(crate) fn cluster_badge(count: usize) -> char {
     match count {
         0 => ' ',
         1 => '•',

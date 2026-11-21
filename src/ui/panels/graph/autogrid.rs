@@ -38,7 +38,8 @@ pub(super) fn calculate_value_grid_ticks(y_bounds: [f64; 2], chart_height: u16) 
     ticks
 }
 
-fn nice_grid_step(range: f64, target_lines: usize) -> f64 {
+/// A grid step of 1, 2 or 5 times a power of 10 that gives about `target_lines` lines.
+pub(crate) fn nice_grid_step(range: f64, target_lines: usize) -> f64 {
     if range <= 0.0 || !range.is_finite() || target_lines == 0 {
         return 0.0;
     }
