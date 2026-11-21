@@ -13,15 +13,22 @@ impl fmt::Display for AnnotationTargetWarning {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingPanel { title } => {
+                debug_assert!(!title.trim().is_empty(), "a target title has text");
                 write!(
                     formatter,
                     "target \"{title}\" matches no graph/timeseries panel"
                 )
             }
-            Self::AmbiguousPanel { title, matches } => write!(
-                formatter,
-                "target \"{title}\" matches {matches} graph/timeseries panels; applied to all"
-            ),
+            Self::AmbiguousPanel { title, matches } => {
+                debug_assert!(
+                    *matches >= 2,
+                    "an ambiguous title matches two panels or more"
+                );
+                write!(
+                    formatter,
+                    "target \"{title}\" matches {matches} graph/timeseries panels; applied to all"
+                )
+            }
         }
     }
 }
@@ -40,8 +47,9 @@ pub(crate) fn target_warnings(
         .flatten()
         .cloned()
         .collect::<BTreeSet<_>>();
+    let requested_count = requested.len();
 
-    requested
+    let warnings: Vec<AnnotationTargetWarning> = requested
         .into_iter()
         .filter_map(|title| {
             let matches = eligible_panel_titles
@@ -54,7 +62,19 @@ pub(crate) fn target_warnings(
                 matches => Some(AnnotationTargetWarning::AmbiguousPanel { title, matches }),
             }
         })
-        .collect()
+        .collect();
+    debug_assert!(
+        warnings.len() <= requested_count,
+        "each requested title gives one warning or none"
+    );
+    debug_assert!(
+        !eligible_panel_titles.is_empty()
+            || warnings
+                .iter()
+                .all(|warning| matches!(warning, AnnotationTargetWarning::MissingPanel { .. })),
+        "without panels, each requested title is missing"
+    );
+    warnings
 }
 
 #[cfg(test)]

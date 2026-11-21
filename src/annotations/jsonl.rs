@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use super::{
     AnnotationEvent, AnnotationProviderError, AnnotationRefreshContext, AnnotationSnapshot,
-    AnnotationTarget, ProviderPoll,
+    AnnotationTarget, ProviderPoll, model::MAX_EVENTS,
 };
 
 #[derive(Deserialize)]
@@ -42,16 +42,25 @@ impl AnnotationLoadError {
     }
 
     fn at_line(source: &str, line: usize, reason: impl Into<String>) -> Self {
-        Self {
+        debug_assert!(!source.is_empty(), "the error names its source");
+        debug_assert!(line >= 1, "line numbers start at 1");
+        let error = Self {
             source: source.to_string(),
             line: Some(line),
             reason: reason.into(),
-        }
+        };
+        debug_assert!(!error.reason.is_empty(), "the error has a reason");
+        error
     }
 }
 
 impl fmt::Display for AnnotationLoadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        debug_assert!(
+            self.line.is_none_or(|line| line >= 1),
+            "line numbers start at 1"
+        );
+        debug_assert!(!self.reason.is_empty(), "the error has a reason");
         match self.line {
             Some(line) => write!(formatter, "{}:{line}: {}", self.source, self.reason),
             None => write!(formatter, "{}: {}", self.source, self.reason),
@@ -65,6 +74,12 @@ pub(crate) fn parse_jsonl(
     source: &str,
     input: &str,
 ) -> Result<AnnotationSnapshot, AnnotationLoadError> {
+    debug_assert!(!source.is_empty(), "the events have a named source");
+    // The file and the command stdout readers stop at their size limits.
+    debug_assert!(
+        crate::num::usize_to_u64(input.len()) <= MAX_FILE_BYTES,
+        "the input is inside the annotation file limit"
+    );
     let mut events = Vec::new();
 
     for (index, line) in input.lines().enumerate() {
@@ -78,7 +93,13 @@ pub(crate) fn parse_jsonl(
         events.push(event);
     }
 
-    Ok(AnnotationSnapshot::new(events))
+    let parsed = events.len();
+    let snapshot = AnnotationSnapshot::new(events);
+    debug_assert!(
+        snapshot.len() == parsed.min(MAX_EVENTS),
+        "the snapshot keeps each event up to MAX_EVENTS"
+    );
+    Ok(snapshot)
 }
 
 /// Parses one line of JSON into an event, or returns why the line is not valid.
@@ -100,17 +121,23 @@ fn parse_event(line: &str) -> Result<AnnotationEvent, String> {
     }
 
     let target = parse_target(raw.panel_titles)?;
-    Ok(AnnotationEvent {
+    let event = AnnotationEvent {
         time,
         text: raw.text,
         tags: raw.tags,
         target,
-    })
+    };
+    debug_assert!(!event.text.trim().is_empty(), "the event has text");
+    debug_assert!(
+        event.tags.iter().all(|tag| !tag.trim().is_empty()),
+        "each tag of the event has text"
+    );
+    Ok(event)
 }
 
 /// The panels that an event applies to, or why its `panel_titles` is not valid.
 fn parse_target(panel_titles: RawPanelTitles) -> Result<AnnotationTarget, String> {
-    match panel_titles {
+    let target = match panel_titles {
         RawPanelTitles::Missing => Ok(AnnotationTarget::All),
         RawPanelTitles::Null(()) => Err("panel_titles must not be null".to_string()),
         RawPanelTitles::Titles(titles) if titles.is_empty() => {
@@ -122,7 +149,20 @@ fn parse_target(panel_titles: RawPanelTitles) -> Result<AnnotationTarget, String
         RawPanelTitles::Titles(titles) => {
             Ok(AnnotationTarget::PanelTitles(titles.into_iter().collect()))
         }
-    }
+    };
+    debug_assert!(
+        !matches!(&target, Ok(AnnotationTarget::PanelTitles(titles)) if titles.is_empty()),
+        "a title target lists one title or more"
+    );
+    debug_assert!(
+        !matches!(
+            &target,
+            Ok(AnnotationTarget::PanelTitles(titles))
+                if titles.iter().any(|title| title.trim().is_empty())
+        ),
+        "each title of a target has text"
+    );
+    target
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,11 +186,16 @@ pub(crate) struct JsonlFileProvider {
 
 impl JsonlFileProvider {
     pub(crate) fn new(path: PathBuf) -> Self {
-        Self {
+        let provider = Self {
             path,
             last_seen: None,
             max_bytes: MAX_FILE_BYTES,
-        }
+        };
+        debug_assert!(
+            provider.last_seen.is_none(),
+            "a new provider has not seen the file"
+        );
+        provider
     }
 
     /// Reads the file, failing once it exceeds `max_bytes`. The limit applies
@@ -164,15 +209,32 @@ impl JsonlFileProvider {
         file.take(self.max_bytes + 1)
             .read_to_end(&mut bytes)
             .await?;
-        if crate::num::usize_to_u64(bytes.len()) > self.max_bytes {
+        let read = crate::num::usize_to_u64(bytes.len());
+        debug_assert!(
+            read <= self.max_bytes + 1,
+            "the read stops one byte past the limit"
+        );
+        if read > self.max_bytes {
             return Ok(None);
         }
-        String::from_utf8(bytes)
-            .map(Some)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        let text = String::from_utf8(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        debug_assert!(
+            crate::num::usize_to_u64(text.len()) <= self.max_bytes,
+            "the text is inside the file size limit"
+        );
+        Ok(Some(text))
     }
 
     fn too_large(&self) -> AnnotationProviderError {
+        debug_assert!(
+            self.last_seen.is_some(),
+            "the provider records the file before it reports its size"
+        );
+        debug_assert!(
+            self.max_bytes <= MAX_FILE_BYTES,
+            "the file size limit is not more than MAX_FILE_BYTES"
+        );
         AnnotationProviderError::new(
             AnnotationLoadError {
                 source: self.path.display().to_string(),
@@ -187,6 +249,7 @@ impl JsonlFileProvider {
     }
 
     async fn poll_file(&mut self) -> ProviderPoll {
+        debug_assert!(self.max_bytes > 0, "the file size limit is not zero");
         let fingerprint = match tokio::fs::metadata(&self.path).await {
             Ok(metadata) => match metadata.modified() {
                 Ok(modified) => SourceFingerprint::Present {
@@ -205,7 +268,7 @@ impl JsonlFileProvider {
             return ProviderPoll::Unchanged;
         }
 
-        match fingerprint {
+        let poll = match fingerprint {
             SourceFingerprint::Missing => {
                 self.last_seen = Some(SourceFingerprint::Missing);
                 ProviderPoll::Failed(AnnotationProviderError::new(
@@ -221,23 +284,47 @@ impl JsonlFileProvider {
                 self.last_seen = Some(fingerprint);
                 ProviderPoll::Failed(self.too_large())
             }
-            SourceFingerprint::Present { len, modified } => match self.read_limited().await {
-                Ok(None) => {
-                    self.last_seen = Some(SourceFingerprint::Present { len, modified });
-                    ProviderPoll::Failed(self.too_large())
-                }
-                Ok(Some(input)) => {
-                    self.last_seen = Some(SourceFingerprint::Present { len, modified });
-                    match parse_jsonl(&self.path.display().to_string(), &input) {
-                        Ok(snapshot) => ProviderPoll::Loaded(snapshot),
-                        Err(error) => {
-                            ProviderPoll::Failed(AnnotationProviderError::new(error.to_string()))
-                        }
+            present @ SourceFingerprint::Present { .. } => self.load(present).await,
+        };
+        debug_assert!(
+            !matches!(poll, ProviderPoll::Loaded(_)) || self.last_seen.is_some(),
+            "the provider records the fingerprint of each file that it loads"
+        );
+        poll
+    }
+
+    /// Reads and parses the file that has the `fingerprint`, and records the
+    /// fingerprint when the read gives a result.
+    async fn load(&mut self, fingerprint: SourceFingerprint) -> ProviderPoll {
+        debug_assert!(
+            matches!(fingerprint, SourceFingerprint::Present { len, .. } if len <= self.max_bytes),
+            "only a file inside the size limit is read"
+        );
+        debug_assert!(
+            !self.path.as_os_str().is_empty(),
+            "a file with metadata has a path"
+        );
+        let poll = match self.read_limited().await {
+            Ok(None) => {
+                self.last_seen = Some(fingerprint);
+                ProviderPoll::Failed(self.too_large())
+            }
+            Ok(Some(input)) => {
+                self.last_seen = Some(fingerprint);
+                match parse_jsonl(&self.path.display().to_string(), &input) {
+                    Ok(snapshot) => ProviderPoll::Loaded(snapshot),
+                    Err(error) => {
+                        ProviderPoll::Failed(AnnotationProviderError::new(error.to_string()))
                     }
                 }
-                Err(error) => ProviderPoll::Failed(self.io_error(error)),
-            },
-        }
+            }
+            Err(error) => ProviderPoll::Failed(self.io_error(error)),
+        };
+        debug_assert!(
+            !matches!(&poll, ProviderPoll::Unchanged),
+            "a read of a changed file loads events or fails"
+        );
+        poll
     }
 
     fn io_error(&self, error: std::io::Error) -> AnnotationProviderError {

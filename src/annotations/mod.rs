@@ -50,7 +50,8 @@ pub(crate) enum AnnotationState {
 
 impl AnnotationState {
     pub(crate) fn from_provider(provider: Option<AnnotationProvider>) -> Self {
-        match provider {
+        let configured = provider.is_some();
+        let state = match provider {
             Some(provider) => Self::Active {
                 provider: Some(provider),
                 snapshot: AnnotationSnapshot::new(Vec::new()),
@@ -59,7 +60,16 @@ impl AnnotationState {
                 status: AnnotationStatus::default(),
             },
             None => Self::Disabled,
-        }
+        };
+        debug_assert!(
+            matches!(state, Self::Active { .. }) == configured,
+            "only a provider turns the annotations on"
+        );
+        debug_assert!(
+            !matches!(&state, Self::Active { snapshot, .. } if snapshot.len() > 0),
+            "a new annotation state has no events"
+        );
+        state
     }
 
     pub(crate) fn from_source(source: Option<AnnotationSourceConfig>) -> Self {
@@ -70,22 +80,27 @@ impl AnnotationState {
         Self::from_source(path.map(AnnotationSourceConfig::File))
     }
 
-    #[cfg(test)]
-    pub(crate) async fn refresh(&mut self, context: &AnnotationRefreshContext) -> bool {
-        let Some(mut provider) = self.take_provider() else {
-            return false;
-        };
-        let poll = provider.refresh(context).await;
-        self.finish_refresh(provider, poll)
-    }
-
     /// Takes the provider out so a refresh can run in the background. Returns
     /// `None` when annotations are disabled or a refresh already holds it.
     pub(crate) fn take_provider(&mut self) -> Option<AnnotationProvider> {
-        match self {
+        let taken = match self {
             Self::Active { provider, .. } => provider.take(),
             Self::Disabled => None,
-        }
+        };
+        debug_assert!(
+            matches!(self, Self::Disabled | Self::Active { provider: None, .. }),
+            "a refresh holds the provider"
+        );
+        debug_assert!(
+            taken.is_none() || matches!(self, Self::Active { .. }),
+            "only active annotations have a provider"
+        );
+        taken
+    }
+
+    /// Returns true when the loaded event count is inside `MAX_EVENTS`.
+    fn within_event_limit(&self) -> bool {
+        !matches!(self, Self::Active { status, .. } if status.loaded_events > model::MAX_EVENTS)
     }
 
     /// Returns the provider taken by `take_provider` and applies its result.
@@ -95,11 +110,15 @@ impl AnnotationState {
         returned: AnnotationProvider,
         poll: ProviderPoll,
     ) -> bool {
+        debug_assert!(
+            !matches!(&poll, ProviderPoll::Loaded(snapshot) if snapshot.len() > model::MAX_EVENTS),
+            "a loaded snapshot holds MAX_EVENTS events or fewer"
+        );
         if let Self::Active { provider, .. } = self {
             *provider = Some(returned);
         }
 
-        match (self, poll) {
+        let loaded = match (&mut *self, poll) {
             (
                 Self::Active {
                     snapshot, status, ..
@@ -119,28 +138,48 @@ impl AnnotationState {
                 false
             }
             (_, ProviderPoll::Unchanged) | (Self::Disabled, _) => false,
-        }
+        };
+        debug_assert!(
+            self.within_event_limit(),
+            "the status counts MAX_EVENTS events or fewer"
+        );
+        debug_assert!(
+            !loaded
+                || matches!(self, Self::Active { snapshot, status, .. }
+                    if status.loaded_events == snapshot.len()),
+            "the status counts the events of the new snapshot"
+        );
+        debug_assert!(
+            !loaded
+                || matches!(self, Self::Active { status, .. } if status.source_warning.is_none()),
+            "a new snapshot clears the source warning"
+        );
+        loaded
     }
 
     pub(crate) fn reconcile_targets(&mut self, eligible_panel_titles: &[String]) {
+        debug_assert!(
+            self.within_event_limit(),
+            "the status counts MAX_EVENTS events or fewer"
+        );
         if let Self::Active {
             snapshot, status, ..
         } = self
         {
             status.target_warnings = target_warnings(snapshot, eligible_panel_titles);
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn snapshot(&self) -> Option<&AnnotationSnapshot> {
-        match self {
-            Self::Disabled => None,
-            Self::Active { snapshot, .. } => Some(snapshot),
+            debug_assert!(
+                status.target_warnings.iter().all(|warning| match warning {
+                    AnnotationTargetWarning::MissingPanel { title } =>
+                        !eligible_panel_titles.contains(title),
+                    AnnotationTargetWarning::AmbiguousPanel { matches, .. } => *matches >= 2,
+                }),
+                "each warning names a title that does not match exactly one panel"
+            );
         }
     }
 
     pub(crate) fn footer_status(&self) -> Option<String> {
-        match self {
+        let footer = match self {
             Self::Disabled => None,
             Self::Active { filter, status, .. } => {
                 let mut parts = status
@@ -157,19 +196,18 @@ impl AnnotationState {
                 if !filter.is_empty() {
                     parts.push(format!("tags {}", filter.summary()));
                 }
+                debug_assert!(
+                    parts.len() <= 2,
+                    "the footer shows the first warning and the tag filter at most"
+                );
                 (!parts.is_empty()).then(|| parts.join(" | "))
             }
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_configured(&self) -> bool {
-        matches!(self, Self::Active { .. })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_visible(&self) -> bool {
-        matches!(self, Self::Active { visible: true, .. })
+        };
+        debug_assert!(
+            footer.as_ref().is_none_or(|footer| !footer.is_empty()),
+            "a footer status has text"
+        );
+        footer
     }
 
     pub(crate) fn toggle_visibility(&mut self) {
@@ -192,7 +230,7 @@ impl AnnotationState {
     }
 
     pub(crate) fn new_tag_filter_modal(&self) -> Option<TagFilterModalState> {
-        match self {
+        let modal = match self {
             Self::Disabled => None,
             Self::Active {
                 snapshot, filter, ..
@@ -200,7 +238,16 @@ impl AnnotationState {
                 filter::tag_catalogue(snapshot, filter),
                 filter.clone(),
             )),
-        }
+        };
+        debug_assert!(
+            modal.is_some() == matches!(self, Self::Active { .. }),
+            "only active annotations open a tag filter"
+        );
+        debug_assert!(
+            modal.as_ref().is_none_or(|modal| modal.selected() == 0),
+            "a new tag filter selects the first tag"
+        );
+        modal
     }
 
     pub(crate) fn effective_filter(&self, panel: AnnotationPanelContext<'_>) -> Option<&TagFilter> {
@@ -226,36 +273,6 @@ impl AnnotationState {
             Self::Disabled | Self::Active { .. } => Vec::new(),
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn from_events_for_test(events: Vec<AnnotationEvent>) -> Self {
-        let snapshot = AnnotationSnapshot::new(events);
-        let event_count = snapshot.len();
-        Self::Active {
-            provider: None,
-            snapshot,
-            filter: TagFilter::default(),
-            visible: true,
-            status: AnnotationStatus {
-                loaded_events: event_count,
-                ..AnnotationStatus::default()
-            },
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn warning_for_test(message: &str) -> Self {
-        Self::Active {
-            provider: None,
-            snapshot: AnnotationSnapshot::new(Vec::new()),
-            filter: TagFilter::default(),
-            visible: true,
-            status: AnnotationStatus {
-                source_warning: Some(message.to_string()),
-                ..AnnotationStatus::default()
-            },
-        }
-    }
 }
 
 #[cfg(test)]
@@ -264,7 +281,64 @@ pub(crate) use test_support::test_event_at;
 /// Helpers that build annotation events for tests in other modules.
 #[cfg(test)]
 mod test_support {
-    use super::{AnnotationEvent, AnnotationTarget};
+    use super::{
+        AnnotationEvent, AnnotationRefreshContext, AnnotationSnapshot, AnnotationState,
+        AnnotationStatus, AnnotationTarget, TagFilter,
+    };
+
+    /// The test helpers of the annotation state.
+    impl AnnotationState {
+        pub(crate) async fn refresh(&mut self, context: &AnnotationRefreshContext) -> bool {
+            let Some(mut provider) = self.take_provider() else {
+                return false;
+            };
+            let poll = provider.refresh(context).await;
+            self.finish_refresh(provider, poll)
+        }
+
+        pub(crate) fn snapshot(&self) -> Option<&AnnotationSnapshot> {
+            match self {
+                Self::Disabled => None,
+                Self::Active { snapshot, .. } => Some(snapshot),
+            }
+        }
+
+        pub(crate) fn is_configured(&self) -> bool {
+            matches!(self, Self::Active { .. })
+        }
+
+        pub(crate) fn is_visible(&self) -> bool {
+            matches!(self, Self::Active { visible: true, .. })
+        }
+
+        pub(crate) fn from_events_for_test(events: Vec<AnnotationEvent>) -> Self {
+            let snapshot = AnnotationSnapshot::new(events);
+            let event_count = snapshot.len();
+            Self::Active {
+                provider: None,
+                snapshot,
+                filter: TagFilter::default(),
+                visible: true,
+                status: AnnotationStatus {
+                    loaded_events: event_count,
+                    ..AnnotationStatus::default()
+                },
+            }
+        }
+
+        pub(crate) fn warning_for_test(message: &str) -> Self {
+            Self::Active {
+                provider: None,
+                snapshot: AnnotationSnapshot::new(Vec::new()),
+                filter: TagFilter::default(),
+                visible: true,
+                status: AnnotationStatus {
+                    source_warning: Some(message.to_string()),
+                    ..AnnotationStatus::default()
+                },
+            }
+        }
+    }
 
     /// Returns an event for all panels at `timestamp_secs`.
     pub(crate) fn test_event_at(timestamp_secs: f64, text: &str) -> AnnotationEvent {

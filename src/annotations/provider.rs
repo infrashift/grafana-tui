@@ -4,7 +4,9 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::{AnnotationSnapshot, command::CommandProvider, jsonl::JsonlFileProvider};
+use super::{
+    AnnotationSnapshot, command::CommandProvider, jsonl::JsonlFileProvider, model::MAX_EVENTS,
+};
 #[cfg(test)]
 use test_provider::TestProvider;
 
@@ -44,6 +46,15 @@ impl AnnotationRefreshContext {
             .ok()
             .and_then(|span| to.checked_sub_signed(span))
             .unwrap_or(DateTime::<Utc>::MIN_UTC);
+        debug_assert!(from <= to, "the window starts before it ends");
+        debug_assert!(
+            (to - from).to_std().is_ok_and(|span| span <= range),
+            "the window is not longer than the range"
+        );
+        debug_assert!(
+            to.timestamp() == end_ts || to == DateTime::UNIX_EPOCH,
+            "the window ends at end_ts, or at the epoch when end_ts is out of range"
+        );
         Self { from, to }
     }
 }
@@ -92,25 +103,53 @@ impl AnnotationProvider {
     /// The future is `Send` because each variant's future is `Send`.
     /// A refresh task runs it on the tokio runtime. A drop of the future cancels the refresh.
     pub(crate) async fn refresh(&mut self, context: &AnnotationRefreshContext) -> ProviderPoll {
-        match self {
+        debug_assert!(
+            context.from <= context.to,
+            "the refresh window starts before it ends"
+        );
+        let poll = match self {
             Self::File(provider) => provider.refresh(context).await,
             Self::Command(provider) => provider.refresh(context).await,
             #[cfg(test)]
             Self::Test(provider) => provider.refresh(context).await,
-        }
+        };
+        debug_assert!(
+            !matches!(&poll, ProviderPoll::Loaded(snapshot) if snapshot.len() > MAX_EVENTS),
+            "a loaded snapshot holds MAX_EVENTS events or fewer"
+        );
+        poll
     }
 }
 
 /// Builds the provider for the configured annotation source.
 pub(crate) fn build_provider(source: AnnotationSourceConfig) -> AnnotationProvider {
-    match source {
+    let command = match &source {
+        AnnotationSourceConfig::Command(config) => Some(config),
+        AnnotationSourceConfig::File(_) => None,
+    };
+    // The command-line and config checks reject an empty program and a zero timeout.
+    debug_assert!(
+        command.is_none_or(|config| !config.program.trim().is_empty()),
+        "an annotation command has a program"
+    );
+    debug_assert!(
+        command.is_none_or(|config| !config.timeout.is_zero()),
+        "an annotation command has a timeout that is not zero"
+    );
+    let is_command = command.is_some();
+    let provider = match source {
         AnnotationSourceConfig::File(path) => {
             AnnotationProvider::File(JsonlFileProvider::new(path))
         }
         AnnotationSourceConfig::Command(config) => {
             AnnotationProvider::Command(CommandProvider::new(config))
         }
-    }
+    };
+    debug_assert!(
+        matches!(provider, AnnotationProvider::Command(_)) == is_command,
+        "the provider has the kind of its source"
+    );
+    provider
 }
 
 fn default_command_timeout() -> Duration {

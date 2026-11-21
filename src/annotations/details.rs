@@ -1,4 +1,4 @@
-use super::{AnnotationCluster, AnnotationEvent};
+use super::{AnnotationCluster, AnnotationEvent, model::MAX_EVENTS};
 
 const ELLIPSIS: char = '…';
 
@@ -6,6 +6,10 @@ pub(crate) fn format_cluster_detail_lines(
     cluster: &AnnotationCluster<'_>,
     character_budget: usize,
 ) -> [String; 2] {
+    debug_assert!(
+        cluster.events.len() <= MAX_EVENTS,
+        "the cluster holds MAX_EVENTS events or fewer"
+    );
     let Some(first) = cluster.events.first() else {
         return [String::new(), String::new()];
     };
@@ -19,18 +23,35 @@ pub(crate) fn format_cluster_detail_lines(
         )
     };
 
-    [
+    let lines = [
         bounded_text(&heading, character_budget),
         format_event_details(cluster, character_budget),
-    ]
+    ];
+    debug_assert!(
+        lines
+            .iter()
+            .all(|line| line.chars().count() <= character_budget),
+        "each detail line fits the character budget"
+    );
+    debug_assert!(
+        character_budget == 0 || lines.first().is_some_and(|heading| !heading.is_empty()),
+        "the heading has text when the budget is not zero"
+    );
+    lines
 }
 
 pub(crate) fn format_event_time(event: &AnnotationEvent) -> String {
-    if event.time.timestamp_subsec_millis() == 0 {
+    let text = if event.time.timestamp_subsec_millis() == 0 {
         event.time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
     } else {
         event.time.format("%Y-%m-%d %H:%M:%S%.3f UTC").to_string()
-    }
+    };
+    debug_assert!(text.ends_with(" UTC"), "the time names its time zone");
+    debug_assert!(
+        text.len() >= "YYYY-MM-DD HH:MM:SS UTC".len(),
+        "the time has a full date and a full time of day"
+    );
+    text
 }
 
 fn format_event_details(cluster: &AnnotationCluster<'_>, character_budget: usize) -> String {
@@ -60,7 +81,16 @@ fn format_event_details(cluster: &AnnotationCluster<'_>, character_budget: usize
             break;
         }
     }
-    output.finish()
+    let details = output.finish();
+    debug_assert!(
+        details.chars().count() <= character_budget,
+        "the details fit the character budget"
+    );
+    debug_assert!(
+        !cluster.events.is_empty() || details.is_empty(),
+        "an empty cluster has no details"
+    );
+    details
 }
 
 fn bounded_text(value: &str, character_budget: usize) -> String {
@@ -87,6 +117,10 @@ impl BoundedText {
     }
 
     fn push_str(&mut self, value: &str) -> bool {
+        debug_assert!(
+            self.characters <= self.budget,
+            "the text fits the character budget"
+        );
         if self.omitted {
             return false;
         }
@@ -98,10 +132,22 @@ impl BoundedText {
             self.value.push(character);
             self.characters += 1;
         }
+        debug_assert!(
+            self.characters <= self.budget,
+            "the text fits the character budget"
+        );
+        debug_assert!(
+            self.value.chars().count() == self.characters,
+            "the character count agrees with the text"
+        );
         true
     }
 
     fn mark_omitted(&mut self) {
+        debug_assert!(
+            self.characters <= self.budget,
+            "the text fits the character budget"
+        );
         if self.omitted || self.budget == 0 {
             return;
         }
@@ -112,6 +158,10 @@ impl BoundedText {
         self.value.push(ELLIPSIS);
         self.characters += 1;
         self.omitted = true;
+        debug_assert!(
+            self.value.ends_with(ELLIPSIS) && self.characters <= self.budget,
+            "the cut text ends with an ellipsis inside the budget"
+        );
     }
 
     fn finish(self) -> String {
