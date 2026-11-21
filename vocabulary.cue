@@ -19,4 +19,7 @@ vocabulary: {
 	annotation: true // a Grafana annotation: an event on the time axis
 	resolution: true // the query resolution (step) of a Prometheus range query
 	recording:  true // the grafana-tui feature that saves changed frames (Ctrl+E)
+
+	// Licensing.
+	attribution: true // the credit to the original work that Apache-2.0 requires
 }

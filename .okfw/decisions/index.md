@@ -12,4 +12,5 @@
 * [ADR-0006: One bounded layout walker replaces recursion](adr-0006-one-bounded-layout-walker-replaces-recursion--01a1fd7e8997.md) - Explicit stacks with depth, node and step limits replace the 24 recursive walks of the layout tree and other chains.
 * [ADR-0007: Named limits cap each input and growable collection](adr-0007-named-limits-cap-each-input-and-growable-collection--01a1fdaaf533.md) - The table of every resource limit, where the program checks it and what the user sees at the limit.
 * [ADR-0008: Enum dispatch replaces trait objects and function pointers](adr-0008-enum-dispatch-replaces-trait-objects-and-function-pointers--01a1fdc48e48.md) - An enum of annotation providers, plain data and small traits replace Box dyn, dyn Fn, function pointers and the theme macro.
+* [ADR-0009: Remove the upstream history and keep the legal notices](adr-0009-remove-the-upstream-history-and-keep-the-legal-notices--01a1ff3c1071.md) - A new root commit replaces the upstream git history; NOTICE and the file headers keep the attribution that Apache-2.0 requires.
 
