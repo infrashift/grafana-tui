@@ -181,9 +181,14 @@ impl DocumentFormat {
     }
 }
 
+/// Reads a dashboard file of at most `MAX_DASHBOARD_BYTES`.
+fn read_dashboard_file(path: &std::path::Path) -> Result<String> {
+    crate::limits::read_text_capped(path, crate::limits::MAX_DASHBOARD_BYTES)
+        .with_context(|| format!("reading grafana dashboard: {}", path.display()))
+}
+
 pub(crate) fn load_grafana_dashboard(path: &std::path::Path) -> Result<DashboardImport> {
-    let data = std::fs::read_to_string(path)
-        .with_context(|| format!("reading grafana dashboard: {}", path.display()))?;
+    let data = read_dashboard_file(path)?;
     import_document(&data, DocumentFormat::from_path(path))
 }
 
@@ -217,8 +222,7 @@ pub(crate) fn load_grafana_dashboards(paths: &[std::path::PathBuf]) -> Result<Da
     let documents = paths
         .iter()
         .map(|path| {
-            let data = std::fs::read_to_string(path)
-                .with_context(|| format!("reading grafana dashboard: {}", path.display()))?;
+            let data = read_dashboard_file(path)?;
             let value = parse_document(&data, DocumentFormat::from_path(path))
                 .with_context(|| path.display().to_string())?;
             Ok((path.clone(), value))
@@ -1056,6 +1060,21 @@ mod tests {
             set.files[1].single.diagnostics[0].code,
             "unknown_repeat_variable"
         );
+    }
+
+    #[test]
+    fn a_dashboard_file_over_its_limit_names_the_file_and_the_limit() {
+        let limit = crate::limits::MAX_DASHBOARD_BYTES;
+        let path = crate::limits::tests::sparse_file("big-dashboard.json", limit + 1);
+        let expected = format!(
+            "reading grafana dashboard: {}: the file is larger than the limit of {limit} bytes",
+            path.display()
+        );
+        let error = load_grafana_dashboard(&path).unwrap_err();
+        assert_eq!(format!("{error:#}"), expected);
+        let error = load_grafana_dashboards(&[path.clone(), path.clone()]).unwrap_err();
+        assert_eq!(format!("{error:#}"), expected);
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

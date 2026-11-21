@@ -52,6 +52,7 @@ mod config;
 mod dashboard;
 mod export;
 mod grafana;
+mod limits;
 mod prom;
 mod theme;
 mod ui;
@@ -87,7 +88,8 @@ async fn main() -> Result<()> {
     }
 
     let config = load_startup_config(args.config.clone())?;
-    let dashboard_paths = resolve_dashboard_paths(&args, &config);
+    let dashboard_paths = resolve_dashboard_paths(&args, &config)?;
+    check_user_vars(&args, &config)?;
     let theme_name = resolve_theme_name(&args, &config);
     if args.list_themes {
         return run_list_themes(&theme_name, &config);
@@ -139,15 +141,22 @@ fn run_subcommand(command: cli::Commands) -> Result<()> {
 }
 
 /// Returns the dashboard files from the command line, else from the config.
-fn resolve_dashboard_paths(args: &Args, config: &Config) -> Vec<std::path::PathBuf> {
-    if args.grafana_json.is_empty() {
+/// Fails when they are more than `MAX_DASHBOARD_FILES`.
+fn resolve_dashboard_paths(args: &Args, config: &Config) -> Result<Vec<std::path::PathBuf>> {
+    let paths = if args.grafana_json.is_empty() {
         &config.grafana_json
     } else {
         &args.grafana_json
-    }
-    .iter()
-    .map(|path| config::expand_path(path))
-    .collect()
+    };
+    limits::check_count(paths.len(), limits::MAX_DASHBOARD_FILES, "dashboard files")?;
+    Ok(paths.iter().map(|path| config::expand_path(path)).collect())
+}
+
+/// Fails when `--var` or the config gives more variables than `MAX_USER_VARS`.
+fn check_user_vars(args: &Args, config: &Config) -> Result<()> {
+    limits::check_count(args.var.len(), limits::MAX_USER_VARS, "--var values")?;
+    let config_vars = config.vars.as_ref().map_or(0, HashMap::len);
+    limits::check_count(config_vars, limits::MAX_USER_VARS, "config vars")
 }
 
 /// Returns the theme name from the command line, the config or the default.
@@ -1360,6 +1369,52 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(error.contains("limit of 4096 layout items"), "{error}");
+    }
+
+    #[test]
+    fn dashboard_files_and_user_vars_over_their_limits_are_rejected() {
+        use clap::Parser;
+        let files = limits::MAX_DASHBOARD_FILES;
+        let vars = limits::MAX_USER_VARS;
+        let argv = |files: usize, vars: usize| {
+            let mut argv = vec!["grafana-tui".to_string()];
+            for index in 0..files {
+                argv.push(format!("--grafana-json=d{index}.json"));
+            }
+            for index in 0..vars {
+                argv.push(format!("--var=v{index}=x"));
+            }
+            Args::parse_from(argv)
+        };
+        let mut config = Config::default();
+
+        assert_eq!(
+            resolve_dashboard_paths(&argv(files, 0), &config)
+                .unwrap()
+                .len(),
+            files
+        );
+        let error = resolve_dashboard_paths(&argv(files + 1, 0), &config).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{} dashboard files are more than the limit of {files}",
+                files + 1
+            )
+        );
+        config.grafana_json = vec![std::path::PathBuf::from("d.json"); files + 1];
+        assert!(resolve_dashboard_paths(&argv(0, 0), &config).is_err());
+
+        assert!(check_user_vars(&argv(0, vars), &Config::default()).is_ok());
+        let error = check_user_vars(&argv(0, vars + 1), &Config::default()).unwrap_err();
+        assert!(error.to_string().starts_with("257 --var values"), "{error}");
+        config.vars = Some(
+            (0..=vars)
+                .map(|index| (format!("v{index}"), "x".to_string()))
+                .collect(),
+        );
+        let error = check_user_vars(&argv(0, 0), &config).unwrap_err();
+        assert!(error.to_string().starts_with("257 config vars"), "{error}");
     }
 
     #[test]
