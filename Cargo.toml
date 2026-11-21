@@ -44,3 +44,52 @@ nix = { version = "0.29", default-features = false, features = ["signal"] }
 [dev-dependencies]
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+
+# The Power of 10 lints (ADR-0002, ADR-0003). `make lint` runs clippy with
+# -D warnings, so each lint at "warn" is a gate. A lint at "allow" waits for
+# the refactor phase that clears it: the issue in the comment sets it to
+# "warn" when the phase closes. The rules apply to production code only:
+# clippy.toml and a cfg_attr in src/main.rs exempt the test code.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# R2: loop bounds.
+infinite_loop = "warn"
+while_float = "allow"                      # ISSUE-004
+# R3: memory with a ceiling.
+large_stack_arrays = "warn"
+large_stack_frames = "warn"
+# R4: short functions.
+too_many_lines = "allow"                   # ISSUE-002
+excessive_nesting = "allow"                # ISSUE-002
+too_many_arguments = "warn"
+# R5: assertions.
+missing_assert_message = "allow"           # ISSUE-009
+debug_assert_with_mut_call = "warn"
+# R7: check each result.
+unwrap_used = "allow"                      # ISSUE-005
+expect_used = "allow"                      # ISSUE-005
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+unreachable = "allow"                      # ISSUE-005
+exit = "warn"
+get_unwrap = "warn"
+unwrap_in_result = "allow"                 # ISSUE-005
+let_underscore_must_use = "allow"          # ISSUE-005
+let_underscore_untyped = "allow"           # ISSUE-005
+let_underscore_future = "warn"
+unused_result_ok = "warn"
+map_err_ignore = "allow"                   # ISSUE-005
+# R10: casts, indexing and lint suppressions.
+indexing_slicing = "allow"                 # ISSUE-007
+string_slice = "allow"                     # ISSUE-007
+as_conversions = "allow"                   # ISSUE-007
+cast_possible_truncation = "allow"         # ISSUE-007
+cast_sign_loss = "allow"                   # ISSUE-007
+cast_precision_loss = "allow"              # ISSUE-007
+cast_possible_wrap = "allow"               # ISSUE-007
+cast_lossless = "allow"                    # ISSUE-007
+dbg_macro = "warn"
+allow_attributes_without_reason = "allow"  # ISSUE-005

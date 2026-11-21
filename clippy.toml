@@ -1,0 +1,10 @@
+# Clippy settings for the Power of 10 lints in Cargo.toml (ADR-0002, ADR-0003).
+too-many-lines-threshold = 60
+excessive-nesting-threshold = 5
+too-many-arguments-threshold = 7
+# The rules apply to production code. Test code keeps unwrap, expect, panic
+# and indexing.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
