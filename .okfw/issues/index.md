@@ -15,4 +15,5 @@
 * [ISSUE-009: R5: assertion density](issue-009-r5-assertion-density--01a1fd4eb779.md) - Add checks on external data and invariant assertions until the average is 2 or more for each function.
 * [ISSUE-010: ASD-STE100 comments and documentation](issue-010-asd-ste100-comments-and-documentation--01a1fd4eb77f.md) - Rewrite the comments, the docs and the wiki until lexiscope reports no findings.
 * [ISSUE-011: The SVG export writes NaN coordinates for NaN or huge values](issue-011-the-svg-export-writes-nan-coordinates-for-nan-or-huge-values--01a1feaaf30f.md) - A NaN bar gauge value or data near f64::MAX gives NaN coordinates in the SVG export.
+* [ISSUE-012: Scan the licensed Rust files when lexiscope skips license headers](issue-012-scan-the-licensed-rust-files-when-lexiscope-skips-license-headers--01a1fed33e26.md) - docs-style excludes the 35 Rust files with the Apache header until lexiscope can skip a license comment block.
 

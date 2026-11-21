@@ -5,18 +5,18 @@ type: "Issue"
 kind: "issue"
 tags:
   - "issue"
-  - "open"
   - "phase-9"
   - "ste-100"
   - "docs"
+  - "in-progress"
 created: "2026-11-21T02:52:36-06:00"
-timestamp: "2026-11-21T02:52:36-06:00"
+timestamp: "2026-11-21T09:46:37-06:00"
 description: "Rewrite the comments, the docs and the wiki until lexiscope reports no findings."
 ---
 
 # ISSUE-010: ASD-STE100 comments and documentation
 
-**Status/Phase:** Open · Phase 9
+**Status/Phase:** In progress · Phase 9
 
 ## Description
 lexiscope found 143 errors and 941 warnings. See [ADR-0004](/decisions/adr-0004-lexiscope-checks-the-asd-ste100-writing-rules--01a1fd4e4882.md).
