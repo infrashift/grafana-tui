@@ -574,7 +574,8 @@ impl ShutdownSignals {
         }
         #[cfg(not(unix))]
         {
-            let _ = tokio::signal::ctrl_c().await;
+            // An error ends the wait, as a signal does, so the caller shuts down safely.
+            let _received: std::io::Result<()> = tokio::signal::ctrl_c().await;
         }
     }
 }
@@ -606,13 +607,31 @@ impl Drop for TerminalGuard {
 /// Restores the terminal, continuing past individual failures so one failing
 /// step cannot leave the others undone.
 fn restore_terminal() {
-    let _ = disable_raw_mode();
-    let _ = execute!(
+    let raw_mode = disable_raw_mode();
+    let screen = execute!(
         std::io::stdout(),
         LeaveAlternateScreen,
         crossterm::event::DisableMouseCapture,
         crossterm::cursor::Show
     );
+    if let Some(report) = restore_report([raw_mode, screen]) {
+        eprintln!("{report}");
+    }
+}
+
+/// Returns a warning that names each failed step of the terminal restore.
+fn restore_report(steps: [std::io::Result<()>; 2]) -> Option<String> {
+    let failures: Vec<String> = steps
+        .into_iter()
+        .filter_map(Result::err)
+        .map(|error| error.to_string())
+        .collect();
+    (!failures.is_empty()).then(|| {
+        format!(
+            "warning: could not restore the terminal: {}",
+            failures.join("; ")
+        )
+    })
 }
 
 /// Restores the terminal before the default panic message is printed, so the
@@ -1121,6 +1140,19 @@ mod tests {
         state.apply_template(template);
 
         assert_eq!(state.visible_panel_indices(), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn terminal_restore_failures_are_reported() {
+        assert_eq!(restore_report([Ok(()), Ok(())]), None);
+        let report = restore_report([
+            Err(std::io::Error::other("raw mode")),
+            Err(std::io::Error::other("screen")),
+        ]);
+        assert_eq!(
+            report.as_deref(),
+            Some("warning: could not restore the terminal: raw mode; screen")
+        );
     }
 
     #[test]

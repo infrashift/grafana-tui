@@ -257,13 +257,22 @@ impl AnnotationState {
 }
 
 #[cfg(test)]
-pub(crate) fn test_event_at(timestamp_secs: f64, text: &str) -> AnnotationEvent {
-    let millis = (timestamp_secs * 1_000.0).round() as i64;
-    AnnotationEvent {
-        time: chrono::DateTime::<chrono::Utc>::from_timestamp_millis(millis).unwrap(),
-        text: text.to_string(),
-        tags: Vec::new(),
-        target: AnnotationTarget::All,
+pub(crate) use test_support::test_event_at;
+
+/// Helpers that build annotation events for tests in other modules.
+#[cfg(test)]
+mod test_support {
+    use super::{AnnotationEvent, AnnotationTarget};
+
+    /// Returns an event for all panels at `timestamp_secs`.
+    pub(crate) fn test_event_at(timestamp_secs: f64, text: &str) -> AnnotationEvent {
+        let millis = (timestamp_secs * 1_000.0).round() as i64;
+        AnnotationEvent {
+            time: chrono::DateTime::<chrono::Utc>::from_timestamp_millis(millis).unwrap(),
+            text: text.to_string(),
+            tags: Vec::new(),
+            target: AnnotationTarget::All,
+        }
     }
 }
 

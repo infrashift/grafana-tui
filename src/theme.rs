@@ -62,7 +62,7 @@ pub(crate) struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        builtin(DEFAULT_THEME).expect("the default theme is built in")
+        Self::from_base(DEFAULT_THEME, &builtin::TOKYO_NIGHT)
     }
 }
 
@@ -74,12 +74,8 @@ pub(crate) fn catalog(custom: &[Theme]) -> Vec<Theme> {
             .iter()
             .find(|theme| theme.name.eq_ignore_ascii_case(name))
     };
-    let mut themes: Vec<Theme> = builtin_names()
-        .map(|name| {
-            find_custom(name)
-                .cloned()
-                .unwrap_or_else(|| builtin(name).expect("listed builtins resolve"))
-        })
+    let mut themes: Vec<Theme> = builtin::builtin_themes()
+        .map(|theme| find_custom(&theme.name).cloned().unwrap_or(theme))
         .collect();
     for theme in custom {
         if !builtin_names().any(|name| name.eq_ignore_ascii_case(&theme.name)) {
@@ -318,6 +314,7 @@ mod tests {
             );
         }
         assert_eq!(Theme::default().name, DEFAULT_THEME);
+        assert_eq!(Some(Theme::default()), builtin(DEFAULT_THEME));
     }
 
     #[test]

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use chrono::SecondsFormat;
 use serde::Serialize;
 use std::io;
@@ -83,7 +81,8 @@ impl ProcessGroup {
         }
         #[cfg(not(unix))]
         {
-            let _ = child;
+            // Only Unix uses the child to find the process group.
+            let _unused: &Child = child;
             Self {}
         }
     }
@@ -91,8 +90,10 @@ impl ProcessGroup {
     fn kill(&self) {
         #[cfg(unix)]
         if let Some(leader) = self.leader {
-            // Fails harmlessly with ESRCH once the group is empty.
-            let _ = nix::sys::signal::killpg(leader, nix::sys::signal::Signal::SIGKILL);
+            // The signal fails with ESRCH when the group is already empty. `kill_and_reap`
+            // reports the failures of the direct child, so this result does not matter.
+            let _signalled: nix::Result<()> =
+                nix::sys::signal::killpg(leader, nix::sys::signal::Signal::SIGKILL);
         }
     }
 }
@@ -122,7 +123,8 @@ impl CommandProvider {
         let request = encode_request(context).map_err(|error| self.error(error))?;
         let mut child = self.spawn_command()?;
         let group = ProcessGroup::led_by(&child);
-        let (mut tasks, stdout_receiver) = start_pipe_tasks(&mut child, request);
+        let (mut tasks, stdout_receiver) =
+            start_pipe_tasks(&mut child, request).map_err(|reason| self.error(reason))?;
 
         let protocol = collect_process(&mut child, stdout_receiver, &mut tasks);
         let reason = match tokio::time::timeout(self.config.timeout, protocol).await {
@@ -195,10 +197,10 @@ impl CommandProvider {
         collected
             .stderr
             .map_err(|error| self.error(format!("could not read stderr: {error}")))?;
-        let CapturedStdout::Complete(stdout) = stdout else {
-            unreachable!("stdout limit is handled before successful completion")
-        };
-        parse_stdout(&self.config.program, &stdout)
+        match stdout {
+            CapturedStdout::Complete(stdout) => parse_stdout(&self.config.program, &stdout),
+            CapturedStdout::LimitExceeded => Err(self.error("exceeded 10 MiB stdout limit")),
+        }
     }
 
     fn error(&self, reason: impl std::fmt::Display) -> AnnotationProviderError {
@@ -206,33 +208,30 @@ impl CommandProvider {
     }
 }
 
+/// The pipe tasks and the receiver for the stdout that the reader captures.
+type PipeTasks = (ProcessTasks, oneshot::Receiver<io::Result<CapturedStdout>>);
+
 /// Starts the tasks that write the request to stdin and read stdout and stderr.
-fn start_pipe_tasks(
-    child: &mut Child,
-    request: Vec<u8>,
-) -> (ProcessTasks, oneshot::Receiver<io::Result<CapturedStdout>>) {
-    let stdin = child
-        .stdin
-        .take()
-        .expect("command configured with piped stdin");
-    let stdout = child
-        .stdout
-        .take()
-        .expect("command configured with piped stdout");
-    let stderr = child
-        .stderr
-        .take()
-        .expect("command configured with piped stderr");
+/// Returns an error when the child has no piped stream.
+fn start_pipe_tasks(child: &mut Child, request: Vec<u8>) -> Result<PipeTasks, String> {
+    let (Some(stdin), Some(stdout), Some(stderr)) =
+        (child.stdin.take(), child.stdout.take(), child.stderr.take())
+    else {
+        return Err("could not open the standard streams".to_string());
+    };
 
     let (stdout_sender, stdout_receiver) = oneshot::channel();
     let tasks = ProcessTasks {
         stdin: tokio::spawn(write_request(stdin, request)),
         stdout: tokio::spawn(async move {
-            let _ = stdout_sender.send(read_stdout_limited(stdout).await);
+            // The send fails only when the refresh has stopped and dropped the
+            // receiver. Then no task reads the stdout, so the result does not matter.
+            let _delivered: Result<(), io::Result<CapturedStdout>> =
+                stdout_sender.send(read_stdout_limited(stdout).await);
         }),
         stderr: tokio::spawn(read_stderr_capped(stderr)),
     };
-    (tasks, stdout_receiver)
+    Ok((tasks, stdout_receiver))
 }
 
 /// Why a process that exited without success failed, with its stderr.
@@ -338,7 +337,7 @@ async fn collect_process(
 
     let (status, stdout) = tokio::select! {
         stdout = &mut stdout_receiver => {
-            let stdout = stdout.map_err(|_| "stdout reader stopped unexpectedly".to_string())?;
+            let stdout = stdout.map_err(|error| format!("stdout reader stopped unexpectedly: {error}"))?;
             if matches!(stdout, Ok(CapturedStdout::LimitExceeded)) {
                 return Ok(ProtocolOutcome::StdoutLimitExceeded);
             }
@@ -352,7 +351,7 @@ async fn collect_process(
                 .map_err(|error| format!("could not wait for completion: {error}"))?;
             let stdout = stdout_receiver
                 .await
-                .map_err(|_| "stdout reader stopped unexpectedly".to_string())?;
+                .map_err(|error| format!("stdout reader stopped unexpectedly: {error}"))?;
             if matches!(stdout, Ok(CapturedStdout::LimitExceeded)) {
                 return Ok(ProtocolOutcome::StdoutLimitExceeded);
             }
@@ -416,10 +415,14 @@ fn append_cleanup(reason: String, cleanup: Result<(), String>) -> String {
 /// Gives the pipe tasks a moment to finish; dropping `tasks` then aborts any
 /// still running.
 async fn join_or_abort_tasks(mut tasks: ProcessTasks) {
-    let _ = tokio::time::timeout(Duration::from_millis(100), async {
-        let _ = (&mut tasks.stdin).await;
-        let _ = (&mut tasks.stdout).await;
-        let _ = (&mut tasks.stderr).await;
+    // The refresh already fails on the stdout limit, so the task results add
+    // nothing to the report. After a timeout, the drop of `tasks` aborts them.
+    let _joined = tokio::time::timeout(Duration::from_millis(100), async {
+        (
+            (&mut tasks.stdin).await,
+            (&mut tasks.stdout).await,
+            (&mut tasks.stderr).await,
+        )
     })
     .await;
 }
@@ -534,6 +537,37 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stdout_limit_after_a_successful_exit_is_an_error() {
+        use std::os::unix::process::ExitStatusExt;
+        let provider = fixture_provider([], Duration::from_secs(1));
+        let collected = super::CollectedProcess {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: Ok(super::CapturedStdout::LimitExceeded),
+            stderr: Ok(Vec::new()),
+            stdin: Ok(()),
+        };
+        let error = provider.parse_collected(collected).unwrap_err();
+        assert!(error.to_string().contains("exceeded 10 MiB stdout limit"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_child_without_piped_streams_is_an_error() {
+        let mut child = tokio::process::Command::new("true")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let error = super::start_pipe_tasks(&mut child, Vec::new())
+            .err()
+            .unwrap();
+        assert_eq!(error, "could not open the standard streams");
+        child.wait().await.unwrap();
     }
 
     #[test]

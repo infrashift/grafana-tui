@@ -81,13 +81,9 @@ fn build(name: &str, spec: &ThemeSpec) -> Result<Theme> {
                 bands.len()
             );
         };
-        theme.heatmap = [low, mid, high]
-            .map(|band| parse_theme_color(band))
-            .into_iter()
-            .collect::<Result<Vec<_>>>()
-            .context("`heatmap`")?
-            .try_into()
-            .expect("three bands");
+        let [low, mid, high] =
+            [low, mid, high].map(|band| parse_theme_color(band).context("`heatmap`"));
+        theme.heatmap = [low?, mid?, high?];
     }
     if let Some(palette) = &spec.palette {
         if palette.is_empty() {
@@ -108,7 +104,7 @@ pub(crate) fn parse_theme_color(value: &str) -> Result<Color> {
         && hex.len() == 6
         && hex.chars().all(|digit| digit.is_ascii_hexdigit())
     {
-        let rgb = u32::from_str_radix(hex, 16).expect("six hex digits");
+        let rgb = u32::from_str_radix(hex, 16).with_context(|| format!("`{value}`"))?;
         return Ok(super::rgb(rgb));
     }
     Ok(match value.to_ascii_lowercase().as_str() {
