@@ -1,26 +1,26 @@
 # grafana-tui Roadmap
 
-grafana-tui is a terminal-based Grafana-like UI for Prometheus. The roadmap is
-oriented around three priorities:
+grafana-tui is a Grafana-like UI for Prometheus in a terminal. The roadmap has
+three priorities:
 
-1. **Production readiness** - the data path must be correct, responsive, and
-   able to reach both unsecured and secured Prometheus-compatible backends.
-2. **Grafana parity** - imported dashboards should preserve as much meaning as a
-   terminal UI can reasonably express.
-3. **User-visible product value** - parity work should make real dashboards
-   easier to read, debug, and share.
+1. **Ready for production use:** the data path must be correct and fast. It
+   must reach unsecured and secured Prometheus-compatible backends.
+2. **Grafana parity:** an imported dashboard must keep as much of its intent
+   as a terminal UI can show.
+3. **Value that users can see:** parity work must make real dashboards easier
+   to read, debug and share.
 
-> **Current version**: 0.1.12 · **Status**: Active development, pre-1.0
+> **Current version**: 0.1.12 · **Status**: in active work, pre-1.0
 
 **Legend**:
 - 🟢 Low complexity · 🟡 Medium complexity · 🔴 High complexity
-- ✅ Shipped · 🔶 Partial · 🔜 Up next · 📋 Planned · 💡 Exploring
+- ✅ Shipped · 🔶 Partial · 🔜 Up next · 📋 Planned · 💡 Under study
 
 ---
 
 ## What's Already Built (v0.1.x)
 
-These features are shipped and available today:
+These features are available now:
 
 | Area | Feature | Details |
 |---|---|---|
@@ -58,9 +58,9 @@ These features are shipped and available today:
 | Distribution | **Cross-platform binaries** | Linux, macOS, and Windows release assets |
 | Distribution | **Install script** | Checksum-verified `install.sh` into `~/.local/bin` or any directory on `PATH`; no third-party package managers |
 
-For a field-by-field breakdown of Grafana JSON compatibility, see the
-[compatibility matrix](docs/src/content/docs/grafana-compatibility.md). Keep that document
-refreshed alongside parity work so it stays aligned with the current release.
+The [compatibility matrix](docs/src/content/docs/grafana-compatibility.md)
+shows the Grafana JSON compatibility for each field. Update that document with
+each parity change, so that it agrees with the current release.
 
 ### External Annotation Iterations
 
@@ -70,8 +70,8 @@ refreshed alongside parity work so it stays aligned with the current release.
 | 2 | Navigable annotation popup, panel targeting, and tag filtering | ✅ Shipped |
 | 3 | Bounded command provider protocol and Prometheus-coordinated refresh | ✅ Shipped |
 
-These iterations are separate from Grafana `annotations` and `annotations.list`,
-which remain unsupported.
+These iterations are separate from Grafana `annotations` and `annotations.list`.
+grafana-tui does not support them yet.
 
 ### Provider Ecosystem and Integrations (Post-Core)
 
@@ -92,32 +92,33 @@ which remain unsupported.
 
 ## Roadmap Principles
 
-Roadmap items are prioritized by:
+We put the roadmap items in order with these questions:
 
-1. **Grafana parity impact** - Does this make imported Grafana dashboards behave
-   more like users expect?
-2. **User-visible value** - Does this make dashboards more readable, trustworthy,
-   or useful in a terminal?
-3. **Trust in import results** - Does this reduce silent degradation when a
-   dashboard contains unsupported fields?
-4. **Implementation complexity** - Can the feature be shipped safely in a small,
-   reviewable step?
+1. **Grafana parity:** Do imported Grafana dashboards then behave more as
+   users expect?
+2. **Value that users can see:** Do dashboards then become easier to read,
+   trust or use in a terminal?
+3. **Trust in the import results:** Does the item show more clearly what
+   grafana-tui drops from a dashboard with unsupported fields?
+4. **Complexity:** Can we ship the feature safely in a small step that a
+   reviewer can read?
 
-The intent is to make parity work feel practical rather than academic. For
-example, unit support is not just `fieldConfig.defaults.unit`; it is the
-difference between readable latency/cache panels and raw float noise.
+Parity work must have a practical result. For example, unit support is more
+than `fieldConfig.defaults.unit`. It makes the difference between latency or
+cache panels that a user can read and raw float noise.
 
 ---
 
 ## Production Readiness
 
-The compatibility ladder below assumes the data path is trustworthy. A
-code audit on 2026-10-01 found gaps that block production use regardless of
-how faithfully a dashboard imports, so this track comes first.
+The compatibility ladder below needs a data path that users can trust. A
+code audit on 2026-10-01 found gaps that block production use. These gaps
+block it for each dashboard, also for a dashboard that imports with no loss.
+So this track comes first.
 
-Plain HTTP with no authentication stays the zero-config default. Every auth
-and TLS setting below is opt-in, so unsecured local and lab Prometheus
-endpoints keep working unchanged.
+Plain HTTP with no auth stays the default, with no configuration. Each auth
+and TLS setting below is opt-in. Unsecured local and lab Prometheus endpoints
+continue to work with no change.
 
 ### Correctness and Robustness
 
@@ -156,7 +157,7 @@ endpoints keep working unchanged.
 
 ## Compatibility Ladder
 
-This is the main backlog, ordered by Grafana parity domain.
+This is the main backlog, in groups for each Grafana parity domain.
 
 ### 1. Import Diagnostics & Trust
 
@@ -247,10 +248,11 @@ This is the main backlog, ordered by Grafana parity domain.
 ### 9. Grafana Dashboard Schema v2
 
 grafana-tui accepts JSON and YAML resources with the exact
-`dashboard.grafana.app/v2` API version. V2 semantics with a terminal equivalent
-are implemented; browser-only settings, such as viewport-filling rows, are
-accepted and ignored. Semantics that are not implemented yet fail with a clear
-import error rather than silently changing the dashboard.
+`dashboard.grafana.app/v2` API version. grafana-tui supports each V2 feature
+that has an equivalent in a terminal. It accepts and ignores the settings for
+browsers only, for example rows that fill the viewport. A V2 feature that
+grafana-tui does not support yet gives a clear import error. grafana-tui does
+not change the dashboard silently.
 
 | Feature | Grafana field / behavior | User value | Complexity | Status |
 |---|---|---|---|---|
@@ -268,12 +270,12 @@ import error rather than silently changing the dashboard.
 
 ## Milestone Slices
 
-The compatibility ladder defines the backlog. Milestones turn it into shippable
-increments.
+The compatibility ladder defines the backlog. Each milestone takes a part of
+the backlog that we can ship.
 
 ### v0.2 - Grafana Import Fidelity
 
-Goal: imported dashboards should be more readable and less silently degraded.
+Goal: imported dashboards are easier to read and lose less data silently.
 
 | Item | Why it belongs here | Complexity | Status |
 |---|---|---|---|
@@ -286,8 +288,8 @@ Goal: imported dashboards should be more readable and less silently degraded.
 
 ### v0.3 - Panel Semantics
 
-Goal: stat, gauge, table, and legend behavior should match common Grafana
-expectations.
+Goal: stat, gauge, table and legend behavior agrees with what Grafana users
+expect.
 
 | Item | Why it belongs here | Complexity | Status |
 |---|---|---|---|
@@ -299,8 +301,8 @@ expectations.
 
 ### v0.4 - Graph & Timeseries Fidelity
 
-Goal: graph and timeseries panels should preserve more visual intent within TUI
-constraints.
+Goal: graph and timeseries panels keep more of their visual intent, in the
+limits of a TUI.
 
 | Item | Why it belongs here | Complexity | Status |
 |---|---|---|---|
@@ -312,8 +314,8 @@ constraints.
 
 ### v0.5 - Exploration Workflow
 
-Goal: after import fidelity improves, make grafana-tui a stronger daily terminal
-tool for investigating Prometheus data.
+Goal: after the import fidelity improves, make grafana-tui a better daily
+terminal tool to examine Prometheus data.
 
 | Item | User value | Complexity | Status |
 |---|---|---|---|
@@ -327,7 +329,7 @@ tool for investigating Prometheus data.
 
 ### Later - Live Sources, Sharing, and Operations
 
-These are valuable, but they should not outrank core Grafana import fidelity.
+These items have value, but the core Grafana import fidelity comes first.
 
 | Item | User value | Complexity | Status |
 |---|---|---|---|
@@ -351,37 +353,37 @@ These are valuable, but they should not outrank core Grafana import fidelity.
 
 ## Best Next Steps
 
-Recommended order for the next focused development cycle:
+This is the recommended order for the next work cycle:
 
-1. **Fix the data path**
-   - Unit, display, key binding, config, and Classic import diagnostic fixes.
+1. **Fix the data path.**
+   - Fix the unit, display, key binding and config bugs, and the Classic import diagnostics.
 
-2. **Reach secured backends**
-   - Opt-in auth, custom headers, TLS settings, and timeouts, with the
-     unsecured default unchanged.
-   - End-to-end tests against a mock backend for every mode.
+2. **Reach secured backends.**
+   - Add opt-in auth, custom headers, TLS settings and timeouts. Keep the unsecured default.
+   - Add end-to-end tests against a mock backend for each mode.
 
-3. **Harden releases**
-   - CI quality gates and an independent release channel.
+3. **Make the releases stronger.**
+   - Add the CI quality gates and an independent release channel.
 
-4. **Resume Grafana import fidelity**
-   - Dashboard time and timezone, a runtime variable picker and format
-     modifiers, reduce options, value mappings, display names, and legend
+4. **Continue the Grafana import fidelity.**
+   - Add the dashboard time and timezone, a runtime variable picker and format
+     modifiers, reduce options, value mappings, display names and legend
      options.
-   - Prefer common Grafana dashboard correctness over new non-parity features.
+   - Put the correct display of common Grafana dashboards before new features
+     that are not for parity.
 
 ---
 
 ## How to Contribute
 
-If you'd like to help, the best starting points are items marked 🔜 and 🟢.
-Roadmap items are especially useful when PRs include:
+To help, start with an item that has 🔜 and 🟢. A pull request for a roadmap
+item is most useful when it has:
 
-- A small Grafana JSON fixture that demonstrates the supported field.
-- Unit tests for parsing and display behavior.
-- A short note in `docs/src/content/docs/grafana-compatibility.md` explaining the TUI mapping or
-  limitation.
+- A small Grafana JSON fixture that shows the supported field.
+- Unit tests for the parser and the display behavior.
+- A short note in `docs/src/content/docs/grafana-compatibility.md`. The note
+  tells how the TUI maps the field, or what the TUI cannot show.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines, and
-[the compatibility matrix](docs/src/content/docs/grafana-compatibility.md) for the full Grafana JSON
-feature-parity breakdown.
+[CONTRIBUTING.md](CONTRIBUTING.md) gives the contributor guidelines.
+[The compatibility matrix](docs/src/content/docs/grafana-compatibility.md)
+gives the full Grafana JSON parity for each feature.

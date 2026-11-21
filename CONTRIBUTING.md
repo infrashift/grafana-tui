@@ -1,72 +1,148 @@
 # Contributing to grafana-tui
 
-First off, thanks for taking the time to contribute! ❤️
+Thank you for the help with grafana-tui.
 
-All types of contributions are encouraged and valued. See the [Table of Contents](#table-of-contents) for different ways to help and details about how this project handles them. Please make sure to read the relevant section before making your contribution. It will make it a lot easier for us maintainers and smooth out the experience for all involved. The community looks forward to your contributions.
+We accept bug reports, feature requests, documentation and code. This guide
+tells you how to send each type of change. Read the applicable section before
+you start.
 
 ## Table of Contents
 
-- [I Have a Question](#i-have-a-question)
-- [I Want To Contribute](#i-want-to-contribute)
-  - [Reporting Bugs](#reporting-bugs)
-  - [Suggesting Enhancements](#suggesting-enhancements)
-  - [Your First Code Contribution](#your-first-code-contribution)
-- [Development Workflow](#development-workflow)
-- [Pull Request Process](#pull-request-process)
+- [Ask a Question](#ask-a-question)
+- [Send a Change](#send-a-change)
+  - [Report a Bug](#report-a-bug)
+  - [Request a Feature](#request-a-feature)
+  - [Write Code for the First Time](#write-code-for-the-first-time)
+- [Workflow](#workflow)
+- [Pull Requests](#pull-requests)
 
-## I Have a Question
+## Ask a Question
 
-If you want to ask a question, we assume that you have read the available [Documentation](README.md).
+Before you ask a question, read the [documentation](README.md).
 
-Before you ask a question, it is best to search for existing [Issues](https://github.com/infrashift/grafana-tui/issues) that might help you. In case you've found a suitable issue and still need clarification, you can write your question in this issue. It is also advisable to search the internet for answers first.
+Then search the [issues](https://github.com/infrashift/grafana-tui/issues).
+If an issue answers part of the question, add the question to that issue.
 
-## I Want To Contribute
+## Send a Change
 
-### Reporting Bugs
+### Report a Bug
 
-This section guides you through submitting a bug report for grafana-tui. Following these guidelines helps maintainers and the community understand your report, reproduce the behavior, and find related reports.
+A good bug report helps the maintainers find the cause. Put these items in the
+report:
 
-- **Use a clear and descriptive title** for the issue to identify the problem.
-- **Describe the exact steps which reproduce the problem** in as many details as possible.
-- **Provide specific examples to demonstrate the steps**. Include links to files or GitHub projects, or copy/pasteable snippets, which you use in those examples.
-- **Describe the behavior you observed after following the steps** and point out what exactly is the problem with that behavior.
-- **Explain which behavior you expected to see instead and why.**
-- **Include screenshots and animated GIFs** which show you following the described steps and clearly demonstrate the problem.
+- A clear title that names the problem.
+- The exact steps that cause the problem.
+- Examples for the steps, for example links to files or snippets that you can copy.
+- The behavior that you saw after the steps.
+- The behavior that you expected, and the reason.
+- Screenshots or animated GIFs that show the problem.
 
-### Suggesting Enhancements
+### Request a Feature
 
-This section guides you through submitting an enhancement suggestion for grafana-tui, including completely new features and minor improvements to existing functionality.
+Use an issue to request a new feature or a small change to a feature. Put these
+items in the request:
 
-- **Use a clear and descriptive title** for the issue to identify the suggestion.
-- **Provide a step-by-step description of the suggested enhancement** in as many details as possible.
-- **Provide specific examples to demonstrate the steps**.
-- **Describe the current behavior** and **explain which behavior you expected to see instead** and why.
+- A clear title that names the feature.
+- A description of the feature, step by step.
+- Examples for the steps.
+- The current behavior, the behavior that you expect, and the reason.
 
-### Your First Code Contribution
+### Write Code for the First Time
 
-Unsure where to begin contributing to grafana-tui? You can start by looking through these `good-first-issue` and `help-wanted` issues:
+These issue lists are a good start:
 
-- [Good First Issues](https://github.com/infrashift/grafana-tui/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) - issues which should only require a few lines of code, and a test or two.
-- [Help Wanted Issues](https://github.com/infrashift/grafana-tui/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22) - issues which should be a bit more involved than beginner issues.
+- [Good First Issues](https://github.com/infrashift/grafana-tui/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22): issues that need a few lines of code and one or two tests.
+- [Help Wanted Issues](https://github.com/infrashift/grafana-tui/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22): issues that need more work than the first issues.
 
-## Development Workflow
+## Workflow
 
-Please refer to [DEVELOPMENT.md](DEVELOPMENT.md) for detailed instructions on setting up your development environment, running tests, and building the project.
+[DEVELOPMENT.md](DEVELOPMENT.md) gives the full workflow. This section gives
+the rules that each change must obey.
 
-## Pull Request Process
+### Tools
 
-1.  Fork the repo and create your branch from `main`.
-2.  If you've added code that should be tested, add tests.
-3.  If you've changed APIs, update the documentation.
-4.  Ensure the test suite passes.
-5.  Make sure your code lints.
-6.  **Important**: We use [Conventional Commits](https://www.conventionalcommits.org/) for our commit messages. This allows us to automatically generate changelogs and releases.
-    - `feat: add new feature`
-    - `fix: fix bug`
-    - `docs: update documentation`
-    - `chore: maintenance`
-7.  Issue that pull request!
+- Install the Rust tools with `make tools`.
+- Put `semscope`, `lexiscope` and `okfw` on the `PATH`.
+
+The three tools have no public releases yet. CI runs only
+`make lint test test-install cover-check` (wiki ADR-0003). So the
+`p10`, `wiki` and `docs-style` gates run only on the local computer. Run
+`make check` before each push.
+
+### Build Files
+
+The `Makefile` (GNU Make) and the `ZMakefile` (zmake) have the same targets.
+Keep the two files in step (wiki ADR-0005). If you change one file, make the
+same change in the other file.
+
+### Gates
+
+`make check` and `zmake check` run these gates:
+
+- `fmt`: rustfmt.
+- `lint`: clippy with `-D warnings`.
+- `test`: the unit tests, the CLI tests in `tests/` and the snapshot tests.
+- `test-install`: the `install.sh` tests.
+- `cover-check`: the line coverage must be 95% or more.
+- `p10`: semscope with `.semscope.cue`, then `scripts/p10-assert-density.py`.
+- `wiki`: `okfw validate --all`.
+- `docs-style`: lexiscope with `vocabulary.cue`.
+
+### Power of 10 Rules
+
+The production code follows the NASA Power of 10 rules. The wiki ADR-0002
+adapts them to Rust. In short:
+
+- A function has 60 lines or fewer.
+- The code has no recursion.
+- Each loop has a bound.
+- A named limit caps each input and each growable collection.
+- The functions of more than 5 lines have an average of 2 or more assertions.
+- The code has no `unwrap`, no `expect`, and no `as` outside `src/num.rs`.
+- The code has no `dyn` and no function pointers.
+
+### Working Loop
+
+1. Write the code for one small slice of the change.
+2. Run `make fmt lint p10` to lint the change.
+3. Run `make test test-install cover-check` to verify the change.
+4. Repeat steps 1 to 3 until all of the gates pass.
+5. Update the wiki, as the wiki guide `.okfw/development-workflow--*.md` tells you.
+6. Run `make check`.
+7. Commit the change.
+
+### Snapshot Tests
+
+`src/snapshot_tests.rs` compares the TUI and SVG output of each example
+dashboard with the files in `tests/snapshots/`. If you change the output on
+purpose, record new snapshots:
+
+1. Run `UPDATE_SNAPSHOTS=1 cargo test snapshot_tests`.
+2. Examine the diff of `tests/snapshots/`.
+3. Commit the new snapshots with the change.
+
+### Writing Style
+
+Write the comments and the documentation in ASD-STE100 Simplified Technical
+English (wiki ADR-0004). `make docs-style` checks them.
+
+## Pull Requests
+
+1. Fork the repository.
+2. Make a branch from `main`.
+3. Add tests for each new behavior.
+4. Update the documentation for each API change.
+5. Run `make check`. All of the gates must pass.
+6. Write each commit message in the [Conventional Commits](https://www.conventionalcommits.org/) format.
+7. Open the pull request.
+
+The changelog and the releases come from the commit messages. Examples:
+
+- `feat: add new feature`
+- `fix: fix bug`
+- `docs: update documentation`
+- `chore: maintenance`
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under its Apache 2.0 License.
+When you send a change, you agree that the change has the Apache 2.0 License of this project.
