@@ -5,7 +5,7 @@ type: "Issue"
 kind: "issue"
 tags:
   - "issue"
-  - "open"
+  - "in-progress"
   - "ci"
   - "release"
 created: "2026-11-21T10:56:07-06:00"
@@ -15,7 +15,7 @@ description: "Since the move to the infrashift account, only a manual workflow_d
 
 # ISSUE-013: Push and pull request events start no workflow run
 
-**Status/Phase:** Open · debt
+**Status/Phase:** In progress · debt
 
 ## Description
 A push to `main`, a pull request and a tag push start no GitHub Actions run in `infrashift/grafana-tui`. A manual run (`workflow_dispatch`) works. The last runs that a push started were before the repository moved to the infrashift GitHub account. The org settings for Actions are not visible to a token without the `admin:org` scope.
@@ -32,13 +32,14 @@ On 2026-11-21 an org admin token examined the settings:
 - GitHub records the push events and the pull request events. All 8 runs of the repository came from `workflow_dispatch`.
 - The other infrashift repositories get runs from push and pull request events, from the same account.
 
-No setting stops the events. The fault is in this repository only. The admin set Actions and the three workflows off and then on again, with the same settings. A push to `main` then tests the result. If no run starts, GitHub Support must examine the repository.
+No setting stops the events. The fault is in this repository only. The admin set Actions and the three workflows off and then on again, with the same settings. After this change, the push of commit `655ade3` to `main` started `ci.yml` with the `push` event. A pull request and a tag push have no test yet.
 
 ## Acceptance Criteria
 - [x] An org admin examines the settings that can stop push and pull request events. No setting stops them.
-- [ ] A push to `main` starts `ci.yml`, and a pull request starts `ci.yml`.
+- [x] A push to `main` starts `ci.yml`.
+- [ ] A pull request starts `ci.yml`.
 - [ ] A tag push starts `release.yml`.
-- [ ] `RELEASE_PROCESS.md` drops the steps for a run by hand, or keeps them as a fallback.
+- [x] `RELEASE_PROCESS.md` keeps the steps for a run by hand as a fallback.
 
 ## Related
 [ADR-0003](/decisions/adr-0003-semscope-and-clippy-enforce-the-power-of-10-rules--01a1fd4e487d.md)

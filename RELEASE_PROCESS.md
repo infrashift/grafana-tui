@@ -77,16 +77,15 @@ A pull request that fails the gate cannot merge.
    git push origin "v$(make -s version)"
    ```
 
-The push of the tag starts `release.yml`. After the repository moved to the
-infrashift GitHub account, a push starts no workflow run (wiki ISSUE-013).
-Until a fix comes, start each run by hand:
+The push of the tag starts `release.yml`. If the push starts no run (wiki
+ISSUE-013), start the run by hand:
 
-1. Run `gh workflow run ci.yml --ref main` before you add the tag.
-2. Make sure that the CI run passes.
-3. Push the tag.
-4. Run `gh workflow run release.yml --ref "v$(make -s version)"`.
+```bash
+gh workflow run release.yml --ref "v$(make -s version)"
+```
 
-A run by hand on a branch stops in `verify`, because it has no tag.
+A run by hand on a branch stops in `verify`, because it has no tag. You can
+also start CI by hand: `gh workflow run ci.yml --ref <branch>`.
 
 `release.yml` has these jobs:
 
