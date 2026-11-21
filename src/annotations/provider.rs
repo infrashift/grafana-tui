@@ -194,7 +194,7 @@ pub(crate) mod test_provider {
         Handshake {
             /// Notified when the refresh starts.
             provider_started: Arc<Notify>,
-            /// The refresh waits for this notification.
+            /// The refresh waits for this signal.
             metrics_started: Arc<Notify>,
         },
     }

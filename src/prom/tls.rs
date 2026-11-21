@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 /// TLS files for the Prometheus connection, and the config's `[tls]` table.
 /// Each is optional; with none set, the connection trusts the built-in roots
-/// and sends no client certificate. Unknown keys are rejected, so a misspelled
+/// and sends no client certificate. The parser rejects unknown keys, so a misspelled
 /// option cannot leave the connection without its certificates.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,13 +46,13 @@ impl TlsFiles {
         self.ca_cert.is_none() && self.client_cert.is_none() && self.client_key.is_none()
     }
 
-    /// For each option (`ca_cert`, `client_cert`, `client_key`), true when it is set.
+    /// For each option (`ca_cert`, `client_cert`, `client_key`), true when it has a value.
     fn set_flags(&self) -> [bool; 3] {
         let set = [&self.ca_cert, &self.client_cert, &self.client_key];
         set.map(Option::is_some)
     }
 
-    /// These files, taking each one that is unset from `fallback`.
+    /// These files. Each file that has no value comes from `fallback`.
     pub(crate) fn or(self, fallback: Self) -> Self {
         let own = self.set_flags();
         let other = fallback.set_flags();
@@ -76,7 +76,7 @@ impl TlsFiles {
         files
     }
 
-    /// These files, with a leading `~` of each path expanded to the home directory.
+    /// These files, with a `~` at the start of each path expanded to the home directory.
     pub(crate) fn expand_paths(self) -> Self {
         let files = Self {
             ca_cert: self.ca_cert.as_deref().map(expand_path),
@@ -102,7 +102,7 @@ impl TlsFiles {
         files
     }
 
-    /// The options that are set, for error messages.
+    /// The options that have a value, for error messages.
     fn option_names(&self) -> String {
         let names = [
             ("ca_cert", &self.ca_cert),
@@ -152,14 +152,14 @@ impl TlsFiles {
         )
     }
 
-    /// Configures `builder` to connect to `url` with these files. Each file is
-    /// read and checked first, so an error names the file and what is wrong.
+    /// Configures `builder` to connect to `url` with these files. It reads
+    /// and checks each file first, so an error names the file and what is wrong.
     pub(super) fn configure(&self, url: &str, mut builder: ClientBuilder) -> Result<ClientBuilder> {
         if self.is_empty() {
             return Ok(builder);
         }
         if !url.trim().to_ascii_lowercase().starts_with("https://") {
-            // Only the scheme is shown, since the URL may hold credentials.
+            // The error shows only the scheme, since the URL can hold credentials.
             let scheme = url
                 .trim()
                 .split_once("://")
@@ -320,7 +320,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-/// A failed TLS handshake, or a server rejecting the client certificate.
+/// A failed TLS handshake, or a server that rejects the client certificate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TlsFailure {
     /// A few words for the title bar, such as `TLS: unknown issuer`.
@@ -535,7 +535,7 @@ pub(crate) mod tests {
     }
 
     /// A Prometheus stand-in like a hardened node: TLS 1.3 only on
-    /// `https://127.0.0.1`, requiring a client certificate that `client_ca`
+    /// `https://127.0.0.1`, with a required client certificate that `client_ca`
     /// issued. Also returns the count of accepted connections.
     pub(crate) async fn mtls_prometheus(
         server: &TestCert,
@@ -606,7 +606,7 @@ pub(crate) mod tests {
         path
     }
 
-    /// The files for trusting `ca` and, when given, presenting `client`.
+    /// The files that trust `ca` and, when given, present `client`.
     pub(crate) fn tls_files(dir: &Path, ca: &str, client: Option<&TestCert>) -> TlsFiles {
         TlsFiles {
             ca_cert: Some(write(dir, "ca.pem", ca)),
@@ -670,7 +670,7 @@ pub(crate) mod tests {
             Some("TLS: client certificate required")
         );
         assert!(error.to_string().contains("client_cert and client_key"));
-        // The certificates won't change between attempts, so it isn't retried.
+        // The certificates do not change between attempts, so the client does not retry.
         assert_eq!(connections.load(Ordering::SeqCst), 1);
     }
 
