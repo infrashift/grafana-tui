@@ -239,9 +239,9 @@ fn clicked_tab(
 
 /// Moves the inspect cursor to the time at `column` in the chart of `rect`.
 fn place_cursor_at_column(app: &mut AppState, rect: Rect, column: u16) {
-    let chart_width = rect.width.saturating_sub(2) as f64;
+    let chart_width = f64::from(rect.width.saturating_sub(2));
     if chart_width > 0.0 {
-        let relative_x = (column.saturating_sub(rect.x + 1)) as f64;
+        let relative_x = f64::from(column.saturating_sub(rect.x + 1));
         let fraction = (relative_x / chart_width).clamp(0.0, 1.0);
         let (start_ts, _) = app.time_bounds();
         app.cursor_x = Some(start_ts + fraction * app.range.as_secs_f64());
@@ -560,8 +560,8 @@ fn toggle_series_visibility(app: &mut AppState, c: char) {
             series.visible = true;
         }
     } else {
-        let idx = (digit - 1) as usize;
-        if let Some(series) = panel.series.get_mut(idx) {
+        let idx = usize::try_from(digit - 1).ok();
+        if let Some(series) = idx.and_then(|idx| panel.series.get_mut(idx)) {
             series.visible = !series.visible;
         }
     }

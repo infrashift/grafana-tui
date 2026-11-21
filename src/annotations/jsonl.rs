@@ -164,7 +164,7 @@ impl JsonlFileProvider {
         file.take(self.max_bytes + 1)
             .read_to_end(&mut bytes)
             .await?;
-        if bytes.len() as u64 > self.max_bytes {
+        if crate::num::usize_to_u64(bytes.len()) > self.max_bytes {
             return Ok(None);
         }
         String::from_utf8(bytes)

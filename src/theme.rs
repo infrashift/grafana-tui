@@ -182,10 +182,21 @@ struct Base {
 }
 
 const fn rgb(hex: u32) -> Color {
-    Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+    let [_, r, g, b] = hex.to_be_bytes();
+    Color::Rgb(r, g, b)
 }
 
 impl Theme {
+    /// Returns the palette color at `index`, wrapped to the length of the palette.
+    pub(crate) fn palette_color(&self, index: usize) -> Color {
+        debug_assert!(
+            !self.palette.is_empty(),
+            "a theme palette has at least one color"
+        );
+        let wrapped = index.checked_rem(self.palette.len()).unwrap_or(0);
+        self.palette.get(wrapped).copied().unwrap_or(self.text)
+    }
+
     fn from_base(name: &str, base: &Base) -> Self {
         let mut palette = Vec::new();
         for hex in [
@@ -229,12 +240,16 @@ impl Theme {
     }
 }
 
+/// Parses the two hex digits at byte `start` of `c`. A bad digit or a split character gives 0.
+fn hex_byte(c: &str, start: usize) -> u8 {
+    c.get(start..start.saturating_add(2))
+        .and_then(|digits| u8::from_str_radix(digits, 16).ok())
+        .unwrap_or(0)
+}
+
 pub(crate) fn parse_grafana_color(c: &str) -> Color {
     if c.starts_with('#') && c.len() >= 7 {
-        let r = u8::from_str_radix(&c[1..3], 16).unwrap_or(0);
-        let g = u8::from_str_radix(&c[3..5], 16).unwrap_or(0);
-        let b = u8::from_str_radix(&c[5..7], 16).unwrap_or(0);
-        return Color::Rgb(r, g, b);
+        return Color::Rgb(hex_byte(c, 1), hex_byte(c, 3), hex_byte(c, 5));
     }
 
     match c.to_lowercase().as_str() {
@@ -262,6 +277,21 @@ pub(crate) fn parse_grafana_color(c: &str) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grafana_hex_colors_with_split_characters_do_not_panic() {
+        assert_eq!(parse_grafana_color("#a0b1c2"), Color::Rgb(0xa0, 0xb1, 0xc2));
+        assert_eq!(parse_grafana_color("#aé123"), Color::Rgb(0, 0, 0x23));
+        assert_eq!(parse_grafana_color("#zz11é"), Color::Rgb(0, 0x11, 0));
+    }
+
+    #[test]
+    fn palette_colors_wrap_to_the_palette_length() {
+        let theme = Theme::default();
+        let count = theme.palette.len();
+        assert_eq!(theme.palette_color(count + 1), theme.palette[1]);
+        assert_eq!(theme.palette_color(0), theme.palette[0]);
+    }
 
     #[test]
     fn every_builtin_resolves_with_a_usable_palette() {

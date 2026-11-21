@@ -37,21 +37,17 @@ pub(crate) fn substitute_variables<'a>(
     let mut rest = text;
     // Each pass reads one `$` or more, so the text length bounds the loop.
     for _ in 0..text.len() {
-        let Some(position) = rest.find('$') else {
+        let Some((before, after)) = rest.split_once('$') else {
             break;
         };
-        out.push_str(&rest[..position]);
-        let after = &rest[position + 1..];
-        let (name, consumed) = if let Some(braced) = after.strip_prefix('{') {
-            match braced.find('}') {
-                Some(end) => (&braced[..end], end + 2),
-                None => ("", 0),
-            }
+        out.push_str(before);
+        let (name, remainder) = if let Some(braced) = after.strip_prefix('{') {
+            braced.split_once('}').unwrap_or(("", after))
         } else {
             let end = after
                 .find(|ch: char| !is_variable_name_char(ch))
                 .unwrap_or(after.len());
-            (&after[..end], end)
+            after.split_at_checked(end).unwrap_or((after, ""))
         };
         let value = (!name.is_empty() && name.chars().all(is_variable_name_char))
             .then(|| lookup(name))
@@ -59,7 +55,7 @@ pub(crate) fn substitute_variables<'a>(
         match value {
             Some(value) => {
                 out.push_str(&value);
-                rest = &after[consumed..];
+                rest = remainder;
             }
             None => {
                 out.push('$');
@@ -324,7 +320,7 @@ async fn resolve_query_variable(
     } = *context;
     let expanded_query = expand_expr(&query_var.query, range, intervals, vars);
     let query = parse_prometheus_variable_query(&expanded_query)?;
-    let start_ts = end_ts - range.as_secs() as i64;
+    let start_ts = end_ts - crate::num::u64_to_i64(range.as_secs());
     let values = match query {
         PrometheusVariableQuery::LabelValues { metric, label } => {
             prometheus
@@ -385,14 +381,14 @@ fn split_top_level_args(args: &str) -> Vec<&str> {
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth -= 1,
             ',' if depth == 0 => {
-                parts.push(args[start..idx].trim());
+                parts.push(args.get(start..idx).unwrap_or_default().trim());
                 start = idx + ch.len_utf8();
             }
             _ => {}
         }
     }
 
-    parts.push(args[start..].trim());
+    parts.push(args.get(start..).unwrap_or_default().trim());
     parts.into_iter().filter(|part| !part.is_empty()).collect()
 }
 
@@ -422,6 +418,16 @@ fn apply_regex(values: Vec<String>, regex: Option<&str>) -> Result<Vec<String>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn substitution_keeps_unclosed_braces_formats_and_non_ascii_text() {
+        let out = substitute_variables("a $x ${y} ${z:fmt} ${open $é$", |name| match name {
+            "x" => Some(Cow::Borrowed("1")),
+            "y" => Some(Cow::Borrowed("2")),
+            _ => None,
+        });
+        assert_eq!(out, "a 1 2 ${z:fmt} ${open $é$");
+    }
 
     #[test]
     fn test_split_label_values_query() {

@@ -109,7 +109,7 @@ fn round_interval(interval: Duration) -> Duration {
         (1_814_400_000, 7 * DAY),
         (3_628_800_000, 30 * DAY),
     ];
-    let ms = interval.as_millis() as u64;
+    let ms = crate::num::u128_to_u64(interval.as_millis());
     let rounded = TABLE
         .iter()
         .find(|(bound, _)| ms <= *bound)
@@ -180,18 +180,17 @@ pub(crate) fn format_legend(fmt: &str, metric: &HashMap<String, String>) -> Stri
     let mut rest = fmt;
     // Each pass reads a placeholder of four bytes or more, so the format length bounds the loop.
     for _ in 0..fmt.len() {
-        let Some(start) = rest.find("{{") else {
+        let Some((before, opened)) = rest.split_once("{{") else {
             break;
         };
-        let Some(end) = rest[start + 2..].find("}}") else {
+        let Some((label, after)) = opened.split_once("}}") else {
             break;
         };
-        out.push_str(&rest[..start]);
-        let label = rest[start + 2..start + 2 + end].trim();
-        if let Some(value) = metric.get(label) {
+        out.push_str(before);
+        if let Some(value) = metric.get(label.trim()) {
             out.push_str(value);
         }
-        rest = &rest[start + 2 + end + 2..];
+        rest = after;
     }
     out.push_str(rest);
     out
@@ -211,7 +210,9 @@ pub(crate) fn downsample(points: Vec<(f64, f64)>, max_points: usize) -> Vec<(f64
         return points;
     }
 
-    let chunk_size = (points.len() as f64 / max_points as f64).ceil() as usize;
+    let chunk_size = crate::num::f64_to_usize(
+        (crate::num::usize_to_f64(points.len()) / crate::num::usize_to_f64(max_points)).ceil(),
+    );
     if chunk_size <= 1 {
         return points;
     }
@@ -270,6 +271,15 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::time::Duration;
+
+    #[test]
+    fn legend_placeholders_expand_and_an_unclosed_one_stays() {
+        let metric = HashMap::from([("job".to_string(), "api".to_string())]);
+        assert_eq!(
+            format_legend("é{{ job }}-{{missing}}-{{open", &metric),
+            "éapi--{{open"
+        );
+    }
 
     const SECOND: Duration = Duration::from_secs(1);
     const MINUTE: Duration = Duration::from_secs(60);

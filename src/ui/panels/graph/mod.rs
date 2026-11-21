@@ -36,6 +36,7 @@ use view::{GraphView, LegendMode, area_fill_baseline};
 
 use crate::annotations::{AnnotationCluster, format_cluster_detail_lines};
 use crate::app::{AppState, PanelState};
+use crate::num;
 use crate::theme::Theme;
 use crate::ui::format::format_axis_time;
 use ratatui::{
@@ -89,7 +90,7 @@ fn chart_plot_left(
 ) -> u16 {
     let first_x_label_width = x_labels
         .first()
-        .map(|label| label.width() as u16)
+        .map(|label| num::usize_to_u16(label.width()))
         .unwrap_or_default();
     let y_axis_offset = u16::from(has_y_axis_labels);
     let x_label_gutter = first_x_label_width.saturating_sub(y_axis_offset);
@@ -107,7 +108,7 @@ fn chart_plot_left(
 fn chart_y_label_width(labels: &[Span<'_>]) -> u16 {
     labels
         .iter()
-        .map(|label| label.width() as u16)
+        .map(|label| num::usize_to_u16(label.width()))
         .max()
         .unwrap_or_default()
 }
@@ -142,10 +143,12 @@ fn point_to_braille_cell(
     let x_resolution = f64::from(plot_width) * 2.0;
     let y_resolution = f64::from(plot_height) * 4.0;
 
-    let braille_x =
-        ((x - x_bounds[0]) * (x_resolution - 1.0) / (x_bounds[1] - x_bounds[0])).round() as u16;
-    let braille_y =
-        ((y_bounds[1] - y) * (y_resolution - 1.0) / (y_bounds[1] - y_bounds[0])).round() as u16;
+    let braille_x = num::f64_to_u16(
+        ((x - x_bounds[0]) * (x_resolution - 1.0) / (x_bounds[1] - x_bounds[0])).round(),
+    );
+    let braille_y = num::f64_to_u16(
+        ((y_bounds[1] - y) * (y_resolution - 1.0) / (y_bounds[1] - y_bounds[0])).round(),
+    );
 
     let cell_x = plot.left.saturating_add(braille_x / 2);
     let cell_y = plot.top.saturating_add(braille_y / 4);
@@ -278,11 +281,9 @@ pub(super) fn render_graph_panel(
 fn layout_areas(area: Rect, has_legend: bool) -> (Rect, Rect, bool) {
     // Reserve two rows for the legend or the annotation details.
     let legend_height = if has_legend && area.height > 5 { 2 } else { 0 };
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(legend_height)])
-        .split(area);
-    (chunks[0], chunks[1], legend_height > 0)
+    let [chart, legend] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(legend_height)]).areas(area);
+    (chart, legend, legend_height > 0)
 }
 
 /// Builds the axes, the value ticks and the plot bounds of the chart area `area`.
@@ -337,8 +338,12 @@ fn axis_y_labels(view: &GraphView<'_>, plot_height: u16, color: Color) -> Vec<Sp
     let style = Style::default().fg(color);
     let display = &view.panel.display;
     let mut labels = vec![Span::raw(""); y_axis_height];
-    labels[0] = Span::styled(display.format_number(view.y_bounds[0]), style);
-    labels[y_axis_height - 1] = Span::styled(display.format_number(view.y_bounds[1]), style);
+    if let Some(first) = labels.first_mut() {
+        *first = Span::styled(display.format_number(view.y_bounds[0]), style);
+    }
+    if let Some(last) = labels.last_mut() {
+        *last = Span::styled(display.format_number(view.y_bounds[1]), style);
+    }
     labels
 }
 

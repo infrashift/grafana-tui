@@ -17,6 +17,7 @@
 use crate::annotations::{AnnotationCluster, cluster_events_by, format_cluster_detail_lines};
 use crate::app::{AppMode, AppState, PanelState, PanelType, SeriesView};
 use crate::limits::MAX_RECORD_FRAMES;
+use crate::num;
 #[cfg(test)]
 use crate::theme::Theme;
 use crate::ui;
@@ -608,13 +609,13 @@ fn render_panel_frame(
 /// Draws the query error of a panel without series, wrapped to the inner rectangle `inner`.
 fn render_panel_error(app: &AppState, err: &str, inner: PlotRect, out: &mut SvgOut) {
     let color = color_hex(app.theme.error, "#ff5555");
-    let max_lines = ((inner.height - 18.0).max(0.0) / ERROR_LINE_HEIGHT) as usize + 1;
+    let max_lines = num::f64_to_usize((inner.height - 18.0).max(0.0) / ERROR_LINE_HEIGHT) + 1;
     let lines = wrap_text(err, text_columns(inner.width, FONT_SIZE), max_lines);
     for (row, line) in lines.iter().enumerate() {
         write_text(
             out,
             inner.left,
-            inner.top + 18.0 + row as f64 * ERROR_LINE_HEIGHT,
+            inner.top + 18.0 + num::usize_to_f64(row) * ERROR_LINE_HEIGHT,
             line,
             &color,
             "start",
@@ -747,12 +748,14 @@ fn graph_geometry(
     let y_label_width = (y_label_room + 12.0).max(64.0);
     let plot_width = (rect.width - y_label_width - 8.0).max(1.0);
     // The legend takes the rows it needs, up to a third of the panel.
-    let max_legend_rows = ((rect.height / 3.0 - LEGEND_PADDING) / LEGEND_ROW_HEIGHT)
-        .floor()
-        .max(1.0) as usize;
+    let max_legend_rows = num::f64_to_usize(
+        ((rect.height / 3.0 - LEGEND_PADDING) / LEGEND_ROW_HEIGHT)
+            .floor()
+            .max(1.0),
+    );
     let legend = layout_legend(legend_items, plot_width, max_legend_rows);
     let legend_height = if has_legend {
-        (LEGEND_PADDING + legend.rows as f64 * LEGEND_ROW_HEIGHT).max(LEGEND_HEIGHT)
+        (LEGEND_PADDING + num::usize_to_f64(legend.rows) * LEGEND_ROW_HEIGHT).max(LEGEND_HEIGHT)
     } else {
         0.0
     };
@@ -1053,7 +1056,7 @@ fn render_graph_annotations<'a>(
     out: &mut SvgOut,
 ) -> Vec<AnnotationCluster<'a>> {
     let clusters = cluster_events_by(events, |timestamp| {
-        Some(map_x(timestamp, x_bounds, plot).round() as u32)
+        Some(num::f64_to_u32(map_x(timestamp, x_bounds, plot).round()))
     });
     let color = color_hex(app.theme.annotation, "#f0d000");
 
@@ -1084,7 +1087,7 @@ fn active_export_annotation<'a>(
     if cursor_x < x_bounds[0] || cursor_x > x_bounds[1] {
         return None;
     }
-    let coordinate = map_x(cursor_x, x_bounds, plot).round() as u32;
+    let coordinate = num::f64_to_u32(map_x(cursor_x, x_bounds, plot).round());
     clusters
         .iter()
         .find(|cluster| cluster.coordinate == coordinate)
@@ -1099,7 +1102,7 @@ fn render_annotation_details(
     out: &mut SvgOut,
 ) {
     let character_budget = if width.is_finite() && width > 0.0 {
-        (width / SMALL_FONT_SIZE).floor() as usize
+        num::f64_to_usize((width / SMALL_FONT_SIZE).floor())
     } else {
         0
     };
@@ -1107,7 +1110,7 @@ fn render_annotation_details(
     for (row, line) in [heading, details].iter().enumerate() {
         out.put(format_args!(
             r#"<text x="{left:.2}" y="{:.2}" fill="{color}" font-size="{SMALL_FONT_SIZE:.1}" text-anchor="start" data-role="annotation-detail">{}</text>"#,
-            top + 12.0 + row as f64 * 13.0,
+            top + 12.0 + num::usize_to_f64(row) * 13.0,
             escape_xml(line)
         ));
     }
@@ -1298,7 +1301,7 @@ fn render_bar_gauge_panel(app: &AppState, panel: &PanelState, rect: PlotRect, ou
         .fold(0.0_f64, f64::max)
         .max(1.0);
     let row_height = 22.0;
-    let max_rows = (rect.height / row_height).floor().max(1.0) as usize;
+    let max_rows = num::f64_to_usize((rect.height / row_height).floor().max(1.0));
     let shown = values.into_iter().take(max_rows).collect::<Vec<_>>();
     // The name column is as wide as the widest name, up to half the panel,
     // and the value column as wide as the widest value, up to 30%.
@@ -1323,7 +1326,7 @@ fn render_bar_gauge_panel(app: &AppState, panel: &PanelState, rect: PlotRect, ou
     };
 
     for (row, (series, value)) in shown.into_iter().enumerate() {
-        let y = rect.top + row as f64 * row_height + 15.0;
+        let y = rect.top + num::usize_to_f64(row) * row_height + 15.0;
         render_bar_gauge_row(app, panel, &layout, y, (series, value), out);
     }
 }
@@ -1414,11 +1417,11 @@ fn render_table_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &
         value_width: rect.right() - value_x - 4.0,
         text: color_hex(app.theme.text, "#e6e6e6"),
     };
-    let max_rows = ((rect.height - row_height) / row_height).floor().max(1.0) as usize;
+    let max_rows = num::f64_to_usize(((rect.height - row_height) / row_height).floor().max(1.0));
 
     render_table_header(app, &layout, out);
     for (row, series) in values.into_iter().take(max_rows).enumerate() {
-        let y = rect.top + row_height * (row as f64 + 2.0) - 5.0;
+        let y = rect.top + row_height * (num::usize_to_f64(row) + 2.0) - 5.0;
         render_table_row(app, panel, &layout, y, series, out);
     }
 }
@@ -1517,14 +1520,14 @@ fn render_heatmap_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out:
     let plot_width = (rect.width - label_width - 4.0).max(1.0);
     let rows = visible
         .len()
-        .min((rect.height / 18.0).floor().max(1.0) as usize);
-    let row_height = (rect.height / rows as f64).max(1.0);
-    let cols = (plot_width / 10.0).floor().max(1.0) as usize;
-    let cell_width = plot_width / cols as f64;
+        .min(num::f64_to_usize((rect.height / 18.0).floor().max(1.0)));
+    let row_height = (rect.height / num::usize_to_f64(rows)).max(1.0);
+    let cols = num::f64_to_usize((plot_width / 10.0).floor().max(1.0));
+    let cell_width = plot_width / num::usize_to_f64(cols);
     let text = color_hex(app.theme.text, "#e6e6e6");
 
     for (row, series) in visible.into_iter().take(rows).enumerate() {
-        let top = rect.top + row as f64 * row_height;
+        let top = rect.top + num::usize_to_f64(row) * row_height;
         write_text(
             out,
             rect.left + 4.0,
@@ -1572,10 +1575,14 @@ fn render_heatmap_cells(
     if series.points.is_empty() {
         return;
     }
-    let step = (series.points.len() as f64 / cols as f64).max(1.0);
+    let step = (num::usize_to_f64(series.points.len()) / num::usize_to_f64(cols)).max(1.0);
     for col in 0..cols {
-        let point = ((col as f64 * step) as usize).min(series.points.len() - 1);
-        let value = series.points[point].1;
+        let point = num::f64_to_usize(num::usize_to_f64(col) * step).min(series.points.len() - 1);
+        // The `min` keeps the index in the series. NaN draws the empty color.
+        let value = series
+            .points
+            .get(point)
+            .map_or(f64::NAN, |&(_, value)| value);
         let color = if value.is_finite() {
             let normalized = ((value - min) / (max - min)).clamp(0.0, 1.0);
             color_hex(
@@ -1588,7 +1595,7 @@ fn render_heatmap_cells(
         write_rect(
             out,
             PlotRect {
-                left: cells.left + col as f64 * cells.width,
+                left: cells.left + num::usize_to_f64(col) * cells.width,
                 top: cells.top,
                 width: cells.width.max(1.0),
                 height: (cells.height - 2.0).max(1.0),
@@ -1612,7 +1619,7 @@ fn value_color(app: &AppState, panel: &PanelState, value: f64) -> String {
     color_hex(
         panel
             .get_color_for_value(value)
-            .unwrap_or(app.theme.palette[0]),
+            .unwrap_or(app.theme.palette_color(0)),
         "#00ff88",
     )
 }
@@ -1658,10 +1665,10 @@ fn render_sparkline(series: &SeriesView, rect: PlotRect, color: &str, out: &mut 
     let min = values.iter().copied().fold(f64::INFINITY, f64::min);
     let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let span = (max - min).max(f64::EPSILON);
-    let step = rect.width / (values.len() - 1) as f64;
+    let step = rect.width / num::usize_to_f64(values.len() - 1);
     let mut path = SvgOut::default();
     for (index, value) in values.iter().enumerate() {
-        let x = rect.left + index as f64 * step;
+        let x = rect.left + num::usize_to_f64(index) * step;
         let y = rect.bottom() - ((*value - min) / span).clamp(0.0, 1.0) * rect.height;
         if index == 0 {
             path.put(format_args!("M {x:.2} {y:.2}"));
@@ -1761,7 +1768,8 @@ fn render_legend(
 ) {
     let app = graph.app;
     let text = color_hex(app.theme.text, "#e6e6e6");
-    let baseline = |row: usize| top + LEGEND_PADDING + 2.0 + row as f64 * LEGEND_ROW_HEIGHT;
+    let baseline =
+        |row: usize| top + LEGEND_PADDING + 2.0 + num::usize_to_f64(row) * LEGEND_ROW_HEIGHT;
     for entry in &legend.entries {
         let color = graph.series_color(entry.index);
         let (x, y) = (left + entry.x, baseline(entry.row));
@@ -1830,7 +1838,7 @@ fn render_graph_bars(graph: &SvgGraph<'_>, series: &SeriesView, color: &str, out
     if visible_points.is_empty() {
         return;
     }
-    let bar_width = (rect.width / visible_points.len() as f64).max(1.0) * 0.7;
+    let bar_width = (rect.width / num::usize_to_f64(visible_points.len())).max(1.0) * 0.7;
     let baseline = graph.baseline;
     let baseline_y = map_y(baseline, y_bounds, rect);
 
@@ -1858,14 +1866,14 @@ fn render_graph_area(
         .iter()
         .filter(|(x, y)| graph_point_in_range(*x, *y, x_bounds))
         .collect();
-    if points.len() < 2 {
+    let [first, .., last] = points.as_slice() else {
         return;
-    }
+    };
 
     let baseline = graph.baseline;
     let baseline_y = map_y(baseline, y_bounds, rect);
-    let first_x = map_x(points[0].0, x_bounds, rect);
-    let last_x = map_x(points[points.len() - 1].0, x_bounds, rect);
+    let first_x = map_x(first.0, x_bounds, rect);
+    let last_x = map_x(last.0, x_bounds, rect);
 
     let mut path = format!("M {:.2} {:.2}", first_x, baseline_y);
     for (x, y) in points {
@@ -1999,7 +2007,7 @@ fn draw_line(out: &mut SvgOut, start: (f64, f64), end: (f64, f64), style: LineSt
 /// How many characters of `size` fit in `width` pixels.
 fn text_columns(width: f64, size: f64) -> usize {
     if width.is_finite() && width > 0.0 {
-        (width / (size * CHAR_ADVANCE)).floor() as usize
+        num::f64_to_usize((width / (size * CHAR_ADVANCE)).floor())
     } else {
         0
     }
@@ -2026,7 +2034,7 @@ impl AxisLabels {
 
 /// Estimated width of `text` at `size`, in pixels.
 fn text_width(text: &str, size: f64) -> f64 {
-    text.chars().count() as f64 * size * CHAR_ADVANCE
+    num::usize_to_f64(text.chars().count()) * size * CHAR_ADVANCE
 }
 
 /// Fits `text` in `width` pixels: at `size`, or as small as
@@ -2170,7 +2178,7 @@ fn indexed_color_hex(value: u8) -> &'static str {
         "#000000", "#cc3333", "#33cc66", "#d6c343", "#4f83ff", "#cc66cc", "#33c8cc", "#d0d0d0",
         "#666666", "#ff6666", "#66ff99", "#fff06a", "#7aa2ff", "#ff8cff", "#66ffff", "#f5f5f5",
     ];
-    ANSI.get(value as usize).copied().unwrap_or("#a0a0a0")
+    ANSI.get(usize::from(value)).copied().unwrap_or("#a0a0a0")
 }
 
 fn escape_xml(input: &str) -> String {

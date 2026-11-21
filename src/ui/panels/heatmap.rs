@@ -15,6 +15,7 @@
  */
 
 use crate::app::{AppState, PanelState, SeriesView};
+use crate::num;
 use crate::theme::Theme;
 use crate::ui::format::value_to_heatmap_color;
 use ratatui::{
@@ -33,8 +34,8 @@ pub(super) fn render_heatmap(frame: &mut Frame, area: Rect, p: &PanelState, app:
     // For heatmap, we'll display each series as a row, with time buckets as columns
     // Each cell is colored based on value intensity
 
-    let rows_available = area.height.saturating_sub(2) as usize; // Reserve space for labels
-    let cols_available = area.width as usize;
+    let rows_available = usize::from(area.height.saturating_sub(2)); // Reserve space for labels
+    let cols_available = usize::from(area.width);
 
     if rows_available == 0 || cols_available == 0 {
         return;
@@ -114,12 +115,16 @@ fn heatmap_line(series: &SeriesView, scale: &HeatmapScale, theme: &Theme) -> Opt
         return None;
     }
 
-    let step = (total_points as f64 / cols_available as f64).max(1.0);
+    let step = (num::usize_to_f64(total_points) / num::usize_to_f64(cols_available)).max(1.0);
 
     let mut spans = Vec::new();
     for col_idx in 0..cols_available {
-        let point_idx = ((col_idx as f64 * step) as usize).min(total_points - 1);
-        let (_, value) = series.points[point_idx];
+        let point_idx = num::f64_to_usize(num::usize_to_f64(col_idx) * step).min(total_points - 1);
+        // The `min` keeps the index in the series. NaN draws the empty color.
+        let value = series
+            .points
+            .get(point_idx)
+            .map_or(f64::NAN, |&(_, value)| value);
 
         // Map value to color intensity (from blue/cold to red/hot)
         let color = if value.is_finite() {

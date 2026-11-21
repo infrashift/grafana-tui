@@ -16,7 +16,8 @@
 
 use crate::app::data::{QueryIntervals, parse_min_interval};
 use crate::app::template::{
-    DashboardTemplate, MaterializedCondition, ResolvedSections, Scope, SectionInstance, Variables,
+    DashboardTemplate, MaterializedCondition, PanelInstance, ResolvedSections, Scope,
+    SectionInstance, Variables,
 };
 use crate::conditions::{ConditionContext, ConditionTarget};
 use crate::dashboard::{DashboardItemId, DashboardLayout, RowId, TabGroupId};
@@ -644,13 +645,13 @@ impl AppState {
         {
             let py = grid.y;
             let ph = grid.h;
-            let scroll_y = self.vertical_scroll as i32;
+            let scroll_y = i32::try_from(self.vertical_scroll).unwrap_or(i32::MAX);
             let visible_height = 20;
 
             if py < scroll_y {
-                self.vertical_scroll = py as usize;
-            } else if py + ph > scroll_y + visible_height {
-                self.vertical_scroll = (py + ph - visible_height).max(0) as usize;
+                self.vertical_scroll = usize::try_from(py).unwrap_or(0);
+            } else if py + ph > scroll_y.saturating_add(visible_height) {
+                self.vertical_scroll = usize::try_from(py + ph - visible_height).unwrap_or(0);
             }
         }
     }
@@ -680,6 +681,29 @@ impl AppState {
         }
     }
 
+    /// Puts the panel of `instance` at its index. A fresh copy starts from its template panel.
+    fn place_panel_instance(&mut self, instance: &PanelInstance) {
+        if instance.fresh || instance.index >= self.panels.len() {
+            debug_assert!(
+                instance.source < self.panels.len(),
+                "a repeat copies a template panel"
+            );
+            let Some(mut copy) = self.panels.get(instance.source).cloned() else {
+                return;
+            };
+            clear_panel_data(&mut copy);
+            if let Some(slot) = self.panels.get_mut(instance.index) {
+                *slot = copy;
+            } else {
+                self.panels.resize(instance.index + 1, copy);
+            }
+        }
+        if let Some(panel) = self.panels.get_mut(instance.index) {
+            panel.title.clone_from(&instance.title);
+            panel.grid = instance.grid;
+        }
+    }
+
     /// Rebuilds `layout` from the template for the current variable values.
     ///
     /// Repeat copies are appended to `panels` the first time they appear and keep
@@ -704,18 +728,7 @@ impl AppState {
             }
         }
         for instance in &materialized.panels {
-            if instance.fresh || instance.index >= self.panels.len() {
-                let mut copy = self.panels[instance.source].clone();
-                clear_panel_data(&mut copy);
-                if instance.index < self.panels.len() {
-                    self.panels[instance.index] = copy;
-                } else {
-                    self.panels.resize(instance.index + 1, copy);
-                }
-            }
-            let panel = &mut self.panels[instance.index];
-            panel.title.clone_from(&instance.title);
-            panel.grid = instance.grid;
+            self.place_panel_instance(instance);
         }
         self.panel_scopes = materialized
             .panels
@@ -924,7 +937,7 @@ impl AppState {
         let next = current
             .saturating_add_signed(direction)
             .min(visible.len() - 1);
-        self.selected_item = Some(visible[next].id);
+        self.selected_item = Some(visible.get(next).map_or(first.id, |item| item.id));
         self.scroll_to_selected_panel();
     }
 
@@ -1034,7 +1047,8 @@ impl AppState {
             return;
         };
         let next = index.saturating_add_signed(direction).min(panels.len() - 1);
-        self.selected_item = Some(DashboardItemId::Panel(panels[next]));
+        let panel = panels.get(next).copied().unwrap_or(first);
+        self.selected_item = Some(DashboardItemId::Panel(panel));
         self.scroll_to_selected_panel();
     }
 
@@ -1061,7 +1075,7 @@ impl AppState {
 
     /// Returns the displayed time window bounds.
     pub(crate) fn time_bounds(&self) -> (f64, f64) {
-        let end_ts = self.view_end_ts as f64;
+        let end_ts = crate::num::i64_to_f64(self.view_end_ts);
         (end_ts - self.range.as_secs_f64(), end_ts)
     }
 
@@ -1077,7 +1091,7 @@ impl AppState {
 
         if let Some(current_x) = self.cursor_x {
             let step_secs = self.default_intervals().step.as_secs_f64();
-            let new_x = current_x + (direction as f64 * step_secs);
+            let new_x = current_x + (f64::from(direction) * step_secs);
             self.cursor_x = Some(new_x.max(start_ts).min(end_ts));
         } else {
             self.cursor_x = Some((start_ts + end_ts) / 2.0);

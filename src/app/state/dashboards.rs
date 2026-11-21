@@ -71,7 +71,7 @@ pub(crate) enum DashboardFocus {
 pub(crate) fn dashboard_tab_labels(titles: &[String]) -> Vec<String> {
     let prefix = titles.first().and_then(|first| {
         let end = first.rfind(" / ")? + " / ".len();
-        let prefix = &first[..end];
+        let prefix = first.get(..end)?;
         titles
             .iter()
             .all(|title| title.len() > prefix.len() && title.starts_with(prefix))
@@ -79,9 +79,24 @@ pub(crate) fn dashboard_tab_labels(titles: &[String]) -> Vec<String> {
     });
     titles
         .iter()
-        .map(|title| prefix.map_or(title.as_str(), |prefix| &title[prefix.len()..]))
+        .map(|title| {
+            prefix
+                .and_then(|prefix| title.strip_prefix(prefix))
+                .unwrap_or(title)
+        })
         .map(str::to_string)
         .collect()
+}
+
+/// Returns `active` moved by `direction` and wrapped to `count`, or `None` when `count` is 0.
+fn wrapped_index(active: usize, direction: isize, count: usize) -> Option<usize> {
+    let step = direction.unsigned_abs().checked_rem(count)?;
+    let active = active % count;
+    Some(if direction < 0 {
+        (active + count - step) % count
+    } else {
+        (active + step) % count
+    })
 }
 
 impl AppState {
@@ -127,8 +142,9 @@ impl AppState {
         let (Some(set), Some(active)) = (&self.dashboards, self.active_dashboard()) else {
             return Ok(());
         };
-        let count = set.dashboards.len() as isize;
-        let next = (active as isize + direction).rem_euclid(count) as usize;
+        let Some(next) = wrapped_index(active, direction, set.dashboards.len()) else {
+            return Ok(());
+        };
         self.activate_dashboard(next, DashboardFocus::Content)
     }
 
@@ -153,8 +169,12 @@ impl AppState {
             selected_item: self.selected_item,
             vertical_scroll: self.vertical_scroll,
         };
-        if let Some(set) = &mut self.dashboards {
-            set.views[previous] = view;
+        if let Some(slot) = self
+            .dashboards
+            .as_mut()
+            .and_then(|set| set.views.get_mut(previous))
+        {
+            *slot = view;
         }
         self.layout.set_active_tab(group, index);
         // Panels kept fetching by data conditions are found in the
@@ -172,7 +192,7 @@ impl AppState {
                 let view = self
                     .dashboards
                     .as_ref()
-                    .map(|set| set.views[index])
+                    .and_then(|set| set.views.get(index).copied())
                     .unwrap_or_default();
                 self.selected_item = view
                     .selected_item
@@ -302,6 +322,16 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapped_index_wraps_both_ways_and_rejects_no_dashboards() {
+        assert_eq!(wrapped_index(0, 1, 0), None);
+        assert_eq!(wrapped_index(2, 1, 3), Some(0));
+        assert_eq!(wrapped_index(0, -1, 3), Some(2));
+        assert_eq!(wrapped_index(1, -7, 3), Some(0));
+        assert_eq!(wrapped_index(1, 7, 3), Some(2));
+        assert_eq!(wrapped_index(4, 0, 3), Some(1));
+    }
 
     #[test]
     fn tab_labels_drop_a_shared_title_prefix() {

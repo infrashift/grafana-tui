@@ -18,7 +18,7 @@ pub(crate) struct AnnotationEvent {
 
 impl AnnotationEvent {
     pub(crate) fn timestamp_secs(&self) -> f64 {
-        self.time.timestamp() as f64
+        crate::num::i64_to_f64(self.time.timestamp())
             + f64::from(self.time.timestamp_subsec_nanos()) / 1_000_000_000.0
     }
 }

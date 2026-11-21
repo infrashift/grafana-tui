@@ -39,7 +39,9 @@ pub(super) fn render_gauge(frame: &mut Frame, area: Rect, p: &PanelState, app: &
         .max
         .unwrap_or(if value > 100.0 { value * 1.2 } else { 100.0 });
 
-    let color = p.get_color_for_value(value).unwrap_or(theme.palette[0]);
+    let color = p
+        .get_color_for_value(value)
+        .unwrap_or(theme.palette_color(0));
 
     // `Gauge::ratio` panics outside 0..=1, which NaN is.
     let ratio = if max > min {

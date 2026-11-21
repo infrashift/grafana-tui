@@ -99,7 +99,9 @@ pub(crate) fn render_theme_picker(frame: &mut Frame, app: &AppState) {
         original: &picker.original.name,
         name_width,
     };
-    let lines: Vec<Line> = rows[visible]
+    let lines: Vec<Line> = rows
+        .get(visible)
+        .unwrap_or_default()
         .iter()
         .map(|row| picker_line(row, &marks, theme))
         .collect();

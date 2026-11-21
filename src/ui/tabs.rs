@@ -65,8 +65,12 @@ fn text_width(text: &str) -> usize {
 }
 
 fn range_width(labels: &[String], active: usize, start: usize, end: usize) -> usize {
-    (start..=end)
-        .map(|index| text_width(&labels[index]) + usize::from(index == active) * 2)
+    labels
+        .iter()
+        .enumerate()
+        .take(end.saturating_add(1))
+        .skip(start)
+        .map(|(index, label)| text_width(label) + usize::from(index == active) * 2)
         .sum::<usize>()
         + end.saturating_sub(start)
         + usize::from(start > 0) * 2
@@ -84,15 +88,15 @@ pub(crate) fn tab_bar_geometry(
     }
     let mut geometry = TabBarGeometry::default();
     let indent = (depth.saturating_mul(2)).min(usize::from(area.width.saturating_sub(1)));
-    let x = area.x.saturating_add(indent as u16);
+    let x = area.x.saturating_add(crate::num::usize_to_u16(indent));
     let available = usize::from(area.right().saturating_sub(x));
     if available == 0 {
         return geometry;
     }
     let (false, Some(active)) = (titles.is_empty(), active) else {
-        let text = truncate_title("No tabs", available as u16);
+        let text = truncate_title("No tabs", crate::num::usize_to_u16(available));
         geometry.segments.push(TabSegment {
-            rect: Rect::new(x, area.y, text_width(&text) as u16, 1),
+            rect: Rect::new(x, area.y, crate::num::usize_to_u16(text_width(&text)), 1),
             text,
             active: false,
             activate: None,
@@ -108,7 +112,8 @@ pub(crate) fn tab_bar_geometry(
     let active = active.min(labels.len() - 1);
     let mut segments = SegmentWriter { geometry, area, x };
     if area.width < 3 {
-        segments.push(format!("* {}", labels[active]), true, Some(active));
+        let label = labels.get(active).map_or("", String::as_str);
+        segments.push(format!("* {label}"), true, Some(active));
         return segments.geometry;
     }
     let (start, end) = visible_tabs(&labels, active, available);
@@ -169,7 +174,7 @@ impl SegmentWriter {
             return;
         }
         let text = truncate_title(&text, remaining);
-        let width = text_width(&text).min(usize::from(remaining)) as u16;
+        let width = crate::num::usize_to_u16(text_width(&text).min(usize::from(remaining)));
         if width == 0 {
             return;
         }

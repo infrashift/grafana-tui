@@ -194,7 +194,7 @@ fn series_colors(panel: &PanelState, theme: &Theme) -> Vec<Color> {
             if use_hash_colors {
                 get_hash_color(&series.name)
             } else {
-                theme.palette[index % theme.palette.len()]
+                theme.palette_color(index)
             }
         })
         .collect()

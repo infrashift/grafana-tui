@@ -246,7 +246,11 @@ pub(crate) struct QueryResult {
 /// The start of a response body, for error messages.
 fn excerpt(text: &str) -> String {
     match text.char_indices().nth(ERROR_EXCERPT_CHARS) {
-        Some((end, _)) => format!("{}… ({} bytes)", &text[..end], text.len()),
+        Some((end, _)) => format!(
+            "{}… ({} bytes)",
+            text.get(..end).unwrap_or(text),
+            text.len()
+        ),
         None => text.to_string(),
     }
 }
@@ -501,7 +505,7 @@ impl PromClient {
         let too_large = || anyhow::Error::new(ResponseTooLarge(limit));
         if resp
             .content_length()
-            .is_some_and(|length| length > limit as u64)
+            .is_some_and(|length| length > crate::num::usize_to_u64(limit))
         {
             return Err(too_large());
         }
@@ -665,7 +669,7 @@ fn vector_result_series(result: &serde_json::Value, time: i64) -> Vec<Series> {
                             .map(|value| (label.clone(), value.to_string()))
                     })
                     .collect(),
-                values: vec![(time as f64, value.to_string())],
+                values: vec![(crate::num::i64_to_f64(time), value.to_string())],
             })
         })
         .collect()
@@ -679,7 +683,7 @@ fn scalar_result_series(result: &serde_json::Value, time: i64) -> Option<Series>
 
     Some(Series {
         metric: HashMap::new(),
-        values: vec![(time as f64, value.to_string())],
+        values: vec![(crate::num::i64_to_f64(time), value.to_string())],
     })
 }
 

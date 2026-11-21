@@ -264,7 +264,9 @@ fn parse_auto_grid_layout(
     let spec = require_object_from(layout, "spec", &spec_path)?;
     let max_columns = match optional_number_from(spec, "maxColumnCount", &spec_path)? {
         // Grafana's editor only offers whole column counts; round anything else.
-        Some(count) => count.round().clamp(1.0, f64::from(AUTO_GRID_MAX_COLUMNS)) as u16,
+        Some(count) => {
+            crate::num::f64_to_u16(count.round().clamp(1.0, f64::from(AUTO_GRID_MAX_COLUMNS)))
+        }
         None => AUTO_GRID_DEFAULT_MAX_COLUMNS,
     };
     let column_width_px = auto_grid_size_px(
@@ -789,7 +791,7 @@ fn parse_repeat(spec: &JsonObject, spec_path: &str) -> Result<Option<model::Repe
     };
     let max_per_row = optional_number_from(repeat, "maxPerRow", &repeat_path)?
         .filter(|count| *count >= 1.0)
-        .map(|count| count.round().min(f64::from(u16::MAX)) as u16);
+        .map(|count| crate::num::f64_to_u16(count.round().min(f64::from(u16::MAX))));
     Ok(Some(model::Repeat {
         variable,
         direction,

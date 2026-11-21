@@ -304,7 +304,8 @@ impl AppState {
         let generation = self.refreshes.generation;
         let variables_window = (self.range, self.time_offset);
         let variable_update = self.variable_update(variables_window);
-        let end_ts = chrono::Utc::now().timestamp() - self.time_offset.as_secs() as i64;
+        let end_ts =
+            chrono::Utc::now().timestamp() - crate::num::u64_to_i64(self.time_offset.as_secs());
         let window = self.query_window(end_ts);
         let fetched = self.panels_to_fetch();
         let stage = FirstStage {
@@ -864,7 +865,7 @@ impl<'a> PanelQuery<'a> {
             legend: custom_legend(p.legends.get(i).and_then(Option::as_ref)),
             mode: p.query_mode(i),
             // Calculate start/end for URL display purposes
-            start_ts: end_ts - (range.as_secs() as i64),
+            start_ts: end_ts - crate::num::u64_to_i64(range.as_secs()),
             end_ts,
             step: intervals.step,
         }

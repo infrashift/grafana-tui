@@ -157,7 +157,7 @@ pub(super) fn max_data_points(value: Option<&Value>) -> Option<u32> {
         Value::String(text) => text.trim().parse().ok()?,
         _ => return None,
     };
-    (points >= 1.0).then(|| points.min(u32::MAX as f64) as u32)
+    (points >= 1.0).then(|| crate::num::f64_to_u32(points.min(f64::from(u32::MAX))))
 }
 
 #[derive(Debug)]
