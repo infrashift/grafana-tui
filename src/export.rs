@@ -24,7 +24,6 @@ use clap::ValueEnum;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
-use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -151,6 +150,27 @@ struct LineStyle<'a> {
     color: &'a str,
     dash: Option<&'a str>,
     width: f64,
+}
+
+/// An SVG text buffer. Its writes cannot fail, so no caller checks a result (R7).
+#[derive(Debug, Default)]
+struct SvgOut(String);
+
+impl SvgOut {
+    /// Adds formatted text to the end of the buffer.
+    fn put(&mut self, text: std::fmt::Arguments<'_>) {
+        self.0.push_str(&std::fmt::format(text));
+    }
+
+    /// Adds literal text to the end of the buffer.
+    fn push_str(&mut self, text: &str) {
+        self.0.push_str(text);
+    }
+
+    /// Gives the SVG text to the caller.
+    fn finish(self) -> String {
+        self.0
+    }
 }
 
 impl PlotRect {
@@ -296,18 +316,16 @@ pub(crate) fn render_svg(app: &AppState, viewport: Rect) -> String {
     let text = color_hex(app.theme.text, "#e6e6e6");
     let border = color_hex(app.theme.border, "#555555");
 
-    let mut out = String::new();
-    write!(
-        out,
+    let mut out = SvgOut::default();
+    out.put(format_args!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0}" height="{height:.0}" viewBox="0 0 {width:.0} {height:.0}">"#
-    )
-    .unwrap();
-    write!(out, r#"<rect width="100%" height="100%" fill="{bg}"/>"#).unwrap();
-    write!(
-        out,
+    ));
+    out.put(format_args!(
+        r#"<rect width="100%" height="100%" fill="{bg}"/>"#
+    ));
+    out.put(format_args!(
         r#"<g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="{FONT_SIZE}" fill="{text}">"#
-    )
-    .unwrap();
+    ));
     render_header(app, &mut out, width, &text, &border);
 
     for item in ui::visible_dashboard_rects(viewport, app) {
@@ -316,11 +334,11 @@ pub(crate) fn render_svg(app: &AppState, viewport: Rect) -> String {
 
     render_footer(app, &mut out, width, height, &text, &border);
     out.push_str("</g></svg>");
-    out
+    out.finish()
 }
 
 /// Draws one panel, row header, tab bar or empty tab message of the dashboard.
-fn render_dashboard_item(app: &AppState, item: &ui::DashboardRect, text: &str, out: &mut String) {
+fn render_dashboard_item(app: &AppState, item: &ui::DashboardRect, text: &str, out: &mut SvgOut) {
     let selected = app.selected_item == Some(item.id);
     match item.kind {
         ui::DashboardRectKind::Panel { index } => {
@@ -368,7 +386,7 @@ fn render_tab_group(
     group_id: crate::dashboard::TabGroupId,
     depth: usize,
     text: &str,
-    out: &mut String,
+    out: &mut SvgOut,
 ) {
     let Some(group) = app.layout.tabs(group_id) else {
         return;
@@ -392,8 +410,7 @@ fn render_tab_group(
         } else {
             (app.theme.text, "")
         };
-        write!(
-            out,
+        out.put(format_args!(
             r#"<text x="{:.2}" y="{:.2}" fill="{}" font-size="{:.1}" text-anchor="start"{}{}>{}</text>"#,
             rect.left,
             rect.top + FONT_SIZE,
@@ -402,18 +419,15 @@ fn render_tab_group(
             weight,
             decoration,
             escape_xml(&segment.text)
-        )
-        .unwrap();
+        ));
     }
 }
 
-fn render_header(app: &AppState, out: &mut String, width: f64, text: &str, border: &str) {
-    write!(
-        out,
+fn render_header(app: &AppState, out: &mut SvgOut, width: f64, text: &str, border: &str) {
+    out.put(format_args!(
         r#"<rect x="4" y="4" width="{:.0}" height="44" fill="none" stroke="{border}"/>"#,
         width - 8.0
-    )
-    .unwrap();
+    ));
     let title = format!(
         "{} - range={} step={} panels={}",
         app.title,
@@ -435,7 +449,7 @@ fn render_row_header(
     collapsed: bool,
     rect: PlotRect,
     selected: bool,
-    out: &mut String,
+    out: &mut SvgOut,
 ) {
     let Some(row) = app.layout.row(row_id) else {
         return;
@@ -467,20 +481,18 @@ fn render_row_header(
 
 fn render_footer(
     app: &AppState,
-    out: &mut String,
+    out: &mut SvgOut,
     width: f64,
     height: f64,
     text: &str,
     border: &str,
 ) {
-    write!(
-        out,
+    out.put(format_args!(
         r#"<line x1="4" y1="{:.0}" x2="{:.0}" y2="{:.0}" stroke="{border}"/>"#,
         height - 30.0,
         width - 4.0,
         height - 30.0
-    )
-    .unwrap();
+    ));
     let mode = match app.mode {
         AppMode::Normal => "NORMAL",
         AppMode::Search => "SEARCH",
@@ -510,7 +522,7 @@ fn render_panel(
     panel: &PanelState,
     rect: PlotRect,
     selected: bool,
-    out: &mut String,
+    out: &mut SvgOut,
 ) {
     render_panel_frame(app, panel, rect, selected, out);
     let inner = PlotRect {
@@ -545,7 +557,7 @@ fn render_panel_frame(
     panel: &PanelState,
     rect: PlotRect,
     selected: bool,
-    out: &mut String,
+    out: &mut SvgOut,
 ) {
     let theme = &app.theme;
     let border = if selected {
@@ -556,12 +568,10 @@ fn render_panel_frame(
     let title = color_hex(theme.title, "#00c8ff");
     let bg = color_hex(theme.background, "#111111");
 
-    write!(
-        out,
+    out.put(format_args!(
         r#"<rect x="{:.0}" y="{:.0}" width="{:.0}" height="{:.0}" fill="{bg}" stroke="{border}"/>"#,
         rect.left, rect.top, rect.width, rect.height
-    )
-    .unwrap();
+    ));
     // The notice follows the title in the same text, as in the TUI, so the
     // two cannot overlap.
     let notice = ui::data_notice(panel);
@@ -570,31 +580,27 @@ fn render_panel_frame(
         notice.map(|(text, _)| text),
         text_columns(rect.width - 16.0, FONT_SIZE),
     );
-    write!(
-        out,
+    out.put(format_args!(
         r#"<text x="{:.2}" y="{:.2}" fill="{title}" font-size="{FONT_SIZE:.1}" text-anchor="start">{}"#,
         rect.left + 8.0,
         rect.top + 18.0,
         escape_xml(&title_text)
-    )
-    .unwrap();
+    ));
     if let (Some(badge), Some((_, level))) = (badge, notice) {
         let color = match level {
             ui::NoticeLevel::Error => color_hex(theme.error, "#ff5555"),
             ui::NoticeLevel::Warning => color_hex(theme.warning, "#f0d000"),
         };
-        write!(
-            out,
+        out.put(format_args!(
             r#" <tspan fill="{color}" data-role="panel-notice">{}</tspan>"#,
             escape_xml(badge)
-        )
-        .unwrap();
+        ));
     }
     out.push_str("</text>");
 }
 
 /// Draws the query error of a panel without series, wrapped to the inner rectangle `inner`.
-fn render_panel_error(app: &AppState, err: &str, inner: PlotRect, out: &mut String) {
+fn render_panel_error(app: &AppState, err: &str, inner: PlotRect, out: &mut SvgOut) {
     let color = color_hex(app.theme.error, "#ff5555");
     let max_lines = ((inner.height - 18.0).max(0.0) / ERROR_LINE_HEIGHT) as usize + 1;
     let lines = wrap_text(err, text_columns(inner.width, FONT_SIZE), max_lines);
@@ -665,7 +671,7 @@ fn render_graph_panel(
     panel_index: usize,
     panel: &PanelState,
     rect: PlotRect,
-    out: &mut String,
+    out: &mut SvgOut,
 ) {
     let view = app.graph_view(panel_index, panel);
     if !view.has_content() {
@@ -754,27 +760,23 @@ fn graph_geometry(
 }
 
 /// Draws the y axis and the x axis lines.
-fn render_axes(graph: &SvgGraph<'_>, out: &mut String) {
+fn render_axes(graph: &SvgGraph<'_>, out: &mut SvgOut) {
     let plot = graph.plot;
     let axis = color_hex(graph.app.theme.axis, "#777777");
-    write!(
-        out,
+    out.put(format_args!(
         r#"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{axis}"/>"#,
         plot.left,
         plot.top,
         plot.left,
         plot.bottom()
-    )
-    .unwrap();
-    write!(
-        out,
+    ));
+    out.put(format_args!(
         r#"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{axis}"/>"#,
         plot.left,
         plot.bottom(),
         plot.right(),
         plot.bottom()
-    )
-    .unwrap();
+    ));
 }
 
 /// A threshold value and color, with whether its label fits on the y axis.
@@ -782,7 +784,7 @@ type LabelledThreshold = ((f64, Color), bool);
 
 /// Draws the value grid and its labels. Returns whether the y maximum label fits, and
 /// each threshold in range with whether its label fits.
-fn render_value_grid(graph: &SvgGraph<'_>, out: &mut String) -> (bool, Vec<LabelledThreshold>) {
+fn render_value_grid(graph: &SvgGraph<'_>, out: &mut SvgOut) -> (bool, Vec<LabelledThreshold>) {
     let (plot, y_bounds) = (graph.plot, graph.y_bounds);
     // Labels give way rather than overprint: the axis ends first, then
     // thresholds, then ticks. A label that gives way keeps its line.
@@ -822,7 +824,7 @@ fn render_value_grid(graph: &SvgGraph<'_>, out: &mut String) -> (bool, Vec<Label
 }
 
 /// Draws the time grid and its labels. Returns whether the end time label fits.
-fn render_time_grid(graph: &SvgGraph<'_>, out: &mut String) -> bool {
+fn render_time_grid(graph: &SvgGraph<'_>, out: &mut SvgOut) -> bool {
     let plot = graph.plot;
     let [x_min, x_max] = graph.x_bounds;
     let start_label = ui::format_time(x_min);
@@ -864,7 +866,7 @@ fn render_axis_end_labels(
     graph: &SvgGraph<'_>,
     show_y_max: bool,
     show_x_max: bool,
-    out: &mut String,
+    out: &mut SvgOut,
 ) {
     let (plot, text) = (graph.plot, &graph.text);
     let label_x = plot.left - 8.0;
@@ -916,7 +918,7 @@ fn render_axis_end_labels(
 }
 
 /// Draws each threshold line in range, with its label where the label fits.
-fn render_thresholds(graph: &SvgGraph<'_>, thresholds: &[LabelledThreshold], out: &mut String) {
+fn render_thresholds(graph: &SvgGraph<'_>, thresholds: &[LabelledThreshold], out: &mut SvgOut) {
     let plot = graph.plot;
     for &((value, color), labelled) in thresholds {
         let y = map_y(value, graph.y_bounds, plot);
@@ -947,7 +949,7 @@ fn render_thresholds(graph: &SvgGraph<'_>, thresholds: &[LabelledThreshold], out
 }
 
 /// Draws the area fill of each visible series of a line graph with fill opacity.
-fn render_area_fills(graph: &SvgGraph<'_>, out: &mut String) {
+fn render_area_fills(graph: &SvgGraph<'_>, out: &mut SvgOut) {
     if graph.options.draw_style != crate::app::GraphDrawStyle::Line {
         return;
     }
@@ -964,7 +966,7 @@ fn render_area_fills(graph: &SvgGraph<'_>, out: &mut String) {
 }
 
 /// Draws each visible series in the draw style of the graph.
-fn render_series(graph: &SvgGraph<'_>, out: &mut String) {
+fn render_series(graph: &SvgGraph<'_>, out: &mut SvgOut) {
     for (series, color) in graph.panel.series.iter().zip(&graph.colors) {
         if !series.visible {
             continue;
@@ -979,13 +981,11 @@ fn render_series(graph: &SvgGraph<'_>, out: &mut String) {
 }
 
 /// Draws one series as a line, with its points when the graph always shows points.
-fn render_graph_line(graph: &SvgGraph<'_>, series: &SeriesView, color: &str, out: &mut String) {
+fn render_graph_line(graph: &SvgGraph<'_>, series: &SeriesView, color: &str, out: &mut SvgOut) {
     if let Some(path) = series_path(series, graph.x_bounds, graph.y_bounds, graph.plot) {
-        write!(
-            out,
+        out.put(format_args!(
             r#"<path data-role="graph-line" d="{path}" fill="none" stroke="{color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>"#
-        )
-        .unwrap();
+        ));
     }
     if graph.options.show_points == crate::app::GraphPointMode::Always {
         render_graph_points(graph, series, color, out);
@@ -993,7 +993,7 @@ fn render_graph_line(graph: &SvgGraph<'_>, series: &SeriesView, color: &str, out
 }
 
 /// Draws the cursor line when the cursor is in the time range.
-fn render_cursor(graph: &SvgGraph<'_>, out: &mut String) {
+fn render_cursor(graph: &SvgGraph<'_>, out: &mut SvgOut) {
     let [x_min, x_max] = graph.x_bounds;
     let Some(cursor_x) = graph.app.cursor_x else {
         return;
@@ -1019,7 +1019,7 @@ fn render_legend_or_detail(
     graph: &SvgGraph<'_>,
     clusters: &[AnnotationCluster<'_>],
     legend: &LegendLayout,
-    out: &mut String,
+    out: &mut SvgOut,
 ) {
     let plot = graph.plot;
     let active_annotation =
@@ -1044,7 +1044,7 @@ fn render_graph_annotations<'a>(
     events: Vec<&'a crate::annotations::AnnotationEvent>,
     plot: PlotRect,
     x_bounds: [f64; 2],
-    out: &mut String,
+    out: &mut SvgOut,
 ) -> Vec<AnnotationCluster<'a>> {
     let clusters = cluster_events_by(events, |timestamp| {
         Some(map_x(timestamp, x_bounds, plot).round() as u32)
@@ -1053,20 +1053,16 @@ fn render_graph_annotations<'a>(
 
     for cluster in &clusters {
         let x = f64::from(cluster.coordinate);
-        write!(
-            out,
+        out.put(format_args!(
             r#"<line data-role="annotation-marker" x1="{x:.2}" y1="{:.2}" x2="{x:.2}" y2="{:.2}" stroke="{color}" stroke-width="1.00" stroke-dasharray="3 4"/>"#,
             plot.top,
             plot.bottom()
-        )
-        .unwrap();
-        write!(
-            out,
+        ));
+        out.put(format_args!(
             r#"<text x="{x:.2}" y="{:.2}" fill="{color}" font-size="{SMALL_FONT_SIZE:.1}" text-anchor="middle" data-role="annotation-count">{}</text>"#,
             plot.top + SMALL_FONT_SIZE,
             crate::ui::cluster_badge(cluster.events.len())
-        )
-        .unwrap();
+        ));
     }
 
     clusters
@@ -1094,7 +1090,7 @@ fn render_annotation_details(
     top: f64,
     width: f64,
     color: &str,
-    out: &mut String,
+    out: &mut SvgOut,
 ) {
     let character_budget = if width.is_finite() && width > 0.0 {
         (width / SMALL_FONT_SIZE).floor() as usize
@@ -1103,17 +1099,15 @@ fn render_annotation_details(
     };
     let [heading, details] = format_cluster_detail_lines(cluster, character_budget);
     for (row, line) in [heading, details].iter().enumerate() {
-        write!(
-            out,
+        out.put(format_args!(
             r#"<text x="{left:.2}" y="{:.2}" fill="{color}" font-size="{SMALL_FONT_SIZE:.1}" text-anchor="start" data-role="annotation-detail">{}</text>"#,
             top + 12.0 + row as f64 * 13.0,
             escape_xml(line)
-        )
-        .unwrap();
+        ));
     }
 }
 
-fn render_stat_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut String) {
+fn render_stat_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut SvgOut) {
     let Some(series) = panel.series.iter().find(|series| series.visible) else {
         render_no_data(app, panel, rect, out);
         return;
@@ -1162,7 +1156,7 @@ fn render_stat_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &m
     render_sparkline(series, sparkline, &color, out);
 }
 
-fn render_gauge_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut String) {
+fn render_gauge_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut SvgOut) {
     let Some((series, value)) = first_visible_value(panel) else {
         render_no_data(app, panel, rect, out);
         return;
@@ -1225,7 +1219,7 @@ fn render_gauge_range_labels(
     gauge: PlotRect,
     [min, max]: [f64; 2],
     text: &str,
-    out: &mut String,
+    out: &mut SvgOut,
 ) {
     let (min_label, _) = fit_text(
         &panel.display.format_number(min),
@@ -1278,7 +1272,7 @@ struct BarGaugeLayout {
     track: String,
 }
 
-fn render_bar_gauge_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut String) {
+fn render_bar_gauge_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut SvgOut) {
     let mut values = panel
         .series
         .iter()
@@ -1335,7 +1329,7 @@ fn render_bar_gauge_row(
     layout: &BarGaugeLayout,
     y: f64,
     (series, value): (&SeriesView, f64),
-    out: &mut String,
+    out: &mut SvgOut,
 ) {
     let rect = layout.rect;
     let ratio = (value / layout.max_value).clamp(0.0, 1.0);
@@ -1393,7 +1387,7 @@ struct TableLayout {
     text: String,
 }
 
-fn render_table_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut String) {
+fn render_table_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut SvgOut) {
     let values = panel
         .series
         .iter()
@@ -1424,7 +1418,7 @@ fn render_table_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &
 }
 
 /// Draws the column titles of a table and the line below them.
-fn render_table_header(app: &AppState, layout: &TableLayout, out: &mut String) {
+fn render_table_header(app: &AppState, layout: &TableLayout, out: &mut SvgOut) {
     let rect = layout.rect;
     let title = color_hex(app.theme.title, "#00c8ff");
     let border = color_hex(app.theme.border, "#555555");
@@ -1465,7 +1459,7 @@ fn render_table_row(
     layout: &TableLayout,
     y: f64,
     series: &SeriesView,
-    out: &mut String,
+    out: &mut SvgOut,
 ) {
     let value = series
         .value
@@ -1497,7 +1491,7 @@ fn render_table_row(
     );
 }
 
-fn render_heatmap_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut String) {
+fn render_heatmap_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut SvgOut) {
     let visible = panel
         .series
         .iter()
@@ -1567,7 +1561,7 @@ fn render_heatmap_cells(
     cells: PlotRect,
     cols: usize,
     [min, max]: [f64; 2],
-    out: &mut String,
+    out: &mut SvgOut,
 ) {
     if series.points.is_empty() {
         return;
@@ -1624,7 +1618,7 @@ fn value_ratio(value: f64, min: f64, max: f64) -> f64 {
     ((value - min) / (max - min)).clamp(0.0, 1.0)
 }
 
-fn render_no_data(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut String) {
+fn render_no_data(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut SvgOut) {
     let columns = text_columns(rect.width - 8.0, FONT_SIZE);
     let text = ui::truncate_title(
         panel.display.no_data_text(),
@@ -1641,7 +1635,7 @@ fn render_no_data(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut 
     );
 }
 
-fn render_sparkline(series: &SeriesView, rect: PlotRect, color: &str, out: &mut String) {
+fn render_sparkline(series: &SeriesView, rect: PlotRect, color: &str, out: &mut SvgOut) {
     if rect.width <= 0.0 || rect.height <= 0.0 || series.points.len() < 2 {
         return;
     }
@@ -1659,22 +1653,21 @@ fn render_sparkline(series: &SeriesView, rect: PlotRect, color: &str, out: &mut 
     let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let span = (max - min).max(f64::EPSILON);
     let step = rect.width / (values.len() - 1) as f64;
-    let mut path = String::new();
+    let mut path = SvgOut::default();
     for (index, value) in values.iter().enumerate() {
         let x = rect.left + index as f64 * step;
         let y = rect.bottom() - ((*value - min) / span).clamp(0.0, 1.0) * rect.height;
         if index == 0 {
-            write!(path, "M {x:.2} {y:.2}").unwrap();
+            path.put(format_args!("M {x:.2} {y:.2}"));
         } else {
-            write!(path, " L {x:.2} {y:.2}").unwrap();
+            path.put(format_args!(" L {x:.2} {y:.2}"));
         }
     }
+    let path = path.finish();
 
-    write!(
-        out,
+    out.put(format_args!(
         r#"<path d="{path}" fill="none" stroke="{color}" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>"#
-    )
-    .unwrap();
+    ));
 }
 
 /// A graph legend laid out in rows.
@@ -1758,7 +1751,7 @@ fn render_legend(
     legend: &LegendLayout,
     left: f64,
     top: f64,
-    out: &mut String,
+    out: &mut SvgOut,
 ) {
     let app = graph.app;
     let text = color_hex(app.theme.text, "#e6e6e6");
@@ -1766,13 +1759,11 @@ fn render_legend(
     for entry in &legend.entries {
         let color = graph.series_color(entry.index);
         let (x, y) = (left + entry.x, baseline(entry.row));
-        write!(
-            out,
+        out.put(format_args!(
             r#"<rect x="{:.2}" y="{:.2}" width="8" height="8" fill="{color}"/>"#,
             x,
             y - 8.0
-        )
-        .unwrap();
+        ));
         write_text(
             out,
             x + LEGEND_SWATCH,
@@ -1808,7 +1799,7 @@ fn graph_point_in_range(x: f64, y: f64, x_bounds: [f64; 2]) -> bool {
     x.is_finite() && y.is_finite() && x >= x_bounds[0] && x <= x_bounds[1]
 }
 
-fn render_graph_points(graph: &SvgGraph<'_>, series: &SeriesView, color: &str, out: &mut String) {
+fn render_graph_points(graph: &SvgGraph<'_>, series: &SeriesView, color: &str, out: &mut SvgOut) {
     let (rect, y_bounds, x_bounds) = (graph.plot, graph.y_bounds, graph.x_bounds);
     for (x, y) in &series.points {
         if !graph_point_in_range(*x, *y, x_bounds) {
@@ -1816,16 +1807,14 @@ fn render_graph_points(graph: &SvgGraph<'_>, series: &SeriesView, color: &str, o
         }
         let px = map_x(*x, x_bounds, rect);
         let py = map_y(*y, y_bounds, rect);
-        write!(
-            out,
+        out.put(format_args!(
             r#"<circle data-role="graph-point" cx="{:.2}" cy="{:.2}" r="2.2" fill="{}" />"#,
             px, py, color
-        )
-        .unwrap();
+        ));
     }
 }
 
-fn render_graph_bars(graph: &SvgGraph<'_>, series: &SeriesView, color: &str, out: &mut String) {
+fn render_graph_bars(graph: &SvgGraph<'_>, series: &SeriesView, color: &str, out: &mut SvgOut) {
     let (rect, y_bounds, x_bounds) = (graph.plot, graph.y_bounds, graph.x_bounds);
     let visible_points: Vec<_> = series
         .points
@@ -1843,12 +1832,10 @@ fn render_graph_bars(graph: &SvgGraph<'_>, series: &SeriesView, color: &str, out
         let px = map_x(*x, x_bounds, rect) - bar_width / 2.0;
         let py = map_y(*y, y_bounds, rect).min(baseline_y);
         let height = (baseline_y - map_y(*y, y_bounds, rect)).abs().max(1.0);
-        write!(
-            out,
+        out.put(format_args!(
             r#"<rect data-role="graph-bar" x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="{}" />"#,
             px, py, bar_width, height, color
-        )
-        .unwrap();
+        ));
     }
 }
 
@@ -1857,7 +1844,7 @@ fn render_graph_area(
     series: &SeriesView,
     color: &str,
     opacity: f64,
-    out: &mut String,
+    out: &mut SvgOut,
 ) {
     let (rect, y_bounds, x_bounds) = (graph.plot, graph.y_bounds, graph.x_bounds);
     let points: Vec<_> = series
@@ -1884,12 +1871,10 @@ fn render_graph_area(
     }
     path.push_str(&format!(" L {:.2} {:.2} Z", last_x, baseline_y));
 
-    write!(
-        out,
+    out.put(format_args!(
         r#"<path data-role="graph-area" d="{}" fill="{}" fill-opacity="{:.2}" stroke="none" />"#,
         path, color, opacity
-    )
-    .unwrap();
+    ));
 }
 
 fn series_path(
@@ -1898,7 +1883,7 @@ fn series_path(
     y_bounds: [f64; 2],
     plot: PlotRect,
 ) -> Option<String> {
-    let mut path = String::new();
+    let mut path = SvgOut::default();
     let mut started = false;
 
     for &(x_value, y_value) in &series.points {
@@ -1912,14 +1897,14 @@ fn series_path(
         let x = map_x(x_value, x_bounds, plot);
         let y = map_y(y_value, y_bounds, plot);
         if started {
-            write!(path, " L {x:.2} {y:.2}").unwrap();
+            path.put(format_args!(" L {x:.2} {y:.2}"));
         } else {
-            write!(path, "M {x:.2} {y:.2}").unwrap();
+            path.put(format_args!("M {x:.2} {y:.2}"));
             started = true;
         }
     }
 
-    started.then_some(path)
+    started.then(|| path.finish())
 }
 
 fn write_outputs(svg: &str, dir: &Path, stem: &str, format: ExportFormat) -> Result<Vec<PathBuf>> {
@@ -1952,7 +1937,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let temporary = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
     let result = fs::write(&temporary, bytes).and_then(|()| fs::rename(&temporary, path));
     if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+        // The write error goes to the caller. A failed cleanup leaves only a hidden
+        // temporary file, so the cleanup result does not change the report.
+        let _cleanup: std::io::Result<()> = fs::remove_file(&temporary);
     }
     result.with_context(|| format!("failed to write {}", path.display()))
 }
@@ -1989,18 +1976,16 @@ fn write_png(svg: &str, path: &Path) -> Result<()> {
     write_atomic(path, &png)
 }
 
-fn draw_line(out: &mut String, start: (f64, f64), end: (f64, f64), style: LineStyle<'_>) {
+fn draw_line(out: &mut SvgOut, start: (f64, f64), end: (f64, f64), style: LineStyle<'_>) {
     let (x1, y1) = start;
     let (x2, y2) = end;
-    write!(
-        out,
+    out.put(format_args!(
         r#"<line x1="{x1:.2}" y1="{y1:.2}" x2="{x2:.2}" y2="{y2:.2}" stroke="{}" stroke-width="{:.2}""#,
         style.color,
         style.width
-    )
-    .unwrap();
+    ));
     if let Some(dash) = style.dash {
-        write!(out, r#" stroke-dasharray="{dash}""#).unwrap();
+        out.put(format_args!(r#" stroke-dasharray="{dash}""#));
     }
     out.push_str("/>");
 }
@@ -2094,13 +2079,11 @@ fn wrap_text(text: &str, columns: usize, max_lines: usize) -> Vec<String> {
     lines
 }
 
-fn write_text(out: &mut String, x: f64, y: f64, text: &str, color: &str, anchor: &str, size: f64) {
-    write!(
-        out,
+fn write_text(out: &mut SvgOut, x: f64, y: f64, text: &str, color: &str, anchor: &str, size: f64) {
+    out.put(format_args!(
         r#"<text x="{x:.2}" y="{y:.2}" fill="{color}" font-size="{size:.1}" text-anchor="{anchor}">{}</text>"#,
         escape_xml(text)
-    )
-    .unwrap();
+    ));
 }
 
 /// The color, anchor, size and weight of one SVG text element.
@@ -2112,7 +2095,7 @@ struct TextStyle<'a> {
 }
 
 /// Writes one text element at `(x, y)` in the style `style`.
-fn write_styled_text(out: &mut String, x: f64, y: f64, text: &str, style: TextStyle<'_>) {
+fn write_styled_text(out: &mut SvgOut, x: f64, y: f64, text: &str, style: TextStyle<'_>) {
     let TextStyle {
         color,
         anchor,
@@ -2120,21 +2103,17 @@ fn write_styled_text(out: &mut String, x: f64, y: f64, text: &str, style: TextSt
         bold,
     } = style;
     let weight = if bold { r#" font-weight="bold""# } else { "" };
-    write!(
-        out,
+    out.put(format_args!(
         r#"<text x="{x:.2}" y="{y:.2}" fill="{color}" font-size="{size:.1}" text-anchor="{anchor}"{weight}>{}</text>"#,
         escape_xml(text)
-    )
-    .unwrap();
+    ));
 }
 
-fn write_rect(out: &mut String, rect: PlotRect, fill: &str, stroke: &str, stroke_width: f64) {
-    write!(
-        out,
+fn write_rect(out: &mut SvgOut, rect: PlotRect, fill: &str, stroke: &str, stroke_width: f64) {
+    out.put(format_args!(
         r#"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="{fill}" stroke="{stroke}" stroke-width="{stroke_width:.2}"/>"#,
         rect.left, rect.top, rect.width, rect.height
-    )
-    .unwrap();
+    ));
 }
 
 fn scaled_rect(rect: Rect) -> PlotRect {
