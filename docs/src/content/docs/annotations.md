@@ -3,16 +3,15 @@ title: External Annotations
 description: Overlay read-only point events from a JSONL file or command.
 ---
 
-grafana-tui can overlay read-only, external point events from exactly one source:
-a JSONL file or a command provider. It never edits or writes either source.
-External annotations are deliberately separate from Grafana dashboard
-annotations: grafana-tui does not implement Grafana annotation queries, APIs,
+grafana-tui can show read-only, external point events from one source only:
+a JSONL file or a command provider. It never edits or writes to the source.
+External annotations are not Grafana dashboard annotations. grafana-tui does
+not support Grafana annotation queries, the Grafana annotation APIs,
 `annotations`, or `annotations.list`.
 
 ## Enable Annotations
 
-Select exactly one source. For a file source, pass the path on the command
-line:
+Select one source only. For a file source, give the path on the command line:
 
 ```bash
 grafana-tui \
@@ -27,7 +26,8 @@ annotations_file = "./events.jsonl"
 ```
 
 For a command source, configure an executable that accepts the request protocol
-below. The command receives no shell interpolation:
+below. grafana-tui does not start a shell for the command, so no shell expands
+the arguments:
 
 ```toml
 [annotations_command]
@@ -45,43 +45,52 @@ grafana-tui \
   --annotations-command-arg=.
 ```
 
-Annotation files larger than 16 MiB are rejected with a warning, and at most
-100,000 events, the newest, are kept from either kind of source.
+grafana-tui does not read an annotation file larger than 16 MiB, and it shows
+a warning. From each kind of source, grafana-tui keeps the newest 100,000
+events at most.
 
-File and command sources are mutually exclusive. A TOML configuration that
-sets both is rejected even if the CLI selects a source. A CLI file or command
-replaces the complete TOML annotation source; it never mixes a CLI program,
-arguments, or timeout with TOML values. Sources are opt-in and read-only;
-grafana-tui does not create, edit, or otherwise write them.
+Use a file source or a command source, not the two. grafana-tui stops with an
+error when a TOML configuration sets the two sources, also when the CLI
+selects a source. A CLI file or command replaces all of the TOML annotation
+source. grafana-tui never mixes a CLI program, CLI arguments, or a CLI timeout
+with TOML values. The sources are optional and read-only. grafana-tui does not
+create, edit, or write to them.
 
 ## Command Provider Protocol
 
-grafana-tui writes exactly one version-1 request line to the command's standard
-input, then closes stdin. The request defines the complete refresh window:
+grafana-tui writes one version-1 request line to the standard input of the
+command, then closes stdin. The request gives the full refresh window:
 
 ```json
 {"version":1,"range":{"from":"2026-08-12T10:00:00Z","to":"2026-08-12T10:05:00Z"}}
 ```
 
 `range.from` and `range.to` are inclusive UTC RFC 3339 bounds. grafana-tui
-defensively applies its visible-range filtering to the events returned.
+also applies its own visible-range filter to the events that the provider
+returns.
 
-The provider writes zero or more existing JSONL events to stdout and diagnostics
-to stderr. Exit `0` with valid bounded JSONL replaces the complete annotation
-snapshot; an empty successful stdout clears it. A spawn failure, timeout,
-nonzero exit, invalid UTF-8 or JSONL, or oversized stdout keeps the last valid
-snapshot and shows a warning.
+The provider writes zero or more JSONL events to stdout, and it writes
+diagnostics to stderr. An exit status of `0` with valid, bounded JSONL replaces
+all of the annotation snapshot. An empty stdout with exit status `0` clears the
+snapshot. grafana-tui keeps the last valid snapshot and shows a warning when:
 
-The default timeout is 10 seconds. grafana-tui accepts at most 10 MiB of stdout
-and captures at most 64 KiB of stderr. A provider must finish its work before
-it exits: on Linux and macOS it runs in its own process group, and when the
-refresh ends (successfully, with an error or timeout, or because grafana-tui
-quits) any processes it started are killed. On Windows only the provider
-process itself is stopped. Providers inherit grafana-tui's current
-directory and environment. Put credentials in that environment or use standard
-credential tooling; never place secrets in dashboard JSON or command arguments.
+- The command does not start.
+- The command does not stop before the timeout.
+- The exit status is not zero.
+- The stdout has invalid UTF-8 or invalid JSONL.
+- The stdout is too large.
 
-The included Git provider is a practical starting point:
+The default timeout is 10 seconds. grafana-tui accepts 10 MiB of stdout at
+most, and it keeps 64 KiB of stderr at most. A provider must complete its work
+before it exits. On Linux and macOS, the provider runs in its own process group.
+When the refresh ends, grafana-tui stops all of the processes that the provider
+started. The refresh can end with success, with an error, with a timeout, or
+because grafana-tui quits. On Windows, grafana-tui stops only the provider
+process. A provider gets the current directory and the environment of
+grafana-tui. Put credentials in that environment, or use a standard credential
+tool. Never put secrets in dashboard JSON or in command arguments.
+
+The Git provider in the repository is a good first example:
 
 ```bash
 cargo build --example git_annotation_provider
@@ -91,131 +100,175 @@ printf '%s\n' '{"version":1,"range":{"from":"2026-08-12T10:00:00Z","to":"2026-08
 
 ## JSONL Event Format and Targeting
 
-The file contains one JSON object per line. Blank lines are ignored. Each event
-requires `time` to be an RFC3339 string with an explicit timezone or offset
-(numeric timestamps are rejected) and non-empty `text`. `tags` is an optional
-array of non-empty strings.
+The file has one JSON object on each line. grafana-tui ignores blank lines.
+Each event must have these fields:
+
+- `time`: an RFC3339 string with an explicit timezone or offset. grafana-tui
+  does not accept a numeric timestamp.
+- `text`: a string that is not empty.
+
+`tags` is an optional array of strings that are not empty.
 
 ```json
 {"time":"2026-07-23T14:30:00Z","text":"Maintenance window","tags":["maintenance"]}
 {"time":"2026-07-23T14:30:00Z","text":"Deployed v2.4","tags":["deploy","production"],"panel_titles":["HTTP Request Rate by Status Code"]}
 ```
 
-Omit `panel_titles` to target all eligible graph and timeseries panels, as in
-the first event. When `panel_titles` is present, it must contain one or more
-non-blank titles and each title is matched exactly and case-sensitively against
-eligible graph/timeseries panel titles as displayed, after dashboard variables
-are interpolated (so a repeated panel's copies each have their own title).
-`null`, an empty array, and blank titles are validation errors.
+Omit `panel_titles` to show the event on all of the applicable graph and
+timeseries panels, as the first event does. When the event has
+`panel_titles`, the array must have one or more titles that are not blank.
+grafana-tui compares each title with the displayed title of each applicable
+graph or timeseries panel. The comparison is exact and case-sensitive.
+grafana-tui compares the titles after it replaces the dashboard variables, so
+each copy of a repeated panel has its own title. `null`, an empty array, and a
+blank title are errors.
 
-If a title occurs on multiple eligible panels, the event fans out to all of
-them and grafana-tui shows one warning for that duplicate title. A title that is
-missing, or exists only on a non-graph panel, shows one warning and renders no
-marker for that title. These titles are grafana-tui routing labels, not Grafana
-panel IDs.
+If more than one applicable panel has the same title, the event goes to all of
+those panels. grafana-tui shows one warning for that duplicate title. A title
+can match no panel, or it can match only a panel that is not a graph. Then
+grafana-tui shows one warning and draws no marker for that title. These titles
+are grafana-tui labels that send events to panels. They are not Grafana panel
+IDs.
 
-Events are ordered by timestamp. Unknown JSON fields are ignored. Times with
-fractional seconds are accepted, and the full fractional timestamp is used when
-projecting an event onto the graph even when the space-limited inline timestamp
-display shows less precision.
+grafana-tui sorts the events by timestamp. It ignores unknown JSON fields. It
+accepts times with fractional seconds. It uses the full fractional timestamp to
+put an event on the graph. The inline timestamp display has little space, so it
+can show fewer digits.
 
 ## Target, Filter, Inspect, and Reload
 
-This walkthrough uses current UTC timestamps so both events fall in the visible
-15-minute range. It uses only POSIX shell tools; no `jq` is required.
+This example uses current UTC timestamps, so the two events are in the visible
+15-minute range. It uses only POSIX shell tools. It does not use `jq`.
 
-First, start the bundled Prometheus demo stack from the repository root:
+1. Start the Prometheus demo stack from the repository root:
 
-```bash
-cd examples/demo && docker-compose up -d && sleep 5 && cd ../..
-```
+   ```bash
+   cd examples/demo && docker-compose up -d && sleep 5 && cd ../..
+   ```
 
-Then create the annotation file and run grafana-tui:
+2. Run these commands:
 
-```bash
-annotation_demo_file=/tmp/grafana-tui-annotations-demo.jsonl
-annotation_demo_time="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+   ```bash
+   annotation_demo_file=/tmp/grafana-tui-annotations-demo.jsonl
+   annotation_demo_time="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-printf '{"time":"%s","text":"Maintenance window","tags":["maintenance"]}\n' \
-  "$annotation_demo_time" > "$annotation_demo_file"
-printf '{"time":"%s","text":"API deployed","tags":["deploy","production"],"panel_titles":["HTTP Request Rate by Status Code"]}\n' \
-  "$annotation_demo_time" >> "$annotation_demo_file"
+   printf '{"time":"%s","text":"Maintenance window","tags":["maintenance"]}\n' \
+     "$annotation_demo_time" > "$annotation_demo_file"
+   printf '{"time":"%s","text":"API deployed","tags":["deploy","production"],"panel_titles":["HTTP Request Rate by Status Code"]}\n' \
+     "$annotation_demo_time" >> "$annotation_demo_file"
 
-cargo run -- \
-  --grafana-json examples/dashboards/prometheus_demo.json \
-  --prometheus-url http://localhost:19090 \
-  --range 15m \
-  --annotations-file "$annotation_demo_file"
-```
+   cargo run -- \
+     --grafana-json examples/dashboards/prometheus_demo.json \
+     --prometheus-url http://localhost:19090 \
+     --range 15m \
+     --annotations-file "$annotation_demo_file"
+   ```
 
-`Maintenance window` appears on every graph/timeseries panel. `API deployed`
-appears only on `HTTP Request Rate by Status Code`. Press `t`, select `deploy`
-with `Space`, and press `Enter`; only the targeted deployment remains. Press
-`v`, move the cursor to the marker, and press `Enter`; the selected panel's
-cluster list and selected-event detail pane open.
+   The commands write the annotation file and start grafana-tui.
+   `Maintenance window` shows on each graph or timeseries panel.
+   `API deployed` shows only on `HTTP Request Rate by Status Code`.
 
-While grafana-tui is running, append an event in a second terminal:
+3. Press `t`.
+4. Select `deploy` with `Space`.
+5. Press `Enter`. Only the event with the `deploy` tag stays visible.
+6. Press `v`.
+7. Move the cursor to the marker.
+8. Press `Enter`. The cluster list and the event detail pane of the selected
+   panel open.
+9. Keep grafana-tui open. In a second terminal, add an event:
 
-```bash
-annotation_demo_file=/tmp/grafana-tui-annotations-demo.jsonl
-annotation_demo_time="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-printf '{"time":"%s","text":"Rollback started","tags":["rollback","production"],"panel_titles":["HTTP Request Rate by Status Code"]}\n' \
-  "$annotation_demo_time" >> "$annotation_demo_file"
-```
+   ```bash
+   annotation_demo_file=/tmp/grafana-tui-annotations-demo.jsonl
+   annotation_demo_time="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+   printf '{"time":"%s","text":"Rollback started","tags":["rollback","production"],"panel_titles":["HTTP Request Rate by Status Code"]}\n' \
+     "$annotation_demo_time" >> "$annotation_demo_file"
+   ```
 
-The new event is loaded after the normal refresh; grafana-tui does not need to
-restart. With only `deploy` selected, `Rollback started` remains hidden. Press
-`t`, then `c`, and press `Enter` to apply the cleared filter and reveal the
-rollback marker. Alternatively, select `rollback` in the filter and apply it.
+   grafana-tui reads the new event at the next normal refresh. You do not
+   restart grafana-tui. The filter selects only `deploy`, so
+   `Rollback started` stays hidden.
+
+10. Press `t`.
+11. Press `c` to clear the filter.
+12. Press `Enter` to apply the clear filter. The rollback marker shows.
+
+As an alternative to steps 11 and 12, select `rollback` in the filter and
+apply the filter.
 
 ## Tag Filter and Cluster Controls
 
-Press `t` to open the global annotation tag filter. It is runtime-only: it is
-not written to the JSONL source or configuration, and applies to every eligible
-panel. Selected tags use exact, case-sensitive OR matching: an event remains
-visible when it has any selected tag. With no selected tags, events with and
-without tags remain visible. The catalogue keeps a selected tag with a zero
-event count so it can be removed after a reload.
+Press `t` to open the global annotation tag filter. The filter has effect
+only while grafana-tui runs. grafana-tui does not write it to the JSONL source
+or to the configuration. The filter applies to all of the applicable panels.
 
-In the tag filter, use `Up`/`Down` or `j`/`k` to move, `Space` to toggle the
-highlighted tag, `c` to clear the draft, `Enter` to apply it, or `Esc` to
-cancel without changing the applied filter. In inspection mode, `Enter` opens
-only the cluster actually rendered by the selected panel at the cursor. In the
-cluster, use `Up`/`Down` or `j`/`k` to select an event, `PgUp`/`PgDn` to page,
-and `Enter` or `Esc` to close. Mouse input is ignored while either annotation
-modal is open.
+The filter compares the selected tags with the event tags. The comparison is
+exact, case-sensitive, and uses OR. An event stays visible when it has one or
+more of the selected tags. When the filter has no selected tags, all events stay
+visible, with tags or without tags. The tag list keeps a selected tag with a zero event
+count, so that you can clear that tag after a reload.
 
-Cluster contents are frozen when the cluster opens: a later reload can replace
-the live annotation snapshot without moving rows or changing the cluster's
-event details.
+In the tag filter, use these keys:
+
+| Key | Action |
+| --- | --- |
+| `Up`/`Down` or `j`/`k` | Move |
+| `Space` | Select or clear the highlighted tag |
+| `c` | Clear the draft |
+| `Enter` | Apply the draft |
+| `Esc` | Cancel and keep the applied filter |
+
+In inspect mode, `Enter` opens only the cluster that the selected panel draws
+at the cursor. In the cluster, use these keys:
+
+| Key | Action |
+| --- | --- |
+| `Up`/`Down` or `j`/`k` | Select an event |
+| `PgUp`/`PgDn` | Go up or down one page |
+| `Enter` or `Esc` | Close the cluster |
+
+grafana-tui ignores the mouse while an annotation modal is open.
+
+The cluster keeps the same contents while it is open. A reload can replace the
+live annotation snapshot. The rows of the cluster do not move, and the event
+details of the cluster do not change.
 
 ## Automatic Reload, Rendering, and Exports
 
-grafana-tui refreshes both source types during each normal refresh, including
-while markers are hidden. It checks a file source's metadata and, when it
-changes, reads, parses, and validates the full candidate file before atomically
-replacing the snapshot. A zero-byte file is a valid update that clears all
-events. Command and Prometheus refreshes share the same time range, start
-together, and redraw together. Annotation loading is independent of Prometheus:
-annotation failures never fail startup or a Prometheus refresh.
+grafana-tui refreshes the two source types at each normal refresh, also when
+the TUI does not show the markers. For a file source, grafana-tui reads the file metadata
+first. When the metadata changes, grafana-tui reads, parses, and checks the
+full new file. Then it replaces the snapshot in one step. A zero-byte file is a
+valid update that clears all events. The command refresh and the Prometheus
+refresh use the same time range. They start together and the screen updates
+for the two together. Annotations do not depend on Prometheus. An annotation
+failure never stops startup or a Prometheus refresh.
 
-Only `graph` and `timeseries` panels receive annotation markers. Press `a` to
-toggle marker visibility. Events that project to the same terminal column are
-shown as one counted marker: `•` for one event, decimal `2`–`9` for two through
-nine events, and `+` for 10 or more. In inspection mode, moving the cursor onto
-that column shows the cluster's timestamp, text, and tags inline; multi-event
-details report the exact cluster count.
+Only `graph` and `timeseries` panels show annotation markers. Press `a` to
+show or hide the markers. grafana-tui draws one marker with a count for all of
+the events in the same terminal column:
 
-Applied panel targeting and tag filtering affect the markers in SVG/PNG exports
-and changed-frame recordings. Active inline annotation details are exportable;
-the tag-filter and cluster modal chrome is not.
+| Events in the column | Marker |
+| --- | --- |
+| 1 | `•` |
+| 2 to 9 | The decimal digit `2`–`9` |
+| 10 or more | `+` |
+
+In inspect mode, move the cursor onto that column to see the timestamp, text,
+and tags of the cluster inline. For a cluster of more than one event, the
+details give the exact number of events.
+
+The applied panel targets and the applied tag filter also apply to the
+markers in SVG/PNG exports and in changed-frame recordings. The exports include
+the active inline annotation details. They do not include the tag-filter modal
+or the cluster modal.
 
 ## Errors and Last Valid Snapshot
 
-If a file is missing, unreadable, or contains a malformed event, grafana-tui keeps
-rendering the last valid snapshot and shows an annotation warning. Command
-provider failures follow the same rule. A bad update does not replace the
-previously loaded events, fail startup, or fail the Prometheus refresh.
+A file can be absent or unreadable, or it can have a malformed event. Then
+grafana-tui keeps the last valid snapshot on the screen and shows an
+annotation warning. The same rule applies to command provider failures. A bad
+update does not replace the events that grafana-tui read before. It does not
+stop startup, and it does not stop the Prometheus refresh.
 
 ## CI/CD and Provider Integrations
 
@@ -224,24 +277,26 @@ CI workflow → durable deployment/release record → command provider query
             → normalized JSONL point events → grafana-tui overlay
 ```
 
-GitHub Actions is a useful concrete pattern: let a workflow record deployment,
-release, or workflow outcomes in an API, object store, database, or shared event
-log. A local provider receives grafana-tui's requested range and queries that
-system of record, then emits normalized JSONL point events. Useful tags include
-repository, workflow, environment, status, commit, and deployment.
+GitHub Actions gives a good example of this pattern. A workflow writes a record
+of each deploy, release, or workflow result. It writes the record to an API, an
+object store, a database, or a shared event log. A local provider gets the
+range from grafana-tui and queries that system of record. Then the provider
+writes normalized JSONL point events. Useful tags are repository, workflow,
+environment, status, commit, and deploy.
 
-Give the provider credentials through its environment or standard credential
-tooling, never dashboard JSON or command arguments. A shared JSONL file is a
-reasonable source only when the workflow and grafana-tui genuinely share storage;
-do not commit an ever-growing event log to the application repository.
-Vendor-specific providers should normally live as user or community plugins.
-Built-in integrations remain demand-driven.
+Give credentials to the provider through its environment or a standard
+credential tool. Never put them in dashboard JSON or in command arguments. Use
+a shared JSONL file only when the workflow and grafana-tui share the same
+storage. Do not commit an event log that always gets larger to the application
+repository. Put vendor-specific providers in user or community plugins.
+grafana-tui adds built-in integrations only when users ask for them.
 
 ## Current Limits and Roadmap
 
-This feature supports one external file or command source, point events,
-panel-title routing, and one global runtime-only tag filter. It has no stable
-event IDs, no per-panel tag filters, no multiple sources, and no editing. It
-does not add Grafana annotation-query/API compatibility. Range events, stable
-event IDs, and per-panel tag filters remain deferred. `--validate` validates
-Grafana dashboard imports only; it does not validate annotations.
+This feature supports one external file or command source and point events.
+Panel titles send events to panels. One global tag filter has effect only at
+runtime. It has no stable event IDs, no tag filter for each panel, no
+multiple sources, and no edit function. It does not add support for Grafana
+annotation queries or Grafana annotation APIs. Range events, stable event IDs,
+and a tag filter for each panel are for a later release. `--validate` checks
+only Grafana dashboard imports. It does not check annotations.

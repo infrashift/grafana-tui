@@ -3,7 +3,7 @@ title: Configuration
 description: CLI options, the TOML config file, authentication, TLS, and themes.
 ---
 
-grafana-tui can be configured with CLI options, a TOML configuration file, or both. CLI options override values from the configuration file.
+Configure grafana-tui with CLI options, a TOML configuration file, or the two. CLI options override values from the configuration file.
 
 ## Common CLI Options
 
@@ -70,8 +70,8 @@ instance = "server-01"
 
 ## Connecting to an mTLS Prometheus
 
-TLS settings are optional. Without them, an `https://` URL is verified against
-the built-in web PKI roots, and a plain `http://` URL works as it always has.
+TLS settings are optional. Without them, grafana-tui verifies an `https://` URL
+with the built-in web PKI roots, and a plain `http://` URL works as before.
 
 To reach a Prometheus that uses a private CA and requires client
 certificates, set the `[tls]` table:
@@ -99,20 +99,20 @@ grafana-tui --prometheus-url https://10.60.1.21:9090 \
 | `client_key` | `--client-key` | The client certificate's unencrypted PEM private key: PKCS#8 (`BEGIN PRIVATE KEY`), SEC1 (`BEGIN EC PRIVATE KEY`), or PKCS#1 (`BEGIN RSA PRIVATE KEY`). |
 
 - Paths may start with `~`.
-- `client_cert` and `client_key` must be set together.
-- The options are independent: use `ca_cert` alone for a private-CA server
-  that doesn't ask for client certificates, or `client_cert` and `client_key`
-  alone for a publicly trusted one that does.
+- Set `client_cert` and `client_key` together.
+- The options are independent. Use `ca_cert` alone for a private-CA server
+  that does not ask for client certificates. Use `client_cert` and
+  `client_key` alone for a publicly trusted server that asks for them.
 - Servers addressed by IP need the IP in their certificate's subject
-  alternative names. TLS 1.2 and 1.3 are supported.
+  alternative names. grafana-tui supports TLS 1.2 and 1.3.
 - `[tls]` rejects unknown keys, so a misspelled option is an error rather than
   silently ignored.
 
 grafana-tui checks the files at startup and exits with an error that names the
 file and the problem when:
 
-- a TLS option is set but `prometheus_url` isn't `https://`;
-- a file is missing or unreadable, or isn't valid PEM;
+- the configuration sets a TLS option but `prometheus_url` isn't `https://`;
+- a file is absent or unreadable, or isn't valid PEM;
 - `ca_cert` or `client_cert` holds no certificate, or `client_key` holds no key
   or an encrypted one;
 - `client_key` isn't the key of `client_cert`.
@@ -131,8 +131,8 @@ Range queries choose their step the way Grafana's Prometheus datasource does:
 2. Round to a Grafana interval, such as `20s`, `1m`, or `10m`.
 3. Use the min interval instead when it is larger. The min interval is the
    target's `interval`, then the panel's `interval`, then `--step`.
-4. Coarsen the step if the query would exceed Prometheus's limit of 11,000
-   points per series.
+4. Make the step coarser if the query gets more than 11,000 points per series,
+   the Prometheus limit.
 
 `$__interval` is the step a query runs with. `$__rate_interval` is
 `max($__interval + scrape interval, 4 × scrape interval)`. The scrape interval
@@ -157,8 +157,8 @@ args = ["."]
 timeout = "10s"
 ```
 
-`program` is required; `args` defaults to an empty list and `timeout` defaults
-to `10s`. The matching CLI source is:
+`program` is mandatory. `args` defaults to an empty list, and `timeout`
+defaults to `10s`. This is the same source from the CLI:
 
 ```bash
 grafana-tui \
@@ -168,15 +168,15 @@ grafana-tui \
 ```
 
 `--annotations-command-arg` and `--annotations-command-timeout` require
-`--annotations-command`; repeat the argument flag to retain argument order.
-`--annotations-file` and `--annotations-command` cannot be combined. A CLI file
-or command has whole-source precedence over TOML: it replaces the configured
-file or complete command configuration rather than merging individual fields.
+`--annotations-command`. Repeat the argument flag to keep the argument order.
+Do not use `--annotations-file` and `--annotations-command` together. A CLI
+file or command replaces all of the TOML source. It replaces the configured
+file or the full command configuration. It does not merge single fields.
 
 ## Themes
 
 The default theme is `tokyo-night`. Run `grafana-tui --list-themes` to print every
-available name; the theme currently selected is marked `(current)`.
+available name. The list shows `(current)` after the selected theme.
 
 | Family | Themes | Aliases |
 |---|---|---|
@@ -207,7 +207,7 @@ grafana-tui --theme catppuccin-latte
 
 ### Custom Themes
 
-Define your own themes in `[themes.<name>]` tables. Each starts from a built-in
+Define custom themes in `[themes.<name>]` tables. Each starts from a built-in
 theme (`extends`, default `tokyo-night`) and overrides any of the roles below.
 Select it like a built-in, with `theme = "<name>"` or `--theme <name>`.
 
@@ -227,9 +227,12 @@ extends = "catppuccin-latte"
 background = "#ffffff"
 ```
 
-Colors are `#rrggbb`, an ANSI name (`black`, `red`, `green`, `yellow`, `blue`,
-`magenta`, `cyan`, `gray`, `dark-gray`, `white`, or a `light-` variant such as
-`light-blue`), or `reset` for the terminal's own color.
+A color is one of these values:
+
+- `#rrggbb`.
+- An ANSI name: `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`,
+  `gray`, `dark-gray`, `white`, or a `light-` variant such as `light-blue`.
+- `reset`, for the terminal's own color.
 
 | Key | Colors |
 |---|---|
@@ -247,6 +250,6 @@ Colors are `#rrggbb`, an ANSI name (`black`, `red`, `green`, `yellow`, `blue`,
 | `threshold_default` | Threshold lines whose dashboard color has no terminal equivalent |
 | `palette` | Series colors, in order (at least one) |
 
-Unknown keys and invalid colors are reported at startup with the theme and key
-that caused them. `autogrid_color`, when set, still takes precedence over the
-theme's `grid`.
+At startup, grafana-tui reports unknown keys and invalid colors, with the
+theme and the key that caused them. When the configuration sets
+`autogrid_color`, it overrides the theme's `grid`.

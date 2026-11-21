@@ -12,10 +12,10 @@ and what grafana-tui currently supports.
 > slices built from this compatibility ladder.
 
 **Legend**:
-- ✅ **Supported** — Fully implemented and working
+- ✅ **Supported** — Fully implemented; it works
 - 🔶 **Partial** — Partially implemented or with limitations
 - ❌ **Not Implemented** — Recognized but not yet functional
-- ⛔ **Not Applicable** — Cannot be implemented in a TUI context (e.g., browser-only features)
+- ⛔ **Not Applicable** — Not possible in a TUI (e.g., browser-only features)
 
 ---
 
@@ -63,7 +63,7 @@ after this section apply to V2 panels, queries, and variables too. See the
 | `spec.annotations` | ❌ Not Implemented | As for Classic `annotations`; grafana-tui's external annotation sources are separate |
 
 Grafana's V2 schema also includes settings for its browser editor and other
-datasources; those not listed here are ignored. Use a Classic export for
+datasources. grafana-tui ignores the settings that this page does not list. Use a Classic export for
 dashboards from Grafana 12, whose V2 resources are `v2alpha1` or `v2beta1`.
 
 ---
@@ -233,9 +233,9 @@ dashboards from Grafana 12, whose V2 resources are `v2alpha1` or `v2beta1`.
 
 ## Field Configuration (`fieldConfig`)
 
-`fieldConfig` is partially implemented. Thresholds, explicit min/max bounds,
-selected display formatting fields, threshold style, and per-panel autogrid
-settings are parsed; value mappings, display names, and field overrides remain
+`fieldConfig` is partially implemented. grafana-tui parses thresholds, explicit
+min/max bounds, selected display format fields, threshold style, and per-panel
+autogrid settings. Value mappings, display names, and field overrides remain
 major gaps.
 
 | JSON Field | Status | Notes |
@@ -305,7 +305,7 @@ tooltips.
 | `annotations.list` | ❌ Not Implemented | External file/command providers do not implement this Grafana field. |
 
 grafana-tui external file/command JSONL events are a separate, opt-in read-only source.
-`panel_titles` is grafana-tui's external-source routing field: it matches eligible
+`panel_titles` is the grafana-tui field that sends external events to panels. It matches eligible
 graph/timeseries panel titles exactly, not Grafana panel IDs. It does not imply
 compatibility with Grafana annotation queries, APIs, `annotations`, or
 `annotations.list`.
@@ -371,11 +371,11 @@ compatibility with Grafana annotation queries, APIs, `annotations`, or
 
 ## Most Requested Missing Features
 
-Based on user feedback, the following missing features are most commonly expected:
+User feedback asks most often for these features, which grafana-tui does not have yet:
 
 1. **Value mappings** (`fieldConfig.defaults.mappings`) — Map numeric values to text labels
-2. **Broader unit formatting** (`fieldConfig.defaults.unit`) — Extend the current common-unit subset to more Grafana unit families
-3. **Reduce options** (`options.reduceOptions`) — Use min/max/mean/total instead of always using the latest value
+2. **Broader unit format support** (`fieldConfig.defaults.unit`) — Extend the current common-unit subset to more Grafana unit families
+3. **Reduce options** (`options.reduceOptions`) — Use min/max/mean/total instead of only the latest value
 4. **Import diagnostics** — Warn clearly about skipped panel types and ignored high-impact fields
 5. **Additional panel types** — `text`, `piechart`, `histogram`, `logs`
 
@@ -403,4 +403,4 @@ grafana-tui provides several TUI-native capabilities that don't map directly to 
 
 ---
 
-*This document was reviewed against the grafana-tui source code on `main` after v0.1.12. If you notice any inaccuracies, please open an issue or PR.*
+*A review checked this document against the grafana-tui source code on `main` after v0.1.12. If you find an error, open an issue or PR.*

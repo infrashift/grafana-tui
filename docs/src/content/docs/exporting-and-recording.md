@@ -9,7 +9,7 @@ grafana-tui can export the current dashboard view as SVG, PNG, or both. It can a
 
 Press `e` to export the current visible dashboard.
 
-Output files are written under `--export-dir`:
+grafana-tui writes the output files in `--export-dir`:
 
 ```bash
 grafana-tui --export-dir ./grafana-tui-exports --export-format both
@@ -23,7 +23,8 @@ Supported formats:
 
 ## Record Changed Frames
 
-Press `Ctrl+E` to start recording. Press `Ctrl+E` again, or quit with `q`, to finalize the bundle.
+1. Press `Ctrl+E` to start a recording.
+2. Press `Ctrl+E` again, or quit with `q`, to complete the bundle.
 
 grafana-tui records only changed rendered states:
 
@@ -34,14 +35,14 @@ grafana-tui-recording-<timestamp>/
   manifest.json
 ```
 
-If `--export-format png` or `both` is selected, matching PNG files are written too.
+If you set `--export-format png` or `both`, grafana-tui also writes a PNG file for each SVG file.
 
-When external annotations are visible, their panel targeting and applied tag
-filter affect the markers written to SVG/PNG exports and changed-frame
-recordings. Any active inline annotation details remain exportable. Annotation
-modal chrome is omitted from exports and recordings, and draft-only tag-filter
-edits do not create recording frames; a frame can change after the filter is
-applied or cleared.
+External annotations can be visible. Then their panel targets and the applied
+tag filter change the markers in SVG/PNG exports and in recordings. The active
+inline annotation details also go into the export. Exports and recordings do
+not show the annotation modals. A change to the draft of the tag
+filter does not make a new frame. A frame can change after you apply or clear
+the filter.
 
 ## Recording Limits
 
@@ -51,11 +52,11 @@ Limit the number of changed frames in one recording:
 grafana-tui --record-max-frames 300
 ```
 
-When the frame cap is reached, grafana-tui stops writing new frames and records `completed_reason = "capped"` when finalized.
+At the frame cap, grafana-tui stops and writes no more frames. When the recording completes, the manifest records `completed_reason = "capped"`.
 
 ## Manifest
 
-Each recording writes a `manifest.json` file with metadata for downstream tooling:
+Each recording writes a `manifest.json` file. Other tools can read its metadata:
 
 ```json
 {

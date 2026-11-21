@@ -15,23 +15,23 @@ supported panels in the terminal.
 | V1 Resource JSON | ❌ Unsupported | The `dashboard.grafana.app/v1` resource envelope is not accepted |
 
 `--grafana-json` (alias `--grafana-dashboard`) reads `.json` files as JSON and
-`.yaml`/`.yml` files as YAML. Files with any other extension are parsed as JSON
-first and then as YAML.
+`.yaml`/`.yml` files as YAML. For a file with a different extension, it tries
+JSON first and then YAML.
 
 V2 resources and Classic dashboards share one importer, so panels, Prometheus
 queries, variables, field configuration, and diagnostics behave the same in
 both. On top of that, V2 dashboards support:
 
 - `GridLayout`, `AutoGridLayout`, `RowsLayout`, and `TabsLayout`, nested in any
-  combination ([auto grids](#auto-grid-layouts));
+  mix ([auto grids](#auto-grid-layouts));
 - repeated grid items, auto grid items, rows, and tabs ([repeats](#repeats));
-- conditional rendering of rows, tabs, and auto grid items
-  ([conditional rendering](#conditional-rendering));
+- conditions that show or hide rows, tabs, and auto grid items
+  ([conditions](#conditional-rendering));
 - variables defined by rows and tabs ([row and tab variables](#row-and-tab-variables));
 - `timeSettings.autoRefresh` as the default refresh interval.
 
-Settings that only make sense in a browser, such as rows and auto grids that fill
-the viewport, are accepted and ignored. Layout kinds grafana-tui does not know, and
+grafana-tui accepts and ignores the settings that only apply in a browser, such as
+rows and auto grids that fill the viewport. Layout kinds grafana-tui does not know, and
 malformed fields, are import errors that name the field's path, such as
 `spec.layout.spec.rows[0].spec.repeat.direction`.
 
@@ -42,19 +42,19 @@ dashboards exported from Grafana 13 import unchanged. Exports made with
 **Share dashboard with another instance** enabled also work: their queries carry
 no datasource and run against the Prometheus server given by `--prometheus-url`.
 
-Library panels are exported as a reference to the library panel's uid, without
-the panel itself, so grafana-tui skips them with an import diagnostic. Enable
-**Share dashboard with another instance** when exporting to inline library
-panels into the dashboard.
+A Grafana export gives a library panel only as a reference to its uid, without
+the panel itself. So grafana-tui skips the library panel with an import
+diagnostic. To put the library panels into the export, enable **Share dashboard
+with another instance** when you export the dashboard.
 
 ## Auto Grid Layouts
 
 An `AutoGridLayout` places its panels left to right, top to bottom, in columns of
-equal width. As in Grafana, the column count adapts to the available width: it
-is the number of minimum-width columns that fit, capped by `maxColumnCount`
-(default 3), and never more than the number of panels, so a grid with fewer
-panels than columns stretches them across the full width. Resizing the terminal
-reflows the grid.
+equal width. As in Grafana, the column count changes with the available width.
+It is the number of minimum-width columns that fit, up to `maxColumnCount`
+(default 3). It is never more than the number of panels. So a grid with fewer
+panels than columns stretches them across the full width. When you resize the
+terminal, the grid reflows.
 
 Grafana sizes auto grids in CSS pixels. grafana-tui converts them as follows:
 
@@ -69,19 +69,20 @@ Grafana sizes auto grids in CSS pixels. grafana-tui converts them as follows:
 | `rowHeightMode: tall` | 512px | 14 grid rows |
 | `rowHeightMode: custom`, `rowHeight: N` | N px | (N + 8) / 38 grid rows, rounded |
 
-Terminal columns use Grafana's 8px spacing unit, so column counts match what
-Grafana shows at a similar pixel width: a 120-column terminal shows two
+A terminal column is 8px, the Grafana grid unit. So the column counts match what
+Grafana shows at a similar pixel width. A 120-column terminal shows two
 `standard` columns, and an 80-column terminal shows one. Grid rows are the same
 unit as a fixed-grid panel's `height` (30px plus an 8px margin in Grafana).
-`fillScreen`, `fitContent`, and minimum/maximum height settings are ignored.
+grafana-tui ignores `fillScreen`, `fitContent`, and the minimum/maximum height
+settings.
 
 ## Row and Tab Variables
 
 A V2 row or tab can define `variables` of its own. As in Grafana, they apply to
 the row or tab itself (its title, repeat, and conditions) and to everything
-inside it, and they shadow a dashboard variable with the same name there; the
-rest of the dashboard keeps the dashboard's value. Every variable kind grafana-tui
-supports at the dashboard level is supported here, with the same selection,
+inside it. There, they shadow a dashboard variable with the same name. The rest
+of the dashboard keeps the dashboard's value. Each variable kind that grafana-tui
+supports at the dashboard level also works here, with the same selection,
 multi-value, and `All` rules.
 
 Query variables in a row or tab resolve against Prometheus with the variables
@@ -89,7 +90,7 @@ around that row or tab. Inside a repeated row, each copy resolves its own, so a
 `label_values(up{dc="$dc"}, host)` variable in a row repeated over `dc` lists
 each data center's hosts.
 
-`--var` and the config file's `vars` override dashboard variables only; a row or
+`--var` and the config file's `vars` override only dashboard variables. A row or
 tab variable with the same name still wins inside its row or tab.
 
 ## Conditional Rendering
@@ -104,19 +105,23 @@ shows or hides them. grafana-tui evaluates these groups as Grafana 13 does:
 | Data (auto grid items only) | The panel returned data (`value: true`) or no data (`value: false`) |
 | Time range size | The dashboard time range is at most the value, such as `1h` or `7d` |
 
-A group's `condition` combines its conditions with `and` or `or`, and its
+A group's `condition` combines its conditions with `and` or `or`. Its
 `visibility` shows (`show`) or hides (`hide`) the item when they hold.
-Conditions that cannot be decided yet are left out: a variable the dashboard
-does not define, an unparseable time range size, or a data condition before its
-panel's first query. A group with nothing left to decide shows its item.
+grafana-tui leaves out a condition that it cannot decide yet:
+
+- a variable that the dashboard does not define;
+- a time range size that grafana-tui cannot parse;
+- a data condition before the first query of its panel.
+
+A group with no conditions left shows its item.
 
 Items re-evaluate as query variables resolve, data refreshes, and the time range
-changes with zoom and pan. Hidden rows, tabs, and auto grid items leave the
-layout entirely; the auto grid reflows, a tab group whose active tab is hidden
-switches to its first remaining tab, and collapsed rows and selected tabs are
-remembered while hidden. Panels hidden by a data condition keep being queried
-so they can reappear. Inside a repeated row or tab, a variable condition sees
-that copy's own value.
+changes with zoom and pan. A hidden row, tab, or auto grid item leaves the
+layout, and the auto grid reflows. If a condition hides the active tab of a tab
+group, the group shows its first visible tab. A collapsed row and a selected tab
+keep their state while a condition hides them. grafana-tui continues to query a
+panel that a data condition hides, so that the panel can come back. Inside a
+repeated row or tab, a variable condition sees the value of that copy.
 
 ## Export From Grafana
 
@@ -126,7 +131,7 @@ Grafana 13 exports dashboards in the V2 Resource model by default:
 2. In the toolbar, open **Export** and select **Export as code**.
 3. Choose JSON or YAML.
 4. If the dashboard uses library panels, enable **Share dashboard with another
-   instance** so they are inlined.
+   instance**. This option puts the library panels in the file.
 5. Download the file, or copy it into a local `.json` or `.yaml` file.
 6. Run grafana-tui with `--grafana-json`.
 
@@ -135,9 +140,14 @@ grafana-tui --prometheus-url http://localhost:9090 --grafana-json ./node-exporte
 ```
 
 Grafana 12 exports dynamic dashboards as `v2alpha1` or `v2beta1` resources,
-which grafana-tui does not accept. Export those, or any dashboard from an older
-Grafana, with the Classic model instead: under **Export as code**, expand
-**Advanced options**, set **Model** to **Classic**, and save the JSON. Grafana
+which grafana-tui does not accept. For those dashboards, and for dashboards from
+an older Grafana, export with the Classic model:
+
+1. Under **Export as code**, expand **Advanced options**.
+2. Set **Model** to **Classic**.
+3. Save the JSON.
+
+Grafana
 documents the available models and export controls in
 [Export a dashboard as code](https://grafana.com/docs/grafana/latest/visualizations/dashboards/share-dashboards-panels/#export-a-dashboard-as-code).
 
@@ -153,17 +163,17 @@ grafana-tui currently supports:
 - `table`
 - `heatmap`
 
-Classic row headers and their collapsed state are rendered and interactive.
-Collapsed descendants are excluded from navigation, search, refresh, and
-export. Hidden-header rows are transparent: they consume no header and their
-children remain visible.
+grafana-tui draws Classic row headers and their collapsed state, and you can
+expand and collapse them. The panel focus keys, search, refresh, and export
+skip all items inside a collapsed row. A row with a hidden header is
+transparent: it takes no header line, and its children stay visible.
 
 ## Variables
 
 grafana-tui reads dashboard variables from `templating.list` (Classic) or
 `spec.variables` (V2) and expands `$var` and `${var}` in PromQL expressions and
-in panel, row, and tab titles. Names are matched whole, so `$job_name` never
-expands a variable called `job`.
+in panel, row, and tab titles. grafana-tui matches whole names, so `$job_name`
+never expands a variable called `job`.
 
 Defaults come from the dashboard's saved selection; a variable without one
 selects its first option, as Grafana does. Override them from the CLI:
@@ -172,9 +182,10 @@ selects its first option, as Grafana does. Override them from the CLI:
 grafana-tui --grafana-json ./dash.json --var job=node --var instance=server-01
 ```
 
-Prometheus query variables such as `label_values(up, instance)` and
-`query_result(...)` are resolved before panel queries run. A saved selection
-that Prometheus still offers is kept; otherwise the first value is selected.
+grafana-tui resolves Prometheus query variables such as
+`label_values(up, instance)` and `query_result(...)` before panel queries run.
+If Prometheus still offers the saved selection, the variable keeps it. If not,
+the variable selects the first value.
 `label_values` only lists values from series in the current time range.
 
 A query variable's **Refresh** setting decides when its query runs again:
@@ -185,8 +196,8 @@ A query variable's **Refresh** setting decides when its query runs again:
 | On time range change | When the dashboard opens, and again after zooming, panning, returning to live, or pressing `r` |
 | Never | Not queried; the saved selection is used. A variable saved without a selection is resolved once |
 
-Periodic refreshes do not re-query variables. A variable whose query references
-another variable is queried again whenever that variable's value changes. When
+Periodic refreshes do not re-query variables. When the value of a variable
+changes, grafana-tui queries again each variable whose query refers to it. When
 a variable query fails, the variable keeps its value, the other variables still
 resolve, and the footer shows the error.
 
@@ -195,17 +206,17 @@ resolve, and the footer shows the error.
 Multi-value and include-all variables follow Grafana's Prometheus datasource:
 
 - Each value is regex-escaped, so `web.1` becomes `web\\.1` in the query.
-- Several values become an alternation such as `(api|web\\.1)`, meant for
+- Several values become one regex group with `|`, such as `(api|web\\.1)`, for
   `=~` matchers.
 - `All` selects every option: a custom variable's options, or every value a
   query variable resolves. It interpolates as the variable's `allValue` when
   set, and otherwise as all values joined.
 
-In titles, several values are shown joined with ` + `, like Grafana's text
+In titles, grafana-tui joins several values with ` + `, like Grafana's text
 format.
 
-Repeat `--var` for one name to select several values. A single `--var` value is
-used verbatim, so it can still be a regex such as `--var job='api|web'`:
+Repeat `--var` for one name to select several values. grafana-tui uses a single
+`--var` value verbatim, so it can still be a regex such as `--var job='api|web'`:
 
 ```bash
 grafana-tui --grafana-json ./dash.json --var instance=server-01 --var instance=server-02
@@ -213,11 +224,12 @@ grafana-tui --grafana-json ./dash.json --var instance=server-01 --var instance=s
 
 ## Repeats
 
-Panels, rows, and tabs that repeat over a variable are copied once per selected
-value, so `All` or a multi-value selection shows one copy per value. Each copy
-uses its own value: `$var` in its title and queries is that single value
-(regex-escaped for multi-value variables), and the copies of a repeated row or
-tab carry that value into every panel inside them. Nested repeats combine.
+grafana-tui copies a panel, row, or tab that repeats over a variable once for
+each selected value. So `All` or a multi-value selection shows one copy for each
+value. Each copy uses its own value. `$var` in its title and queries is that
+single value (regex-escaped for multi-value variables). The copies of a repeated
+row or tab carry that value into every panel inside them. Nested repeats
+combine.
 
 | Repeat | Classic | V2 | Layout |
 |---|---|---|---|
@@ -228,20 +240,21 @@ tab carry that value into every panel inside them. Nested repeats combine.
 | Tab | — | `TabsLayoutTab` `repeat` | One tab per value |
 
 When a repeated grid panel grows, panels that start below it move down by the
-height it adds, as in Grafana. If the variable has no selected values, the item
-is shown once; if the variable is not defined, the item is also shown once and
-an `unknown_repeat_variable` diagnostic is printed.
+height it adds, as in Grafana. If the variable has no selected values,
+grafana-tui shows the item once. If the dashboard does not define the variable,
+grafana-tui also shows the item once and prints an `unknown_repeat_variable`
+diagnostic.
 
 Copies follow query variables as they resolve. A copy keeps its place, data,
 and collapsed state while its value stays selected.
 
 ## Import Diagnostics
 
-grafana-tui prints import warnings before starting the TUI when a dashboard uses
-important Grafana features that are skipped or ignored. Diagnostics include
+Before the TUI starts, grafana-tui prints import warnings when a dashboard uses
+important Grafana features that it skips or ignores. Diagnostics include
 unsupported panel types, value mappings, reduce options, unresolved variables,
 unsupported V2 datasources, and unsupported variable modifiers such as
-`${var:regex}`. V2 diagnostics retain their `spec.*` source paths.
+`${var:regex}`. V2 diagnostics keep their `spec.*` source paths.
 
 Run a non-interactive check with:
 
@@ -249,12 +262,12 @@ Run a non-interactive check with:
 grafana-tui --validate --grafana-json ./dash.json
 ```
 
-Warnings do not make validation fail. A dashboard that can be parsed and
-imported exits successfully even if diagnostics are printed.
+Warnings do not make the check fail. If grafana-tui can parse and import a
+dashboard, the check exits successfully, even if it prints diagnostics.
 
-Use `--strict` to make warnings fail validation, or `--format json` to emit a
-machine-readable summary. Fatal V2 layout errors fail validation in all modes;
-`--strict` additionally fails when import diagnostics are present:
+Use `--strict` to make warnings fail the check, or `--format json` to emit a
+machine-readable summary. Fatal V2 layout errors fail the check in all modes.
+`--strict` also fails when import diagnostics are present:
 
 ```bash
 grafana-tui --validate --strict --grafana-json ./dash.json
@@ -276,9 +289,9 @@ it out. Press `Tab` / `Shift+Tab` to show the next or previous dashboard, or
 click a label. The header shows the dashboard's full title.
 
 Only the dashboard shown queries Prometheus: its panels and its variables, so
-several dashboards cost Prometheus no more than the one on screen. Switching
-refreshes the dashboard at once and reloads its variables, as opening it in
-Grafana does. It refreshes at its own auto-refresh interval, unless
+several dashboards cost Prometheus no more than the one on screen. When you
+switch to a dashboard, grafana-tui refreshes it at once and reloads its
+variables, as Grafana does when it opens a dashboard. It refreshes at its own auto-refresh interval, unless
 `--refresh-rate` or `refresh_rate` sets one for every dashboard.
 
 Each dashboard keeps its own variables, even when two dashboards define a
@@ -316,10 +329,10 @@ to range queries.
 ## Field Configuration
 
 grafana-tui applies selected `fieldConfig.defaults` values where they map cleanly
-to terminal rendering:
+to a terminal display:
 
 - `min` and `max` set explicit Graph y-axis bounds and Gauge limits.
-- `thresholds` render graph threshold lines and drive dynamic coloring for Stat,
+- `thresholds` render graph threshold lines and set the dynamic color of Stat,
   Gauge, and Bar Gauge panels.
 - `unit`, `decimals`, and `noValue` affect supported panel values, axes,
   legends, and exports.
@@ -327,7 +340,7 @@ to terminal rendering:
 
 ## Built-In PromQL Variables
 
-grafana-tui expands the following Grafana-style variables:
+grafana-tui expands these Grafana-style variables:
 
 - `$__interval`
 - `$__interval_ms`

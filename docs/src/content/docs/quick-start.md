@@ -5,7 +5,7 @@ description: Run grafana-tui against Prometheus and open your first dashboard.
 
 ## Connect to Prometheus
 
-If Prometheus is already running locally:
+If Prometheus is on the local host:
 
 ```bash
 grafana-tui --prometheus-url http://localhost:9090
@@ -28,14 +28,14 @@ grafana-tui --prometheus-url http://localhost:9090 --grafana-json ./dashboard.js
 ```
 
 Grafana 13 exports V2 resources as JSON or YAML, and both import directly.
-Exports reference library panels by uid only, so enable **Share dashboard with
-another instance** when exporting a dashboard that uses them. V1 Resource files
-are unsupported.
-See [Grafana Dashboard Import](/grafana-tui/grafana-dashboard-import/) for the full format
-requirements.
+A Grafana export refers to each library panel only by its uid. If a dashboard
+uses library panels, enable **Share dashboard with another instance** before
+the export. grafana-tui does not support V1 Resource files.
+For the full format requirements, see
+[Grafana Dashboard Import](/grafana-tui/grafana-dashboard-import/).
 
-Override dashboard variables with repeated `--var` options; repeating a name
-selects several values:
+To override dashboard variables, give one `--var` option for each value. If
+you give a name more than one time, the TUI selects each of its values:
 
 ```bash
 grafana-tui --grafana-json ./dash.json --var job=node --var instance=server-01

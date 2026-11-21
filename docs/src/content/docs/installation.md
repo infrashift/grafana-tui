@@ -5,7 +5,7 @@ description: Install grafana-tui into ~/.local/bin or another directory on your 
 
 ## Installer Script
 
-Install the latest prebuilt release without requiring Rust:
+Install the latest prebuilt release. This method does not need Rust:
 
 ```bash
 bash -o pipefail -c 'curl --proto =https --tlsv1.2 -LsSf https://raw.githubusercontent.com/infrashift/grafana-tui/main/install.sh | bash'
@@ -18,28 +18,28 @@ bash -o pipefail -c 'wget -O- https://raw.githubusercontent.com/infrashift/grafa
 ```
 
 The script supports Linux and macOS on x86_64 and ARM64. It installs to
-`$HOME/.local/bin` and never invokes `sudo`. Make sure that directory is on
-your `PATH`.
+`$HOME/.local/bin` and never invokes `sudo`. Make sure that this directory is
+on the `PATH`.
 
-Set `GRAFANA_TUI_INSTALL_DIR` to install into another directory on your `PATH`
-that you can write to:
+To install into another directory, set `GRAFANA_TUI_INSTALL_DIR`. The directory
+must be on the `PATH`, and you must have write access to it:
 
 ```bash
 bash -o pipefail -c 'curl --proto =https --tlsv1.2 -LsSf https://raw.githubusercontent.com/infrashift/grafana-tui/main/install.sh | GRAFANA_TUI_INSTALL_DIR=$HOME/bin bash'
 ```
 
-Set `GRAFANA_TUI_VERSION` to install a specific release. The leading `v` is
-optional:
+To install a specific release, set `GRAFANA_TUI_VERSION`. The `v` at the start
+is optional:
 
 ```bash
 bash -o pipefail -c 'curl --proto =https --tlsv1.2 -LsSf https://raw.githubusercontent.com/infrashift/grafana-tui/main/install.sh | GRAFANA_TUI_VERSION=v0.1.11 bash'
 ```
 
-Every release download is verified against its published SHA-256 checksum
-manifest. Installation stops if the manifest is unavailable or verification
-fails.
+The script verifies each release download against its published SHA-256
+checksum manifest. If the manifest is not available, or if the check fails, the
+script stops.
 
-Reviewing downloaded scripts before running them is recommended:
+We recommend that you read a downloaded script before you run it:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf -o install.sh https://raw.githubusercontent.com/infrashift/grafana-tui/main/install.sh
@@ -51,9 +51,12 @@ bash install.sh
 
 Each [GitHub Release](https://github.com/infrashift/grafana-tui/releases)
 publishes a `.tar.gz` archive for Linux and macOS on x86_64 and ARM64, plus
-`grafana-tui-checksums.txt` with their SHA-256 hashes. To install one by hand,
-download the archive for your platform and the checksum manifest, verify it,
-and extract the binary into `~/.local/bin`:
+`grafana-tui-checksums.txt` with their SHA-256 hashes. To install one by hand:
+
+1. Download the archive for the platform.
+2. Download the checksum manifest.
+3. Verify the archive against the manifest.
+4. Extract the binary into `~/.local/bin`.
 
 ```bash
 asset=grafana-tui-x86_64-unknown-linux-gnu.tar.gz
@@ -68,12 +71,14 @@ tar -xzf "${asset}" -C ~/.local/bin grafana-tui
 On macOS, use `shasum -a 256 --check --ignore-missing` instead of `sha256sum`.
 
 On Windows, download `grafana-tui-x86_64-pc-windows-msvc.zip` and extract
-`grafana-tui.exe` into a directory on your `PATH`.
+`grafana-tui.exe` into a directory on the `PATH`.
 
 ## From Source
 
-grafana-tui requires Rust 1.88 or newer. Clone the repository and install the
-binary into `~/.local/bin`:
+grafana-tui requires Rust 1.88 or newer.
+
+1. Clone the repository.
+2. Install the binary into `~/.local/bin`.
 
 ```bash
 git clone https://github.com/infrashift/grafana-tui.git
@@ -81,7 +86,7 @@ cd grafana-tui
 cargo install --path . --root ~/.local
 ```
 
-For development, use `cargo run` instead:
+To run a build from the source tree, use `cargo run`:
 
 ```bash
 cargo run -- --prometheus-url http://localhost:9090
@@ -89,10 +94,10 @@ cargo run -- --prometheus-url http://localhost:9090
 
 ## Making Sure It Is on PATH
 
-Every method above installs a single self-contained binary; grafana-tui is not
-distributed through crates.io or any third-party package manager. If your
-shell cannot find `grafana-tui`, add the install directory to your `PATH`, for
-example in `~/.bashrc` or `~/.zshrc`:
+Each method above installs one self-contained binary. We do not publish
+grafana-tui on crates.io or in a third-party package manager. If the shell
+cannot find `grafana-tui`, add the install directory to the `PATH`. For
+example, add this line to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
