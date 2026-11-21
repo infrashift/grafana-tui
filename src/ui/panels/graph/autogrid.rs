@@ -33,7 +33,7 @@ pub(super) fn nice_grid_step(range: f64, target_lines: usize) -> f64 {
         10.0
     };
     let step = nice_fraction * magnitude;
-    // A subnormal magnitude or an overflow loses the precision of the checks.
+    // With a subnormal magnitude or an overflow, the checks are not precise.
     let precise = magnitude.is_normal() && step.is_finite();
     debug_assert!(
         !precise || step >= raw_step * (1.0 - 1e-9),

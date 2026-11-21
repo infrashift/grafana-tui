@@ -35,8 +35,8 @@ pub(super) fn render_heatmap(frame: &mut Frame, area: Rect, p: &PanelState, app:
         return;
     }
 
-    // For heatmap, we'll display each series as a row, with time buckets as columns
-    // Each cell is colored based on value intensity
+    // The heatmap shows each series as a row and the time buckets as columns.
+    // The color of each cell shows the value intensity.
 
     let rows_available = usize::from(area.height.saturating_sub(2)); // Reserve space for labels
     let cols_available = usize::from(area.width);
@@ -52,7 +52,7 @@ pub(super) fn render_heatmap(frame: &mut Frame, area: Rect, p: &PanelState, app:
         return;
     }
 
-    // Calculate global min/max for color scaling
+    // Calculate the global min/max for the color scale
     let (global_min, global_max) = value_range(&visible_series);
 
     if !global_min.is_finite() || !global_max.is_finite() || global_min == global_max {

@@ -221,7 +221,7 @@ mod tests {
         });
 
         let bounds = calculate_y_bounds(&p);
-        assert!(bounds[0] < 10.0); // Should ignore NAN
+        assert!(bounds[0] < 10.0); // The bounds ignore NAN
         assert!(bounds[1] > 20.0);
     }
 
@@ -236,7 +236,7 @@ mod tests {
         });
 
         let bounds = calculate_y_bounds(&p);
-        assert!(bounds[0] < 10.0); // Should ignore INFINITY
+        assert!(bounds[0] < 10.0); // The bounds ignore INFINITY
         assert!(bounds[1] > 20.0);
     }
 
@@ -253,7 +253,7 @@ mod tests {
 
         let bounds = calculate_y_bounds(&p);
         // Range is 0.0 to 20.0. Padding is 5% of 20.0 = 1.0.
-        // So min should be 0.0 - 1.0 = -1.0.
+        // So min is 0.0 - 1.0 = -1.0.
         assert_eq!(bounds[0], -1.0);
         assert!(bounds[1] > 20.0);
     }

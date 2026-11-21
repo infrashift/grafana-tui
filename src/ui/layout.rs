@@ -87,7 +87,7 @@ pub(crate) fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect 
     center
 }
 
-/// Returns a list of (Rect, panel_index) for all panels to be rendered.
+/// Returns a list of (Rect, panel_index) for each panel to draw.
 pub(crate) fn calculate_grid_layout(area: Rect, app: &AppState) -> Vec<(Rect, usize)> {
     let mut results = Vec::new();
 
@@ -153,7 +153,7 @@ fn scrolled_grid_rect(cells: &GridCells, g: GridUnit) -> Option<Rect> {
 
     // Apply scroll offset
     if y_absolute < cells.scroll_offset {
-        // Panel is scrolled out of view at the top
+        // The scroll moved the panel out of view at the top
         return None;
     }
     let y = area
@@ -257,11 +257,8 @@ pub(crate) fn calculate_two_column_layout_subset(
     let panel_height = 12u16;
     let rows_fit = usize::from((area.height / panel_height).saturating_mul(2).max(1));
 
-    // Scroll handling
-    // If we are rendering the main list (not extras), we use app.vertical_scroll.
-    // If we are rendering extras, we might want independent scroll or just show what fits.
-    // For now, use app.vertical_scroll only if we are rendering the full list (heuristic).
-    // Or better: always use it, but clamp it.
+    // Scroll: the main list and the extra panels both use `app.vertical_scroll`.
+    // The code clamps it, so the extra panels show the rows that fit.
 
     let start = app
         .vertical_scroll
@@ -428,10 +425,10 @@ fn flat_dashboard_rects(inner_area: Rect, app: &AppState) -> Vec<DashboardRect> 
     rects
 }
 
-/// The dashboard laid out before scrolling.
+/// The dashboard layout before the scroll offset applies.
 struct Projection {
-    /// The bar of the tab group holding one tab per dashboard, which stays at
-    /// the top when several dashboards are loaded.
+    /// The bar of the tab group that has one tab per dashboard. The bar stays
+    /// at the top when the app loads several dashboards.
     pinned: Option<DashboardRect>,
     /// Where the scrolled items show: the area below the pinned bar.
     content: Rect,
@@ -525,7 +522,7 @@ fn project_pinned(group: &DashboardTabs, area: Rect, app: &AppState) -> Projecti
     }
 }
 
-/// The tab group of several loaded dashboards, which is pinned above them.
+/// The tab group of several loaded dashboards. The layout pins it above them.
 fn pinned_dashboard_group(app: &AppState) -> Option<&crate::dashboard::DashboardTabs> {
     let group = app.dashboard_group()?;
     let pinned = match app.layout.items.as_slice() {
@@ -553,7 +550,7 @@ pub(crate) fn scroll_selected_into_view(area: Rect, app: &mut AppState) {
         return;
     }
     if app.dashboard_group().map(DashboardItemId::Tabs) == Some(selected) {
-        // The dashboards' tab bar is pinned, so it is always in view.
+        // The layout pins the tab bar of the dashboards, so it is always in view.
         return;
     }
     let inner = dashboard_inner_area(area);
@@ -675,7 +672,7 @@ impl<'a> ProjectFrame<'a> {
     }
 }
 
-/// The position of the next item in a dashboard projection.
+/// The position of the next item in a dashboard `Projection`.
 struct ItemCursor {
     depth: usize,
     area: Rect,
@@ -890,7 +887,7 @@ fn project_panel_columns(
 }
 
 /// Lays out auto grid panels row-major in equal-width columns of `row_height` grid
-/// units each, returning the y coordinate below the last row.
+/// units each. Returns the y coordinate below the last row.
 fn project_auto_grid(
     area: Rect,
     origin_y: u16,
@@ -986,7 +983,7 @@ fn clip_scrolled_rect(
     Some(item)
 }
 
-/// Determines which visible dashboard item is located at the given coordinates.
+/// Determines which visible dashboard item is at the given coordinates.
 ///
 /// # Arguments
 ///
@@ -997,7 +994,7 @@ fn clip_scrolled_rect(
 ///
 /// # Returns
 ///
-/// A copy of the hit rectangle, including its disclosure target for rows.
+/// A copy of the hit rectangle. For a row, the copy also has its disclosure target.
 pub(crate) fn hit_test(app: &AppState, area: Rect, x: u16, y: u16) -> Option<DashboardRect> {
     let inner_area = dashboard_inner_area(area);
 
@@ -1207,7 +1204,7 @@ mod tests {
     fn auto_grid_reflows_columns_with_terminal_width() {
         let app = auto_grid_app(4, false);
 
-        // The dashboard body is the terminal width minus a one-cell border, and each
+        // The dashboard body is the terminal width minus a one-cell border. Each
         // 56-cell column needs a one-cell gap: 118 cells fit two, 198 fit three.
         for (width, columns) in [(80, 1), (120, 2), (200, 3)] {
             let area = Rect::new(0, 0, width, 50);
@@ -1347,7 +1344,7 @@ mod tests {
         assert_eq!(rects[1].rect.y, inner.y + 1);
         let panel = rects[1].rect;
 
-        // Scrolling moves the content under the bar, which stays.
+        // A scroll moves the content under the bar, and the bar stays.
         app.vertical_scroll = 1;
         let rects = visible_dashboard_rects(area, &app);
         assert_eq!(rects[0].rect, Rect::new(inner.x, inner.y, inner.width, 1));
@@ -1356,7 +1353,7 @@ mod tests {
         let hit = hit_test(&app, area, inner.x + 3, inner.y).unwrap();
         assert_eq!(hit.id, DashboardItemId::Tabs(group));
 
-        // The bar is always in view, so selecting it does not scroll.
+        // The bar is always in view, so when the user selects it, the view does not scroll.
         app.selected_item = Some(DashboardItemId::Tabs(group));
         scroll_selected_into_view(area, &mut app);
         assert_eq!(app.vertical_scroll, 1);

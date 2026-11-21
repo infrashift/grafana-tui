@@ -68,8 +68,8 @@ pub(super) fn render_stat(frame: &mut Frame, area: Rect, p: &PanelState, app: &A
 const SPARKLINE_MAX: u64 = 100;
 
 /// Bar heights for a sparkline, scaled between the series' minimum and
-/// maximum. `Sparkline` takes unsigned integers, so casting the values would
-/// flatten fractions and negatives.
+/// maximum. `Sparkline` takes unsigned integers. A direct cast of the values
+/// flattens fractions and negatives.
 fn sparkline_heights(points: &[(f64, f64)]) -> Vec<u64> {
     let (min, max) = points
         .iter()

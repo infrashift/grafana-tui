@@ -46,7 +46,7 @@ pub(crate) struct GraphView<'a> {
     pub(crate) colors: Vec<Color>,
     /// The value and the theme color of each threshold step.
     pub(crate) thresholds: Vec<(f64, Color)>,
-    /// True when the threshold lines are dashed.
+    /// True when the threshold lines use dashes.
     pub(crate) thresholds_dashed: bool,
 }
 
@@ -298,7 +298,7 @@ pub(super) fn threshold_steps(panel: &PanelState) -> Vec<(f64, Color)> {
     steps
 }
 
-/// Returns true when the threshold marker or the panel threshold style is dashed.
+/// Returns true when the threshold marker or the panel threshold style uses dashes.
 fn thresholds_dashed(app: &AppState, panel: &PanelState) -> bool {
     let style = panel
         .thresholds

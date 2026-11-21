@@ -435,7 +435,7 @@ fn build_datasets<'d>(
                 .extend(data.iter().map(|(x, y)| (*x, *y, *color)));
         }
     }
-    // Add the cursor line when inspecting.
+    // Add the cursor line in the inspect mode.
     if !cursor_line.is_empty() {
         layers
             .chart
@@ -558,7 +558,7 @@ fn render_threshold_overlay(
         datasets.len() == points.len(),
         "each threshold line has a dataset"
     );
-    // Data curves keep precedence wherever both map to the same terminal cell.
+    // Where a data curve and a threshold line use the same terminal cell, the data curve wins.
     if datasets.is_empty() || chart.plot.top > chart.plot.bottom {
         return;
     }

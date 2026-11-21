@@ -192,7 +192,7 @@ fn picker_line<'a>(row: &PickerRow<'a>, marks: &PickerMarks, theme: &Theme) -> L
     }
 }
 
-/// The theme's background followed by its leading series colors.
+/// The theme's background, then its first series colors.
 fn swatch(theme: &Theme) -> Vec<Span<'static>> {
     let mut spans = vec![Span::styled("██", Style::default().fg(theme.background))];
     spans.extend(
@@ -270,7 +270,7 @@ mod tests {
         assert!(selected.contains("catppuccin-mocha"), "{selected}");
         assert!(text.contains("tokyo-night"));
         assert!(text.contains(HINT));
-        // The picker is drawn in the previewed theme.
+        // The picker uses the colors of the previewed theme.
         let buffer = terminal.backend().buffer();
         let surface_cells = buffer
             .content()

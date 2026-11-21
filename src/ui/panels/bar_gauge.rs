@@ -88,7 +88,7 @@ fn bar_series(p: &PanelState, width: u16) -> Vec<&SeriesView> {
         .filter(|s| s.visible && s.value.is_some())
         .collect();
 
-    // Sort descending safely
+    // Sort from the highest value to the lowest. A NaN does not cause a panic.
     valid_series.sort_by(|a, b| {
         let v_a = a.value.unwrap_or(0.0);
         let v_b = b.value.unwrap_or(0.0);
@@ -109,8 +109,8 @@ fn bar_series(p: &PanelState, width: u16) -> Vec<&SeriesView> {
     valid_series
 }
 
-/// The range bars fill: the panel's `min` and `max`, defaulting to zero and
-/// the largest value, extended to the smallest value when it is negative.
+/// The range that bars fill: the panel's `min` and `max`. Their defaults are
+/// zero and the largest value. A negative smallest value extends the range.
 fn bar_range(p: &PanelState, values: impl Iterator<Item = f64>) -> (f64, f64) {
     let (low, high) = values
         .filter(|value| value.is_finite())
