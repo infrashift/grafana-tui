@@ -27,5 +27,8 @@ The user tracks a lexiscope change that skips a license comment block at the top
 - [ ] `STE_LICENSED` and its `--exclude` flags are gone from the Makefile and the ZMakefile.
 - [ ] `make docs-style` passes with the 35 files in the scan.
 
+## Notes
+- `src/cli.rs` holds 5 findings in clap doc comments ("validate", "validation", "starting", "painting"). Those comments are the `--help` text, which ISSUE-010 left out of scope. Decide on them when the exclusion goes: reword the help text, or exclude only those lines.
+
 ## Related
 [ISSUE-010](/issues/issue-010-asd-ste100-comments-and-documentation--01a1fd4eb77f.md) · [ADR-0004](/decisions/adr-0004-lexiscope-checks-the-asd-ste100-writing-rules--01a1fd4e4882.md)
