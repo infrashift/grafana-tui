@@ -667,6 +667,16 @@ impl AppState {
         self.scroll_to_selected_panel();
     }
 
+    /// Shows a footer message when MAX_LAYOUT_NODES stopped a repeat.
+    fn report_layout_cut(&mut self, truncated: bool) {
+        if truncated {
+            self.export_status = Some(format!(
+                "Repeats stopped at the limit of {} layout items",
+                crate::dashboard::MAX_LAYOUT_NODES
+            ));
+        }
+    }
+
     /// Rebuilds `layout` from the template for the current variable values.
     ///
     /// Repeat copies are appended to `panels` the first time they appear and keep
@@ -682,6 +692,7 @@ impl AppState {
             regex: &self.regex_vars,
             sections: &self.section_values,
         });
+        self.report_layout_cut(materialized.truncated);
 
         self.refreshes.layout_changed();
         for &index in &materialized.reclaimed {
@@ -1642,6 +1653,31 @@ mod tests {
 
     /// Rotates a repeated row's values the way a churning query variable (pods,
     /// for example) does over a long session.
+    #[test]
+    fn repeats_over_the_layout_limit_report_the_cut_in_the_footer() {
+        let mut app = create_test_app();
+        app.panels = vec![test_panel("CPU $pod", PanelType::Graph)];
+        let mut repeats = crate::dashboard::Repeats::default();
+        repeats
+            .panels
+            .insert(0, crate::dashboard::Repeat::new("pod"));
+        app.apply_template(DashboardTemplate::new(
+            DashboardLayout::flat(1),
+            repeats,
+            &app.panels,
+        ));
+        assert_eq!(app.export_status, None);
+
+        let pods = (0..crate::dashboard::MAX_LAYOUT_NODES + 1)
+            .map(|pod| format!("pod-{pod}"))
+            .collect();
+        app.var_values.insert("pod".to_string(), pods);
+        app.materialize_layout();
+
+        let status = app.export_status.as_deref().unwrap_or_default();
+        assert!(status.contains("limit of 4096 layout items"), "{status}");
+    }
+
     #[test]
     fn churning_repeat_values_keep_memory_bounded() {
         let mut app = create_test_app();
