@@ -150,7 +150,7 @@ continue to work with no change.
 | Item | Why it blocks production | Complexity | Status |
 |---|---|---|---|
 | **CI quality gates** | CI only builds and tests on Linux; add fmt, clippy, MSRV, macOS/Windows tests, and cargo-deny | 🟢 | 📋 |
-| **Independent release channel** | Crate, installer, docs site, and release workflow still point at the upstream project | 🟡 | 📋 |
+| **Independent release channel** | The installer, the docs site and the release workflow use infrashift/grafana-tui | 🟡 | ✅ |
 | **Terminal capability fallbacks** | Honor `NO_COLOR` and fall back from truecolor themes on 256-color terminals | 🟢 | 📋 |
 
 ---

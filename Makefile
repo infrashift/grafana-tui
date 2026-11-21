@@ -102,8 +102,6 @@ version: ## Print the version from Cargo.toml
 	@echo $(VERSION)
 
 # The new section covers SINCE..HEAD. SINCE is the latest tag by default.
-# The first release of the fork has no tag. For that release, give the commit
-# of the last version in CHANGELOG.md: make changelog SINCE=ee4c529
 SINCE ?= $(shell git describe --tags --abbrev=0 2>/dev/null)
 changelog: ## Add the v$(VERSION) section to the top of CHANGELOG.md (needs git-cliff)
 	@[ -n "$(SINCE)" ] || { echo "no tag to start from; pass SINCE=<commit>"; exit 1; }

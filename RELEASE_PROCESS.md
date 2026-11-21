@@ -66,10 +66,8 @@ A pull request that fails the gate cannot merge.
 
    It adds a section to the top of the changelog. git-cliff makes the
    section from the conventional commits since the last tag, through
-   `cliff.toml`. The earlier entries do not change. The first release of the
-   fork has no tag to start from. For that release, give the commit that
-   completed the 0.1.12 changelog: `make changelog SINCE=ee4c529`. Examine
-   the new section, and edit it by hand if necessary.
+   `cliff.toml`. The earlier entries do not change. Examine the new section,
+   and edit it by hand if necessary.
 5. Commit the change, add the tag, and push both:
 
    ```bash
