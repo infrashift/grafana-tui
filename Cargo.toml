@@ -56,7 +56,7 @@ unsafe_code = "forbid"
 [lints.clippy]
 # R2: loop bounds.
 infinite_loop = "warn"
-while_float = "allow"                      # ISSUE-004
+while_float = "warn"
 # R3: memory with a ceiling.
 large_stack_arrays = "warn"
 large_stack_frames = "warn"
