@@ -718,7 +718,7 @@ fn y_label_room(
 ) -> f64 {
     std::iter::once(y_bounds[0])
         .chain(std::iter::once(y_bounds[1]))
-        .chain(value_ticks(y_bounds[0], y_bounds[1]))
+        .chain(ui::svg_value_ticks(y_bounds[0], y_bounds[1]))
         .chain(thresholds.iter().map(|(value, _)| *value))
         .map(|value| text_width(&panel.display.format_number(value), SMALL_FONT_SIZE))
         .fold(0.0, f64::max)
@@ -799,7 +799,7 @@ fn render_value_grid(graph: &SvgGraph<'_>, out: &mut String) -> (bool, Vec<Label
             (line, labelled)
         })
         .collect::<Vec<_>>();
-    for tick in value_ticks(y_bounds[0], y_bounds[1]) {
+    for tick in ui::svg_value_ticks(y_bounds[0], y_bounds[1]) {
         let y = map_y(tick, y_bounds, plot);
         let labelled = y_labels.claim(y_extent(y));
         if graph.show_grid {
@@ -836,7 +836,7 @@ fn render_time_grid(graph: &SvgGraph<'_>, out: &mut String) -> bool {
         plot.right() - text_width(&end_label, SMALL_FONT_SIZE),
         plot.right(),
     ]);
-    for tick in time_ticks(x_min, x_max) {
+    for tick in ui::svg_time_ticks(x_min, x_max) {
         let x = map_x(tick, graph.x_bounds, plot);
         let label = ui::format_time(tick);
         let half = text_width(&label, SMALL_FONT_SIZE) / 2.0;
@@ -2149,53 +2149,6 @@ fn map_y(value: f64, bounds: [f64; 2], plot: PlotRect) -> f64 {
     plot.bottom() - ((value - bounds[0]) / span).clamp(0.0, 1.0) * plot.height
 }
 
-fn value_ticks(min: f64, max: f64) -> Vec<f64> {
-    if !min.is_finite() || !max.is_finite() || max <= min {
-        return Vec::new();
-    }
-
-    let step = crate::ui::nice_grid_step(max - min, 3);
-    let mut tick = (min / step).ceil() * step;
-    let mut ticks = Vec::new();
-
-    while tick < max {
-        if tick > min {
-            ticks.push(tick);
-        }
-        tick += step;
-    }
-    ticks
-}
-
-fn time_ticks(start: f64, end: f64) -> Vec<f64> {
-    if !start.is_finite() || !end.is_finite() || end <= start {
-        return Vec::new();
-    }
-
-    let range = end - start;
-    let step = if range <= 10.0 * 60.0 {
-        60.0
-    } else if range <= 90.0 * 60.0 {
-        30.0 * 60.0
-    } else if range <= 6.0 * 3600.0 {
-        3600.0
-    } else if range <= 24.0 * 3600.0 {
-        6.0 * 3600.0
-    } else {
-        24.0 * 3600.0
-    };
-
-    let mut tick = (start / step).ceil() * step;
-    let mut ticks = Vec::new();
-    while tick < end {
-        if tick > start {
-            ticks.push(tick);
-        }
-        tick += step;
-    }
-    ticks
-}
-
 fn color_hex(color: Color, reset: &str) -> String {
     match color {
         Color::Reset => reset.to_string(),
@@ -2567,7 +2520,7 @@ mod tests {
 
     #[test]
     fn test_value_ticks_are_interior() {
-        let ticks = value_ticks(329.0, 1287.0);
+        let ticks = ui::svg_value_ticks(329.0, 1287.0);
         assert!(ticks.contains(&500.0));
         assert!(ticks.contains(&1000.0));
         assert!(!ticks.contains(&329.0));
@@ -2576,13 +2529,15 @@ mod tests {
 
     #[test]
     fn test_time_ticks_choose_expected_boundaries() {
-        let two_hours = time_ticks(11.0 * 3600.0 + 22.0 * 60.0, 13.0 * 3600.0 + 22.0 * 60.0);
+        let two_hours =
+            ui::svg_time_ticks(11.0 * 3600.0 + 22.0 * 60.0, 13.0 * 3600.0 + 22.0 * 60.0);
         assert_eq!(two_hours, vec![12.0 * 3600.0, 13.0 * 3600.0]);
 
-        let one_hour = time_ticks(12.0 * 3600.0 + 22.0 * 60.0, 13.0 * 3600.0 + 22.0 * 60.0);
+        let one_hour = ui::svg_time_ticks(12.0 * 3600.0 + 22.0 * 60.0, 13.0 * 3600.0 + 22.0 * 60.0);
         assert_eq!(one_hour, vec![12.5 * 3600.0, 13.0 * 3600.0]);
 
-        let five_minutes = time_ticks(12.0 * 3600.0 + 22.0 * 60.0, 12.0 * 3600.0 + 27.0 * 60.0);
+        let five_minutes =
+            ui::svg_time_ticks(12.0 * 3600.0 + 22.0 * 60.0, 12.0 * 3600.0 + 27.0 * 60.0);
         assert_eq!(
             five_minutes,
             vec![

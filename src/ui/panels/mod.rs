@@ -32,7 +32,7 @@ use ratatui::{
 use bar_gauge::render_bar_gauge;
 use gauge::render_gauge;
 use graph::render_graph_panel;
-pub(crate) use graph::{calculate_y_bounds, cluster_badge, nice_grid_step};
+pub(crate) use graph::{calculate_y_bounds, cluster_badge, svg_time_ticks, svg_value_ticks};
 use heatmap::render_heatmap;
 use stat::render_stat;
 use table::render_table;
