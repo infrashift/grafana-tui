@@ -3939,6 +3939,69 @@ mod tests {
         assert!(parse_grafana_dashboards(&[&half]).is_ok());
     }
 
+    /// `count` custom variables, named `v0`, `v1` and on, from `first`.
+    fn custom_variables(first: usize, count: usize, v2: bool) -> serde_json::Value {
+        (first..first + count)
+            .map(|index| {
+                let spec = serde_json::json!({"name": format!("v{index}"), "query": "a"});
+                if v2 {
+                    serde_json::json!({"kind": "CustomVariable", "spec": spec})
+                } else {
+                    let mut variable = spec;
+                    variable["type"] = "custom".into();
+                    variable
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn variables_over_the_dashboard_limit_are_an_error() {
+        let limit = crate::limits::MAX_DASHBOARD_VARIABLES;
+        let classic = |count: usize| {
+            serde_json::json!({"templating": {"list": custom_variables(0, count, false)}})
+                .to_string()
+        };
+        let full = classic(limit);
+        assert_eq!(parse_grafana_dashboard(&full).unwrap().vars.len(), limit);
+        // The limit is for each dashboard of a set.
+        assert!(parse_grafana_dashboards(&[&full, &full]).is_ok());
+        let expected = "the dashboard holds more than the limit of 256 variables";
+        let error = parse_grafana_dashboard(&classic(limit + 1)).unwrap_err();
+        assert_eq!(error.to_string(), expected);
+        let error = parse_grafana_dashboards(&[&full, &classic(limit + 1)]).unwrap_err();
+        assert!(format!("{error:#}").contains(expected), "{error:#}");
+    }
+
+    #[test]
+    fn row_and_tab_variables_count_toward_the_dashboard_limit() {
+        let limit = crate::limits::MAX_DASHBOARD_VARIABLES;
+        let mut row = v2_row_resource_with_field("variables", custom_variables(1, limit, true));
+        assert!(parse_grafana_dashboard(&row.to_string()).is_ok());
+        row["spec"]["variables"] = custom_variables(0, 1, true);
+        let error = parse_grafana_dashboard(&row.to_string()).unwrap_err();
+        assert!(
+            error.to_string().contains("limit of 256 variables"),
+            "{error}"
+        );
+
+        let mut tabs = valid_v2_resource();
+        tabs["spec"]["variables"] = custom_variables(0, 1, true);
+        tabs["spec"]["layout"] = serde_json::json!({
+            "kind": "TabsLayout",
+            "spec": {"tabs": [{"kind": "TabsLayoutTab", "spec": {
+                "title": "Tab",
+                "variables": custom_variables(1, limit, true),
+                "layout": {"kind": "GridLayout", "spec": {"items": []}}
+            }}]}
+        });
+        let error = parse_grafana_dashboard(&tabs.to_string()).unwrap_err();
+        assert!(
+            error.to_string().contains("limit of 256 variables"),
+            "{error}"
+        );
+    }
+
     /// A classic dashboard whose rows nest `rows` deep around one panel.
     fn nested_classic_dashboard(rows: usize) -> String {
         let mut panel = serde_json::json!({"type": "timeseries", "targets": [{"expr": "up"}]});

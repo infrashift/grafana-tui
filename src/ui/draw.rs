@@ -427,6 +427,18 @@ fn selected_panel_notice(app: &AppState) -> Option<String> {
     Some(format!("{}: {kind}{first}{more}", panel.title))
 }
 
+/// The first `(name, text)` of `entries`, and a count of the others for the footer.
+fn first_and_more<'a>(
+    mut entries: impl Iterator<Item = (&'a str, &'a str)>,
+) -> Option<(&'a str, &'a str, String)> {
+    let (name, text) = entries.next()?;
+    let more = match entries.count() {
+        0 => String::new(),
+        count => format!(" (+{count} more)"),
+    };
+    Some((name, text, more))
+}
+
 fn build_footer_detail(app: &AppState) -> String {
     let mut parts = Vec::new();
 
@@ -447,13 +459,11 @@ fn build_footer_detail(app: &AppState) -> String {
         parts.push(notice);
     }
 
-    let mut variable_errors = app.variable_errors();
-    if let Some((name, error)) = variable_errors.next() {
-        let more = match variable_errors.count() {
-            0 => String::new(),
-            count => format!(" (+{count} more)"),
-        };
+    if let Some((name, error, more)) = first_and_more(app.variable_errors()) {
         parts.push(format!("Variable {name} failed: {error}{more}"));
+    }
+    if let Some((name, notice, more)) = first_and_more(app.variable_notices()) {
+        parts.push(format!("Variable {name}: {notice}{more}"));
     }
 
     if let Some(status) = &app.export_status {

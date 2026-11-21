@@ -83,6 +83,8 @@ pub(crate) struct RefreshTasks {
     reload_requested: bool,
     /// Why each query variable last failed, by name.
     variable_errors: BTreeMap<String, String>,
+    /// Why each query variable last lost values at a limit, by name.
+    variable_notices: BTreeMap<String, String>,
     /// Panel fetches started outside a refresh, such as for an expanded row.
     loose: Vec<AbortHandle>,
     /// Another dashboard became active: its variables reload, as on opening
@@ -98,6 +100,7 @@ impl RefreshTasks {
             fetch.abort();
         }
         self.variable_errors.clear();
+        self.variable_notices.clear();
         self.load_dashboard = true;
     }
 
@@ -115,8 +118,10 @@ impl RefreshTasks {
     fn apply_variable_report(&mut self, report: VariableReport) {
         for name in &report.queried {
             self.variable_errors.remove(name);
+            self.variable_notices.remove(name);
         }
         self.variable_errors.extend(report.errors);
+        self.variable_notices.extend(report.notices);
     }
 
     fn is_current(&self, generation: u64) -> bool {
@@ -358,6 +363,14 @@ impl AppState {
             .variable_errors
             .iter()
             .map(|(name, error)| (name.as_str(), error.as_str()))
+    }
+
+    /// Query variables that lost values at a limit when they last resolved, with the notice.
+    pub(crate) fn variable_notices(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.refreshes
+            .variable_notices
+            .iter()
+            .map(|(name, notice)| (name.as_str(), notice.as_str()))
     }
 
     /// Fetches panels that became visible, for the displayed window.
@@ -769,6 +782,7 @@ async fn resolve_sections(
         .await;
         report.queried.extend(instance_report.queried);
         report.errors.extend(instance_report.errors);
+        report.notices.extend(instance_report.notices);
         values.insert(key, selected);
     }
     report
@@ -1683,6 +1697,59 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
         assert!(text.contains("Variable broken failed: prometheus 400 Bad Request"));
+    }
+
+    #[tokio::test]
+    async fn variable_values_over_the_limit_are_cut_with_a_notice() {
+        static BODY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+            let values: Vec<String> = (0..=crate::limits::MAX_VARIABLE_VALUES)
+                .map(|index| format!("host-{index}"))
+                .collect();
+            serde_json::json!({"status": "success", "data": values}).to_string()
+        });
+        fn many(path: &str) -> (&'static str, &'static str) {
+            if path.starts_with("/api/v1/label/host/") {
+                ("200 OK", BODY.as_str())
+            } else {
+                ("200 OK", EMPTY_VECTOR)
+            }
+        }
+        let (url, _) = recording_prometheus(many).await;
+        let mut app = app_with_panels(&url, 1);
+        let mut host = query_var("host", "label_values(host)", VariableRefresh::OnLoad);
+        host.select_all = true;
+        app.query_vars = vec![host];
+
+        app.refresh().await.unwrap();
+
+        assert_eq!(
+            app.var_values["host"].len(),
+            crate::limits::MAX_VARIABLE_VALUES
+        );
+        let notices: Vec<_> = app.variable_notices().collect();
+        assert_eq!(
+            notices,
+            [(
+                "host",
+                "kept the first 10000 of 10001 values (the value limit)"
+            )]
+        );
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 30)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw_ui(frame, &mut app))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Variable host: kept the first 10000 of 10001"));
+
+        app.refreshes.dashboard_switched();
+        assert_eq!(app.variable_notices().count(), 0);
     }
 
     #[tokio::test]
