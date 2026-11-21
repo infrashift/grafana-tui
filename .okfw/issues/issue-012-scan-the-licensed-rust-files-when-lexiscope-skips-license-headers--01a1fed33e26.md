@@ -28,7 +28,7 @@ The user tracks a lexiscope change that skips a license comment block at the top
 - [ ] `make docs-style` passes with the 35 files in the scan.
 
 ## Notes
-- `src/cli.rs` holds 5 findings in clap doc comments ("validate", "validation", "starting", "painting"). Those comments are the `--help` text, which ISSUE-010 left out of scope. Decide on them when the exclusion goes: reword the help text, or exclude only those lines.
+- `src/cli.rs` holds 5 findings in the clap doc comments: four words and one term. Those comments are the `--help` text, which ISSUE-010 left out of scope. When `src/cli.rs` comes back into the scan, reword the help text, or skip only those lines.
 
 ## Related
 [ISSUE-010](/issues/issue-010-asd-ste100-comments-and-documentation--01a1fd4eb77f.md) · [ADR-0004](/decisions/adr-0004-lexiscope-checks-the-asd-ste100-writing-rules--01a1fd4e4882.md)
