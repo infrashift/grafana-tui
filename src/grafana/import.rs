@@ -76,78 +76,94 @@ pub(super) fn finish_many(
 
 fn import_variables(out: &mut DashboardImport, variables: Vec<model::Variable>) {
     for variable in variables {
-        let select_all = current_is_all(variable.current.as_ref());
-        if select_all {
-            out.all_vars.insert(variable.name.clone());
-        }
-        let regex_values = variable.multi || variable.include_all;
-        if regex_values {
-            out.regex_vars.insert(variable.name.clone());
-        }
-        let mut selected = selected_values(variable.current.as_ref());
-        if selected.is_empty() && !select_all && variable.kind.as_deref() != Some("query") {
-            // Grafana selects the first option when nothing is saved.
-            selected.extend(variable.options.first().cloned());
-        }
-        if select_all {
-            // `All` covers every option; known options let repeats iterate them now,
-            // and dynamic query variables fill them in when they resolve.
-            if !variable.options.is_empty() {
-                out.var_values
-                    .insert(variable.name.clone(), variable.options.clone());
-            }
-            let value = variable.all_value.clone().unwrap_or_else(|| {
-                if variable.options.is_empty() {
-                    ".*".to_string()
-                } else {
-                    crate::app::format_prometheus_values(&variable.options, true)
-                }
-            });
-            out.vars.insert(variable.name.clone(), value);
-        } else if !selected.is_empty() {
-            out.var_values
-                .insert(variable.name.clone(), selected.clone());
-            out.vars.insert(
-                variable.name.clone(),
-                crate::app::format_prometheus_values(&selected, regex_values),
-            );
-        }
-
-        // A `Never` refresh keeps the saved options, as Grafana does; only a
-        // variable saved without any is resolved once so the dashboard works.
-        let saved = if select_all {
-            !variable.options.is_empty()
-        } else {
-            !selected.is_empty()
-        };
-        let resolves = match variable.refresh {
-            Some(model::VariableRefresh::Never) => !saved,
-            _ => true,
-        };
-        // An explicit multi-value selection is kept as chosen; otherwise query
-        // variables resolve against Prometheus like Grafana does on load.
-        if variable.kind.as_deref() == Some("query")
-            && resolves
-            && selected.len() <= 1
-            && let (Some(query), Some(query_path)) = (variable.query, variable.query_path)
-        {
-            out.query_vars.push(TemplateQueryVar {
-                name: variable.name,
-                query,
-                regex: variable.regex.filter(|regex| !regex.trim().is_empty()),
-                query_path,
-                select_all,
-                all_value: variable.all_value,
-                regex_values,
-                refresh: match variable.refresh {
-                    Some(model::VariableRefresh::OnTimeRangeChange) => {
-                        VariableRefresh::OnTimeRangeChange
-                    }
-                    _ => VariableRefresh::OnLoad,
-                },
-            });
-        }
+        import_variable(out, variable);
     }
+}
+
+/// Imports one variable: its selection, its query value and its query.
+fn import_variable(out: &mut DashboardImport, variable: model::Variable) {
+    let select_all = current_is_all(variable.current.as_ref());
+    if select_all {
+        out.all_vars.insert(variable.name.clone());
+    }
+    let regex_values = variable.multi || variable.include_all;
+    if regex_values {
+        out.regex_vars.insert(variable.name.clone());
+    }
+    let selected = record_selection(out, &variable, select_all, regex_values);
+
+    // A `Never` refresh keeps the saved options, as Grafana does; only a
+    // variable saved without any is resolved once so the dashboard works.
+    let saved = if select_all {
+        !variable.options.is_empty()
+    } else {
+        !selected.is_empty()
+    };
+    let resolves = match variable.refresh {
+        Some(model::VariableRefresh::Never) => !saved,
+        _ => true,
+    };
+    // An explicit multi-value selection is kept as chosen; otherwise query
+    // variables resolve against Prometheus like Grafana does on load.
+    if variable.kind.as_deref() == Some("query")
+        && resolves
+        && selected.len() <= 1
+        && let (Some(query), Some(query_path)) = (variable.query, variable.query_path)
+    {
+        out.query_vars.push(TemplateQueryVar {
+            name: variable.name,
+            query,
+            regex: variable.regex.filter(|regex| !regex.trim().is_empty()),
+            query_path,
+            select_all,
+            all_value: variable.all_value,
+            regex_values,
+            refresh: match variable.refresh {
+                Some(model::VariableRefresh::OnTimeRangeChange) => {
+                    VariableRefresh::OnTimeRangeChange
+                }
+                _ => VariableRefresh::OnLoad,
+            },
+        });
+    }
+}
+
+/// Records the selected values of a variable and its query value. Returns the selected values.
+fn record_selection(
+    out: &mut DashboardImport,
+    variable: &model::Variable,
+    select_all: bool,
+    regex_values: bool,
+) -> Vec<String> {
+    let mut selected = selected_values(variable.current.as_ref());
+    if selected.is_empty() && !select_all && variable.kind.as_deref() != Some("query") {
+        // Grafana selects the first option when nothing is saved.
+        selected.extend(variable.options.first().cloned());
+    }
+    if select_all {
+        // `All` covers every option; known options let repeats iterate them now,
+        // and dynamic query variables fill them in when they resolve.
+        if !variable.options.is_empty() {
+            out.var_values
+                .insert(variable.name.clone(), variable.options.clone());
+        }
+        let value = variable.all_value.clone().unwrap_or_else(|| {
+            if variable.options.is_empty() {
+                ".*".to_string()
+            } else {
+                crate::app::format_prometheus_values(&variable.options, true)
+            }
+        });
+        out.vars.insert(variable.name.clone(), value);
+    } else if !selected.is_empty() {
+        out.var_values
+            .insert(variable.name.clone(), selected.clone());
+        out.vars.insert(
+            variable.name.clone(),
+            crate::app::format_prometheus_values(&selected, regex_values),
+        );
+    }
+    selected
 }
 
 /// Imports the variables a row or tab defines, with the same selection and
@@ -238,7 +254,59 @@ fn value_is_all(value: Option<&serde_json::Value>) -> bool {
 }
 
 fn import_panel(panel: model::Panel, out: &mut DashboardImport) -> Result<Option<usize>> {
-    let panel_type = match panel.kind.as_str() {
+    let panel_type = panel_type_for(&panel.kind);
+    if panel_type == crate::app::PanelType::Unknown {
+        report_unsupported_panel(&panel, out);
+        return Ok(None);
+    }
+
+    let queries = collect_panel_queries(panel.targets, panel_type, out);
+    let resolution = crate::app::QueryResolution {
+        min_interval: checked_min_interval(panel.min_interval, out),
+        max_data_points: panel.max_data_points,
+        target_min_intervals: queries.min_intervals,
+    };
+    report_ignored_panel_fields(panel.transformations_path, panel.reduce_options_path, out);
+    let fields = field_settings_from(panel.field_defaults, out);
+
+    if queries.exprs.is_empty() {
+        if panel.count_as_skipped_if_empty {
+            out.skipped_panels += 1;
+        }
+        return Ok(None);
+    }
+    let options = match panel_type {
+        crate::app::PanelType::Graph => crate::app::PanelOptions::Graph(fields.graph_options),
+        _ => crate::app::PanelOptions::None,
+    };
+    let index = out.queries.len();
+    out.queries.push(QueryPanel {
+        title: panel.title,
+        exprs: queries.exprs,
+        expr_paths: queries.expr_paths,
+        legends: queries.legends,
+        query_modes: queries.query_modes,
+        grid: panel.grid.map(|grid| GridPos {
+            x: grid.x,
+            y: grid.y,
+            w: grid.w,
+            h: grid.h,
+        }),
+        panel_type,
+        thresholds: fields.thresholds,
+        min: fields.min,
+        max: fields.max,
+        autogrid: fields.autogrid,
+        display: fields.display,
+        options,
+        resolution,
+    });
+    Ok(Some(index))
+}
+
+/// Returns the panel type for a Grafana panel kind.
+fn panel_type_for(kind: &str) -> crate::app::PanelType {
+    match kind {
         "graph" | "timeseries" => crate::app::PanelType::Graph,
         "stat" => crate::app::PanelType::Stat,
         "gauge" => crate::app::PanelType::Gauge,
@@ -246,54 +314,73 @@ fn import_panel(panel: model::Panel, out: &mut DashboardImport) -> Result<Option
         "table" => crate::app::PanelType::Table,
         "heatmap" => crate::app::PanelType::Heatmap,
         _ => crate::app::PanelType::Unknown,
-    };
-
-    if panel_type == crate::app::PanelType::Unknown {
-        if !panel.kind.is_empty() && panel.kind != "row" {
-            out.skipped_panels += 1;
-            out.diagnostics.push(ImportDiagnostic::new(
-                "skipped_panel",
-                panel.source_path,
-                format!(
-                    "unsupported panel type `{}` skipped for panel `{}`",
-                    panel.kind, panel.title
-                ),
-            ));
-        }
-        return Ok(None);
     }
+}
 
-    let mut exprs = Vec::new();
-    let mut expr_paths = Vec::new();
-    let mut legends = Vec::new();
-    let mut query_modes = Vec::new();
-    let mut target_min_intervals = Vec::new();
-    for target in panel.targets {
+/// Counts and reports a panel of an unknown kind. Rows and empty kinds are not reported.
+fn report_unsupported_panel(panel: &model::Panel, out: &mut DashboardImport) {
+    if panel.kind.is_empty() || panel.kind == "row" {
+        return;
+    }
+    out.skipped_panels += 1;
+    out.diagnostics.push(ImportDiagnostic::new(
+        "skipped_panel",
+        panel.source_path.clone(),
+        format!(
+            "unsupported panel type `{}` skipped for panel `{}`",
+            panel.kind, panel.title
+        ),
+    ));
+}
+
+/// The visible queries of a panel, in parallel lists.
+struct PanelQueries {
+    exprs: Vec<String>,
+    expr_paths: Vec<String>,
+    legends: Vec<Option<String>>,
+    query_modes: Vec<crate::app::QueryMode>,
+    min_intervals: Vec<Option<String>>,
+}
+
+/// Collects the visible targets that have an expression.
+fn collect_panel_queries(
+    targets: Vec<model::Target>,
+    panel_type: crate::app::PanelType,
+    out: &mut DashboardImport,
+) -> PanelQueries {
+    let mut queries = PanelQueries {
+        exprs: Vec::new(),
+        expr_paths: Vec::new(),
+        legends: Vec::new(),
+        query_modes: Vec::new(),
+        min_intervals: Vec::new(),
+    };
+    for target in targets {
         if target.hidden {
             continue;
         }
         if let Some(expr) = target.expr {
-            exprs.push(expr);
-            expr_paths.push(target.expr_path);
-            legends.push(target.legend_format);
-            query_modes.push(query_mode_for_target(target.instant, panel_type));
-            target_min_intervals.push(checked_min_interval(target.min_interval, out));
+            queries.exprs.push(expr);
+            queries.expr_paths.push(target.expr_path);
+            queries.legends.push(target.legend_format);
+            queries
+                .query_modes
+                .push(query_mode_for_target(target.instant, panel_type));
+            queries
+                .min_intervals
+                .push(checked_min_interval(target.min_interval, out));
         }
     }
-    let resolution = crate::app::QueryResolution {
-        min_interval: checked_min_interval(panel.min_interval, out),
-        max_data_points: panel.max_data_points,
-        target_min_intervals,
-    };
+    queries
+}
 
-    let mut thresholds = None;
-    let mut min = None;
-    let mut max = None;
-    let mut autogrid = None;
-    let mut display = crate::ui::DisplayFormat::default();
-    let mut graph_options = crate::app::GraphOptions::default();
-
-    if let Some(path) = panel.transformations_path {
+/// Reports the panel fields that grafana-tui does not support.
+fn report_ignored_panel_fields(
+    transformations_path: Option<String>,
+    reduce_options_path: Option<String>,
+    out: &mut DashboardImport,
+) {
+    if let Some(path) = transformations_path {
         out.diagnostics.push(ImportDiagnostic::new(
             "ignored_field",
             path,
@@ -301,70 +388,61 @@ fn import_panel(panel: model::Panel, out: &mut DashboardImport) -> Result<Option
         ));
     }
 
-    if let Some(path) = panel.reduce_options_path {
+    if let Some(path) = reduce_options_path {
         out.diagnostics.push(ImportDiagnostic::new(
             "ignored_field",
             path,
             "`options.reduceOptions` is not supported yet; grafana-tui will use default value selection",
         ));
     }
+}
 
-    if let Some(defaults) = panel.field_defaults {
-        if let Some(path) = defaults.mappings_path {
-            out.diagnostics.push(ImportDiagnostic::new(
-                    "ignored_field",
-                    path,
-                    "`fieldConfig.defaults.mappings` is not supported yet; value mappings will be ignored",
-                ));
-        }
-        graph_options = graph_options_from_custom(defaults.custom.as_ref());
-        display = crate::ui::DisplayFormat {
+/// The display settings of a panel from its field config defaults.
+struct PanelFieldSettings {
+    thresholds: Option<crate::app::Thresholds>,
+    min: Option<f64>,
+    max: Option<f64>,
+    autogrid: Option<bool>,
+    display: crate::ui::DisplayFormat,
+    graph_options: crate::app::GraphOptions,
+}
+
+/// Converts the field config defaults of a panel, and reports value mappings.
+fn field_settings_from(
+    defaults: Option<model::FieldDefaults>,
+    out: &mut DashboardImport,
+) -> PanelFieldSettings {
+    let Some(defaults) = defaults else {
+        return PanelFieldSettings {
+            thresholds: None,
+            min: None,
+            max: None,
+            autogrid: None,
+            display: crate::ui::DisplayFormat::default(),
+            graph_options: crate::app::GraphOptions::default(),
+        };
+    };
+    if let Some(path) = defaults.mappings_path {
+        out.diagnostics.push(ImportDiagnostic::new(
+            "ignored_field",
+            path,
+            "`fieldConfig.defaults.mappings` is not supported yet; value mappings will be ignored",
+        ));
+    }
+    PanelFieldSettings {
+        graph_options: graph_options_from_custom(defaults.custom.as_ref()),
+        display: crate::ui::DisplayFormat {
             unit: defaults.unit,
             decimals: defaults.decimals,
             no_value: defaults.no_value,
-        };
-        min = defaults.min;
-        max = defaults.max;
-        autogrid = defaults
+        },
+        min: defaults.min,
+        max: defaults.max,
+        autogrid: defaults
             .custom
             .as_ref()
-            .and_then(|custom| custom.axis_grid_show);
-        thresholds = thresholds_from_model(defaults.thresholds, defaults.custom.as_ref());
-    }
-
-    if !exprs.is_empty() {
-        let options = match panel_type {
-            crate::app::PanelType::Graph => crate::app::PanelOptions::Graph(graph_options),
-            _ => crate::app::PanelOptions::None,
-        };
-        let index = out.queries.len();
-        out.queries.push(QueryPanel {
-            title: panel.title,
-            exprs,
-            expr_paths,
-            legends,
-            query_modes,
-            grid: panel.grid.map(|grid| GridPos {
-                x: grid.x,
-                y: grid.y,
-                w: grid.w,
-                h: grid.h,
-            }),
-            panel_type,
-            thresholds,
-            min,
-            max,
-            autogrid,
-            display,
-            options,
-            resolution,
-        });
-        Ok(Some(index))
-    } else {
-        if panel.count_as_skipped_if_empty {
-            out.skipped_panels += 1;
-        }
-        Ok(None)
+            .and_then(|custom| custom.axis_grid_show),
+        thresholds: thresholds_from_model(defaults.thresholds, defaults.custom.as_ref()),
     }
 }
 
@@ -376,36 +454,13 @@ fn import_layout_nodes(
     let mut items = Vec::new();
     for node in nodes {
         match node {
-            model::LayoutNode::Panel(mut panel) => {
-                let repeat = ids.checked_repeat(panel.repeat.take(), &panel.source_path, out);
-                let condition = panel.condition.take();
-                if let Some(index) = import_panel(panel, out)? {
-                    if let Some(repeat) = repeat {
-                        out.repeats.panels.insert(index, repeat);
-                    }
-                    if let Some(condition) = condition {
-                        out.conditions.panels.insert(index, condition);
-                    }
+            model::LayoutNode::Panel(panel) => {
+                if let Some(index) = import_placed_panel(panel, out, ids)? {
                     items.push(crate::dashboard::DashboardLayoutItem::Panel(index));
                 }
             }
-            model::LayoutNode::Row(row) => {
-                let id = crate::dashboard::RowId::new(ids.next_row);
-                ids.next_row += 1;
-                // A row's variables apply to the row itself, so they are known
-                // before its own repeat is checked.
-                if !row.variables.is_empty() {
-                    ids.variable_names
-                        .extend(row.variables.iter().map(|variable| variable.name.clone()));
-                    out.sections
-                        .insert(SectionId::Row(id), import_section_variables(row.variables));
-                }
-                if let Some(repeat) = ids.checked_repeat(row.repeat, &row.source_path, out) {
-                    out.repeats.rows.insert(id, repeat);
-                }
-                if let Some(condition) = row.condition {
-                    out.conditions.rows.insert(id, condition);
-                }
+            model::LayoutNode::Row(mut row) => {
+                let id = register_row(&mut row, out, ids);
                 let children = import_layout_nodes(row.children, out, ids)?;
                 items.push(crate::dashboard::DashboardLayoutItem::Row(
                     crate::dashboard::DashboardRow::new(
@@ -421,21 +476,8 @@ fn import_layout_nodes(
                 let id = crate::dashboard::TabGroupId::new(ids.next_tabs);
                 ids.next_tabs += 1;
                 let mut tabs = Vec::with_capacity(group.tabs.len());
-                for (index, tab) in group.tabs.into_iter().enumerate() {
-                    if !tab.variables.is_empty() {
-                        ids.variable_names
-                            .extend(tab.variables.iter().map(|variable| variable.name.clone()));
-                        out.sections.insert(
-                            SectionId::Tab(id, index),
-                            import_section_variables(tab.variables),
-                        );
-                    }
-                    if let Some(repeat) = ids.checked_repeat(tab.repeat, &tab.source_path, out) {
-                        out.repeats.tabs.insert((id, index), repeat);
-                    }
-                    if let Some(condition) = tab.condition {
-                        out.conditions.tabs.insert((id, index), condition);
-                    }
+                for (index, mut tab) in group.tabs.into_iter().enumerate() {
+                    register_tab(&mut tab, (id, index), out, ids);
                     tabs.push(crate::dashboard::DashboardTab {
                         title: tab.title,
                         children: import_layout_nodes(tab.children, out, ids)?,
@@ -446,34 +488,111 @@ fn import_layout_nodes(
                 ));
             }
             model::LayoutNode::AutoGrid(grid) => {
-                let mut panels = Vec::with_capacity(grid.panels.len());
-                for mut panel in grid.panels {
-                    let repeat = ids.checked_repeat(panel.repeat.take(), &panel.source_path, out);
-                    let condition = panel.condition.take();
-                    if let Some(index) = import_panel(panel, out)? {
-                        if let Some(repeat) = repeat {
-                            out.repeats.panels.insert(index, repeat);
-                        }
-                        if let Some(condition) = condition {
-                            out.conditions.panels.insert(index, condition);
-                        }
-                        panels.push(index);
-                    }
-                }
-                if !panels.is_empty() {
-                    items.push(crate::dashboard::DashboardLayoutItem::AutoGrid(
-                        crate::dashboard::DashboardAutoGrid {
-                            panels,
-                            max_columns: grid.max_columns,
-                            min_column_width: auto_grid_column_cells(grid.column_width_px),
-                            row_height: auto_grid_row_units(grid.row_height_px),
-                        },
-                    ));
-                }
+                items.extend(import_auto_grid(grid, out, ids)?);
             }
         }
     }
     Ok(items)
+}
+
+/// Imports a panel with its repeat and condition. Returns its query index.
+fn import_placed_panel(
+    mut panel: model::Panel,
+    out: &mut DashboardImport,
+    ids: &LayoutIds,
+) -> Result<Option<usize>> {
+    let repeat = ids.checked_repeat(panel.repeat.take(), &panel.source_path, out);
+    let condition = panel.condition.take();
+    let Some(index) = import_panel(panel, out)? else {
+        return Ok(None);
+    };
+    if let Some(repeat) = repeat {
+        out.repeats.panels.insert(index, repeat);
+    }
+    if let Some(condition) = condition {
+        out.conditions.panels.insert(index, condition);
+    }
+    Ok(Some(index))
+}
+
+/// Gives a row its id and records its variables, repeat and condition.
+///
+/// The caller imports the children of the row.
+fn register_row(
+    row: &mut model::Row,
+    out: &mut DashboardImport,
+    ids: &mut LayoutIds,
+) -> crate::dashboard::RowId {
+    let id = crate::dashboard::RowId::new(ids.next_row);
+    ids.next_row += 1;
+    // A row's variables apply to the row itself, so they are known
+    // before its own repeat is checked.
+    let variables = std::mem::take(&mut row.variables);
+    if !variables.is_empty() {
+        ids.variable_names
+            .extend(variables.iter().map(|variable| variable.name.clone()));
+        out.sections
+            .insert(SectionId::Row(id), import_section_variables(variables));
+    }
+    if let Some(repeat) = ids.checked_repeat(row.repeat.take(), &row.source_path, out) {
+        out.repeats.rows.insert(id, repeat);
+    }
+    if let Some(condition) = row.condition.take() {
+        out.conditions.rows.insert(id, condition);
+    }
+    id
+}
+
+/// Records the variables, repeat and condition of the tab at `key`.
+///
+/// The caller imports the children of the tab.
+fn register_tab(
+    tab: &mut model::Tab,
+    key: (crate::dashboard::TabGroupId, usize),
+    out: &mut DashboardImport,
+    ids: &mut LayoutIds,
+) {
+    let (id, index) = key;
+    let variables = std::mem::take(&mut tab.variables);
+    if !variables.is_empty() {
+        ids.variable_names
+            .extend(variables.iter().map(|variable| variable.name.clone()));
+        out.sections.insert(
+            SectionId::Tab(id, index),
+            import_section_variables(variables),
+        );
+    }
+    if let Some(repeat) = ids.checked_repeat(tab.repeat.take(), &tab.source_path, out) {
+        out.repeats.tabs.insert(key, repeat);
+    }
+    if let Some(condition) = tab.condition.take() {
+        out.conditions.tabs.insert(key, condition);
+    }
+}
+
+/// Imports the panels of an auto grid. An auto grid without panels gives `None`.
+fn import_auto_grid(
+    grid: model::AutoGrid,
+    out: &mut DashboardImport,
+    ids: &LayoutIds,
+) -> Result<Option<crate::dashboard::DashboardLayoutItem>> {
+    let mut panels = Vec::with_capacity(grid.panels.len());
+    for panel in grid.panels {
+        if let Some(index) = import_placed_panel(panel, out, ids)? {
+            panels.push(index);
+        }
+    }
+    if panels.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(crate::dashboard::DashboardLayoutItem::AutoGrid(
+        crate::dashboard::DashboardAutoGrid {
+            panels,
+            max_columns: grid.max_columns,
+            min_column_width: auto_grid_column_cells(grid.column_width_px),
+            row_height: auto_grid_row_units(grid.row_height_px),
+        },
+    )))
 }
 
 /// Grafana CSS pixels per terminal column, used to size auto grid columns.

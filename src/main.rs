@@ -81,257 +81,423 @@ use cli::Args;
 /// Main entry point for the grafana-tui application.
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
-
-    if let Some(cmd) = args.command {
-        match cmd {
-            cli::Commands::Completions { shell } => {
-                use clap::CommandFactory;
-                clap_complete::generate(
-                    shell,
-                    &mut Args::command(),
-                    "grafana-tui",
-                    &mut std::io::stdout(),
-                );
-            }
-            cli::Commands::Man => {
-                use clap::CommandFactory;
-                let man = clap_mangen::Man::new(Args::command());
-                man.render(&mut std::io::stdout())?;
-            }
-        }
-        return Ok(());
+    let mut args = Args::parse();
+    if let Some(command) = args.command.take() {
+        return run_subcommand(command);
     }
 
-    // Load config
     let config = load_startup_config(args.config.clone())?;
-    let dashboard_paths: Vec<std::path::PathBuf> = if args.grafana_json.is_empty() {
+    let dashboard_paths = resolve_dashboard_paths(&args, &config);
+    let theme_name = resolve_theme_name(&args, &config);
+    if args.list_themes {
+        return run_list_themes(&theme_name, &config);
+    }
+    if args.validate {
+        return run_validation(&dashboard_paths, &args, &config);
+    }
+
+    let settings = resolve_settings(&args, &config)?;
+    let prom = prom::PromClient::with_tls(settings.prometheus_url.clone(), &settings.tls)?;
+    let loaded = load_dashboards(&dashboard_paths)?;
+    let content = prepare_dashboards(loaded, &args, &config)?;
+
+    let themes = theme::catalog(&theme::custom_themes(&config.themes)?);
+    let theme = theme::resolve(&theme_name, &themes)?;
+    let refresh_rate = resolve_refresh_rate_ms(
+        args.refresh_rate,
+        config.refresh_rate,
+        content.refresh_rate_ms,
+    );
+    let look = Look {
+        theme,
+        themes,
+        refresh_every: Duration::from_millis(refresh_rate),
+    };
+
+    let mut state = build_state(prom, settings, content, look)?;
+    run_terminal(&mut state, Duration::from_millis(args.tick_rate)).await
+}
+
+/// Runs a subcommand that prints shell completions or the man page.
+fn run_subcommand(command: cli::Commands) -> Result<()> {
+    use clap::CommandFactory;
+    match command {
+        cli::Commands::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Args::command(),
+                "grafana-tui",
+                &mut std::io::stdout(),
+            );
+        }
+        cli::Commands::Man => {
+            let man = clap_mangen::Man::new(Args::command());
+            man.render(&mut std::io::stdout())?;
+        }
+    }
+    Ok(())
+}
+
+/// Returns the dashboard files from the command line, else from the config.
+fn resolve_dashboard_paths(args: &Args, config: &Config) -> Vec<std::path::PathBuf> {
+    if args.grafana_json.is_empty() {
         &config.grafana_json
     } else {
         &args.grafana_json
     }
     .iter()
     .map(|path| config::expand_path(path))
-    .collect();
+    .collect()
+}
 
-    let theme_name = args
-        .theme
+/// Returns the theme name from the command line, the config or the default.
+fn resolve_theme_name(args: &Args, config: &Config) -> String {
+    args.theme
         .clone()
         .or_else(|| config.theme.clone())
-        .unwrap_or_else(|| theme::DEFAULT_THEME.to_string());
-    if args.list_themes {
-        let themes = theme::catalog(&theme::custom_themes(&config.themes)?);
-        print!("{}", theme_list(&theme_name, &themes));
-        return Ok(());
-    }
+        .unwrap_or_else(|| theme::DEFAULT_THEME.to_string())
+}
 
-    if args.validate {
-        match dashboard_paths.as_slice() {
-            [] => bail!("--validate requires --grafana-json or grafana_json in config"),
-            [path] => {
-                let dashboard = grafana::load_grafana_dashboard(path)?;
-                let summary = validate_dashboard_import(dashboard, config.vars.clone(), &args.var);
-                print_validation_summary(&summary, args.format, args.strict)?;
-            }
-            paths => {
-                let dashboards = paths
-                    .iter()
-                    .map(|path| {
-                        let dashboard = grafana::load_grafana_dashboard(path)
-                            .with_context(|| path.display().to_string())?;
-                        Ok(FileValidationSummary {
-                            path: path.display().to_string(),
-                            summary: validate_dashboard_import(
-                                dashboard,
-                                config.vars.clone(),
-                                &args.var,
-                            ),
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                print_validation_summaries(
-                    &MultiValidationSummary { dashboards },
-                    args.format,
-                    args.strict,
-                )?;
-            }
+/// Prints the list of themes and marks the current theme.
+fn run_list_themes(theme_name: &str, config: &Config) -> Result<()> {
+    let themes = theme::catalog(&theme::custom_themes(&config.themes)?);
+    print!("{}", theme_list(theme_name, &themes));
+    Ok(())
+}
+
+/// Validates the import of each dashboard file and prints the result.
+fn run_validation(paths: &[std::path::PathBuf], args: &Args, config: &Config) -> Result<()> {
+    match paths {
+        [] => bail!("--validate requires --grafana-json or grafana_json in config"),
+        [path] => {
+            let dashboard = grafana::load_grafana_dashboard(path)?;
+            let summary = validate_dashboard_import(dashboard, config.vars.clone(), &args.var);
+            print_validation_summary(&summary, args.format, args.strict)
         }
-        return Ok(());
+        paths => {
+            let dashboards = paths
+                .iter()
+                .map(|path| validate_dashboard_file(path, args, config))
+                .collect::<Result<Vec<_>>>()?;
+            print_validation_summaries(
+                &MultiValidationSummary { dashboards },
+                args.format,
+                args.strict,
+            )
+        }
     }
+}
 
+/// Loads one dashboard file of several and validates its import.
+fn validate_dashboard_file(
+    path: &std::path::Path,
+    args: &Args,
+    config: &Config,
+) -> Result<FileValidationSummary> {
+    let dashboard =
+        grafana::load_grafana_dashboard(path).with_context(|| path.display().to_string())?;
+    Ok(FileValidationSummary {
+        path: path.display().to_string(),
+        summary: validate_dashboard_import(dashboard, config.vars.clone(), &args.var),
+    })
+}
+
+/// The query range, the minimum step and the scrape interval.
+struct Timing {
+    range: Duration,
+    step: Duration,
+    scrape_interval: Duration,
+}
+
+/// The settings that the command line and the config resolve together.
+struct Settings {
+    annotation_source: Option<AnnotationSourceConfig>,
+    prometheus_url: String,
+    tls: prom::TlsFiles,
+    timing: Timing,
+    export: export::ExportOptions,
+    autogrid_enabled: bool,
+    autogrid_color: Option<ratatui::style::Color>,
+    transparent_background: bool,
+    marker_name: String,
+}
+
+/// Resolves the settings. A command-line value replaces a config value.
+fn resolve_settings(args: &Args, config: &Config) -> Result<Settings> {
     let annotation_source = resolve_annotation_source(
         AnnotationCliSource {
-            file: args.annotations_file,
-            program: args.annotations_command,
-            args: args.annotations_command_arg,
-            timeout: args.annotations_command_timeout,
+            file: args.annotations_file.clone(),
+            program: args.annotations_command.clone(),
+            args: args.annotations_command_arg.clone(),
+            timeout: args.annotations_command_timeout.clone(),
         },
-        config.annotations_file,
-        config.annotations_command,
+        config.annotations_file.clone(),
+        config.annotations_command.clone(),
     )?;
-
     let prometheus_url = args
         .prometheus_url
-        .or(config.prometheus_url)
+        .clone()
+        .or_else(|| config.prometheus_url.clone())
         .unwrap_or_else(|| "http://localhost:9090".to_string());
     let tls = prom::TlsFiles {
-        ca_cert: args.ca_cert,
-        client_cert: args.client_cert,
-        client_key: args.client_key,
+        ca_cert: args.ca_cert.clone(),
+        client_cert: args.client_cert.clone(),
+        client_key: args.client_key.clone(),
     }
-    .or(config.tls)
+    .or(config.tls.clone())
     .map_paths(config::expand_path);
+    let timing = resolve_timing(args, config)?;
 
+    Ok(Settings {
+        annotation_source,
+        prometheus_url,
+        tls,
+        timing,
+        export: resolve_export_options(args, config),
+        autogrid_enabled: config.autogrid.unwrap_or(true),
+        autogrid_color: args
+            .autogrid_color
+            .clone()
+            .or_else(|| config.autogrid_color.clone())
+            .map(|color| theme::parse_grafana_color(&color))
+            .filter(|color| *color != ratatui::style::Color::Reset),
+        transparent_background: args.transparent_background
+            || config.transparent_background.unwrap_or(false),
+        marker_name: args
+            .threshold_marker
+            .clone()
+            .or_else(|| config.threshold_marker.clone())
+            .unwrap_or_else(|| "dashed-line".to_string()),
+    })
+}
+
+/// Resolves the query range, the step and the scrape interval.
+fn resolve_timing(args: &Args, config: &Config) -> Result<Timing> {
     let range_str = args
         .range
-        .or(config.time_range)
+        .clone()
+        .or_else(|| config.time_range.clone())
         .unwrap_or_else(|| "5m".to_string());
     let range = app::parse_duration(&range_str).context("--range")?;
 
     let step_str = args
         .step
-        .or(config.step)
+        .clone()
+        .or_else(|| config.step.clone())
         .unwrap_or_else(|| "5s".to_string());
     let step = app::parse_duration(&step_str).context("--step")?;
 
-    let scrape_interval = match args.scrape_interval.or(config.scrape_interval) {
+    let scrape_text = args
+        .scrape_interval
+        .clone()
+        .or_else(|| config.scrape_interval.clone());
+    let scrape_interval = match scrape_text {
         Some(text) => app::parse_duration(&text).context("--scrape-interval")?,
         None => app::DEFAULT_SCRAPE_INTERVAL,
     };
     if scrape_interval.is_zero() {
         bail!("--scrape-interval must be greater than zero");
     }
-
-    let export_dir = args
-        .export_dir
-        .or(config.export_dir)
-        .map(|p| config::expand_path(&p))
-        .unwrap_or_else(|| std::path::PathBuf::from("./grafana-tui-exports"));
-    let export_format = args
-        .export_format
-        .or(config.export_format)
-        .unwrap_or_default();
-    let record_max_frames = args
-        .record_max_frames
-        .or(config.record_max_frames)
-        .unwrap_or(300);
-    let autogrid_enabled = config.autogrid.unwrap_or(true);
-    let autogrid_color = args
-        .autogrid_color
-        .or(config.autogrid_color)
-        .map(|color| theme::parse_grafana_color(&color))
-        .filter(|color| *color != ratatui::style::Color::Reset);
-    let transparent_background =
-        args.transparent_background || config.transparent_background.unwrap_or(false);
-
-    let mut variables = VariableState::default();
-    let mut query_vars = Vec::new();
-    let mut template = None;
-    let mut dashboard_refresh_rate_ms = None;
-    let mut dashboard_set = None;
-
-    let prom = prom::PromClient::with_tls(prometheus_url, &tls)?;
-
-    // Build panels from Grafana import or simple queries.
-    let (title, panels, skipped_panels) = match dashboard_paths.as_slice() {
-        [] => {
-            merge_user_vars(&mut variables, config.vars.clone(), &args.var);
-            (
-                "grafana-tui".to_string(),
-                app::default_queries(args.query),
-                0,
-            )
-        }
-        [path] => {
-            let d = grafana::load_grafana_dashboard(path)?;
-            let import_context = build_import_context(&d, config.vars.clone(), &args.var);
-            print_import_diagnostics(&import_context.diagnostics);
-            dashboard_refresh_rate_ms = d.refresh_rate_ms;
-            variables = import_context.variables;
-            query_vars = import_context.query_vars;
-
-            let ps: Vec<_> = d.queries.into_iter().map(panel_state).collect();
-            template = Some(
-                app::DashboardTemplate::new(d.layout, d.repeats, &ps)
-                    .with_conditions(d.conditions)
-                    .with_sections(d.sections),
-            );
-            (format!("{} (imported)", d.title), ps, d.skipped_panels)
-        }
-        paths => {
-            let multi = build_dashboard_set(
-                grafana::load_grafana_dashboards(paths)?,
-                config.vars.clone(),
-                &args.var,
-                args.refresh_rate,
-                config.refresh_rate,
-            );
-            variables = multi.variables;
-            template = Some(multi.template);
-            dashboard_refresh_rate_ms =
-                Some(multi.set.dashboards[0].refresh_every.as_millis() as u64);
-            let first = &multi.set.dashboards[0];
-            let heading = (
-                format!("{} (imported)", first.title),
-                multi.panels,
-                first.skipped_panels,
-            );
-            dashboard_set = Some(multi.set);
-            heading
-        }
-    };
-
-    let themes = theme::catalog(&theme::custom_themes(&config.themes)?);
-    let theme = theme::resolve(&theme_name, &themes)?;
-
-    // Determine threshold marker
-    let marker_name = args
-        .threshold_marker
-        .or(config.threshold_marker)
-        .unwrap_or_else(|| "dashed-line".to_string());
-    let refresh_rate = resolve_refresh_rate_ms(
-        args.refresh_rate,
-        config.refresh_rate,
-        dashboard_refresh_rate_ms,
-    );
-    let refresh_every = Duration::from_millis(refresh_rate);
-
-    let mut state = app::AppState::new(
-        prom,
+    Ok(Timing {
         range,
         step,
-        refresh_every,
-        title,
-        panels,
-        skipped_panels,
-        theme,
-        marker_name,
-        export::ExportOptions {
-            dir: export_dir,
-            format: export_format,
-            record_max_frames,
+        scrape_interval,
+    })
+}
+
+/// Resolves the export options. The caller validates them.
+fn resolve_export_options(args: &Args, config: &Config) -> export::ExportOptions {
+    export::ExportOptions {
+        dir: args
+            .export_dir
+            .clone()
+            .or_else(|| config.export_dir.clone())
+            .map(|p| config::expand_path(&p))
+            .unwrap_or_else(|| std::path::PathBuf::from("./grafana-tui-exports")),
+        format: args
+            .export_format
+            .or(config.export_format)
+            .unwrap_or_default(),
+        record_max_frames: args
+            .record_max_frames
+            .or(config.record_max_frames)
+            .unwrap_or(300),
+    }
+}
+
+/// The dashboard files that load at startup.
+enum LoadedDashboards {
+    /// No dashboard file. The panels come from `--query`.
+    Flat,
+    /// One dashboard file.
+    Single(Box<grafana::DashboardImport>),
+    /// Several dashboard files, one for each tab.
+    Multi(Box<grafana::DashboardSet>),
+}
+
+/// Loads the dashboard files. The number of paths selects the variant.
+fn load_dashboards(paths: &[std::path::PathBuf]) -> Result<LoadedDashboards> {
+    Ok(match paths {
+        [] => LoadedDashboards::Flat,
+        [path] => LoadedDashboards::Single(Box::new(grafana::load_grafana_dashboard(path)?)),
+        paths => LoadedDashboards::Multi(Box::new(grafana::load_grafana_dashboards(paths)?)),
+    })
+}
+
+/// The panels, variables and layout to show, before the app state exists.
+struct DashboardContent {
+    title: String,
+    panels: Vec<app::PanelState>,
+    skipped_panels: usize,
+    variables: VariableState,
+    query_vars: Vec<grafana::TemplateQueryVar>,
+    template: Option<app::DashboardTemplate>,
+    refresh_rate_ms: Option<u64>,
+    set: Option<app::DashboardSet>,
+}
+
+/// Prepares the loaded dashboards to show, and prints import diagnostics.
+fn prepare_dashboards(
+    loaded: LoadedDashboards,
+    args: &Args,
+    config: &Config,
+) -> Result<DashboardContent> {
+    match loaded {
+        LoadedDashboards::Flat => Ok(flat_content(args, config)),
+        LoadedDashboards::Single(dashboard) => {
+            Ok(single_dashboard_content(*dashboard, args, config))
         }
-        .validate()?,
+        LoadedDashboards::Multi(set) => multi_dashboard_content(*set, args, config),
+    }
+}
+
+/// Makes one panel for each `--query`, with the user variables only.
+fn flat_content(args: &Args, config: &Config) -> DashboardContent {
+    let mut variables = VariableState::default();
+    merge_user_vars(&mut variables, config.vars.clone(), &args.var);
+    DashboardContent {
+        title: "grafana-tui".to_string(),
+        panels: app::default_queries(args.query.clone()),
+        skipped_panels: 0,
+        variables,
+        query_vars: Vec::new(),
+        template: None,
+        refresh_rate_ms: None,
+        set: None,
+    }
+}
+
+/// Prepares one imported dashboard to show.
+fn single_dashboard_content(
+    d: grafana::DashboardImport,
+    args: &Args,
+    config: &Config,
+) -> DashboardContent {
+    let import_context = build_import_context(&d, config.vars.clone(), &args.var);
+    print_import_diagnostics(&import_context.diagnostics);
+
+    let panels: Vec<_> = d.queries.into_iter().map(panel_state).collect();
+    let template = app::DashboardTemplate::new(d.layout, d.repeats, &panels)
+        .with_conditions(d.conditions)
+        .with_sections(d.sections);
+    DashboardContent {
+        title: format!("{} (imported)", d.title),
+        panels,
+        skipped_panels: d.skipped_panels,
+        variables: import_context.variables,
+        query_vars: import_context.query_vars,
+        template: Some(template),
+        refresh_rate_ms: d.refresh_rate_ms,
+        set: None,
+    }
+}
+
+/// Prepares several imported dashboards to show, one for each tab.
+fn multi_dashboard_content(
+    set: grafana::DashboardSet,
+    args: &Args,
+    config: &Config,
+) -> Result<DashboardContent> {
+    let multi = build_dashboard_set(
+        set,
+        config.vars.clone(),
+        &args.var,
+        args.refresh_rate,
+        config.refresh_rate,
     );
-    state.annotations = annotations::AnnotationState::from_source(annotation_source);
-    state.scrape_interval = scrape_interval;
-    state.autogrid_enabled = autogrid_enabled;
-    state.autogrid_color = autogrid_color;
-    state.transparent_background = transparent_background;
-    state.themes = themes;
-    state.vars = variables.vars;
-    state.var_values = variables.var_values;
-    state.regex_vars = variables.regex_vars;
-    state.all_vars = variables.all_vars;
-    state.variable_names = variables.names;
-    state.query_vars = query_vars;
+    // The header shows the first dashboard, as the first tab is active.
+    let first = multi
+        .set
+        .dashboards
+        .first()
+        .context("no dashboard to show")?;
+    let refresh_rate_ms = u64::try_from(first.refresh_every.as_millis()).unwrap_or(u64::MAX);
+    let title = format!("{} (imported)", first.title);
+    let skipped_panels = first.skipped_panels;
+    Ok(DashboardContent {
+        title,
+        panels: multi.panels,
+        skipped_panels,
+        variables: multi.variables,
+        query_vars: Vec::new(),
+        template: Some(multi.template),
+        refresh_rate_ms: Some(refresh_rate_ms),
+        set: Some(multi.set),
+    })
+}
+
+/// The theme, the theme catalog and the refresh interval.
+struct Look {
+    theme: Theme,
+    themes: Vec<Theme>,
+    refresh_every: Duration,
+}
+
+/// Makes the app state from the settings and the dashboards to show.
+fn build_state(
+    prom: prom::PromClient,
+    settings: Settings,
+    content: DashboardContent,
+    look: Look,
+) -> Result<app::AppState> {
+    let mut state = app::AppState::new(
+        prom,
+        settings.timing.range,
+        settings.timing.step,
+        look.refresh_every,
+        content.title,
+        content.panels,
+        content.skipped_panels,
+        look.theme,
+        settings.marker_name,
+        settings.export.validate()?,
+    );
+    state.annotations = annotations::AnnotationState::from_source(settings.annotation_source);
+    state.scrape_interval = settings.timing.scrape_interval;
+    state.autogrid_enabled = settings.autogrid_enabled;
+    state.autogrid_color = settings.autogrid_color;
+    state.transparent_background = settings.transparent_background;
+    state.themes = look.themes;
+    state.vars = content.variables.vars;
+    state.var_values = content.variables.var_values;
+    state.regex_vars = content.variables.regex_vars;
+    state.all_vars = content.variables.all_vars;
+    state.variable_names = content.variables.names;
+    state.query_vars = content.query_vars;
     // Repeats expand from the variables, so the template is applied after them.
-    if let Some(template) = template {
+    if let Some(template) = content.template {
         state.apply_template(template);
     }
-    if let Some(set) = dashboard_set {
+    if let Some(set) = content.set {
         state.set_dashboards(set);
     }
+    Ok(state)
+}
+
+/// Runs the app in the terminal until it quits or a stop signal arrives.
+///
+/// The terminal guard restores the terminal on every exit path.
+async fn run_terminal(state: &mut app::AppState, tick_rate: Duration) -> Result<()> {
     // The first refresh starts once the dashboard is drawn. Stopping on a
     // signal drops the app, which aborts refreshes and kills annotation
     // provider processes.
@@ -342,16 +508,12 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
 
     let res = tokio::select! {
-        res = app::run_app(
-            &mut terminal,
-            &mut state,
-            Duration::from_millis(args.tick_rate),
-        ) => res,
+        res = app::run_app(&mut terminal, state, tick_rate) => res,
         () = shutdown.recv() => Ok(()),
     };
     // Save a recording however the session ended; this is a no-op when the
     // event loop already saved it on quit.
-    let finalized = app::finalize_recording_before_quit(&mut state);
+    let finalized = app::finalize_recording_before_quit(state);
 
     drop(guard);
     res.and(finalized)

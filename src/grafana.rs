@@ -357,77 +357,94 @@ fn collect_variable_diagnostics(
     diagnostics: &mut Vec<ImportDiagnostic>,
     seen: &mut HashSet<(String, String, String)>,
 ) {
-    let chars: Vec<(usize, char)> = expr.char_indices().collect();
+    let mut scan = VariableScan {
+        expr,
+        path,
+        chars: expr.char_indices().collect(),
+        known_vars,
+        diagnostics,
+        seen,
+    };
     let mut idx = 0;
-    while idx < chars.len() {
-        if chars[idx].1 != '$' {
+    while idx < scan.chars.len() {
+        if scan.chars[idx].1 != '$' {
             idx += 1;
             continue;
         }
 
-        if idx + 1 >= chars.len() {
+        if idx + 1 >= scan.chars.len() {
             idx += 1;
             continue;
         }
 
-        if chars[idx + 1].1 == '{' {
-            let start = chars[idx].0;
-            let inner_start = chars[idx + 1].0 + 1;
-            let mut end_idx = idx + 2;
-            while end_idx < chars.len() && chars[end_idx].1 != '}' {
-                end_idx += 1;
-            }
-            if end_idx >= chars.len() {
-                idx += 1;
-                continue;
-            }
+        idx = if scan.chars[idx + 1].1 == '{' {
+            scan.braced_variable(idx)
+        } else {
+            scan.plain_variable(idx)
+        };
+    }
+}
 
-            let end = chars[end_idx].0;
-            let token_end = end + 1;
-            let inner = &expr[inner_start..end];
-            let token = &expr[start..token_end];
-            let (name, modifier) = inner.split_once(':').unwrap_or((inner, ""));
-            if !modifier.is_empty() {
-                push_variable_diagnostic(
-                    diagnostics,
-                    seen,
-                    ImportDiagnostic::new(
-                        "unsupported_variable_modifier",
-                        path,
-                        format!(
-                            "unsupported Grafana variable modifier `{token}`; grafana-tui expands only unmodified variables"
-                        ),
-                    ),
-                );
-            }
-            if is_valid_variable_name(name)
-                && !is_builtin_variable(name)
-                && !known_vars.contains(name)
-            {
-                push_variable_diagnostic(
-                    diagnostics,
-                    seen,
-                    ImportDiagnostic::new(
-                        "unresolved_variable",
-                        path,
-                        format!(
-                            "unresolved variable `{token}`; provide it with --var or dashboard templating"
-                        ),
-                    ),
-                );
-            }
-            idx = end_idx + 1;
-            continue;
+/// One expression to scan for variable references, and the diagnostics it gives.
+struct VariableScan<'a> {
+    expr: &'a str,
+    path: &'a str,
+    chars: Vec<(usize, char)>,
+    known_vars: &'a HashSet<String>,
+    diagnostics: &'a mut Vec<ImportDiagnostic>,
+    seen: &'a mut HashSet<(String, String, String)>,
+}
+
+impl VariableScan<'_> {
+    /// Checks a `${name}` reference at `idx`. Returns the index to scan next.
+    fn braced_variable(&mut self, idx: usize) -> usize {
+        let chars = &self.chars;
+        let expr = self.expr;
+        let start = chars[idx].0;
+        let inner_start = chars[idx + 1].0 + 1;
+        let mut end_idx = idx + 2;
+        while end_idx < chars.len() && chars[end_idx].1 != '}' {
+            end_idx += 1;
+        }
+        if end_idx >= chars.len() {
+            return idx + 1;
         }
 
+        let end = chars[end_idx].0;
+        let token_end = end + 1;
+        let inner = &expr[inner_start..end];
+        let token = &expr[start..token_end];
+        let (name, modifier) = inner.split_once(':').unwrap_or((inner, ""));
+        if !modifier.is_empty() {
+            self.report(
+                "unsupported_variable_modifier",
+                format!(
+                    "unsupported Grafana variable modifier `{token}`; grafana-tui expands only unmodified variables"
+                ),
+            );
+        }
+        if self.is_unresolved(name) {
+            self.report(
+                "unresolved_variable",
+                format!(
+                    "unresolved variable `{token}`; provide it with --var or dashboard templating"
+                ),
+            );
+        }
+        end_idx + 1
+    }
+
+    /// Checks a `$name` reference at `idx`. Returns the index to scan next.
+    fn plain_variable(&mut self, idx: usize) -> usize {
+        let chars = &self.chars;
+        let expr = self.expr;
         let name_start = chars[idx + 1].0;
         let mut end_idx = idx + 1;
         while end_idx < chars.len() && is_variable_name_char(chars[end_idx].1) {
             end_idx += 1;
         }
         if end_idx == idx + 1 {
-            idx += 1;
-            continue;
+            return idx + 1;
         }
 
         let name_end = chars
@@ -435,22 +452,32 @@ fn collect_variable_diagnostics(
             .map(|(byte_idx, _)| *byte_idx)
             .unwrap_or(expr.len());
         let name = &expr[name_start..name_end];
-        if is_valid_variable_name(name) && !is_builtin_variable(name) && !known_vars.contains(name)
-        {
+        if self.is_unresolved(name) {
             let token = &expr[chars[idx].0..name_end];
-            push_variable_diagnostic(
-                diagnostics,
-                seen,
-                ImportDiagnostic::new(
-                    "unresolved_variable",
-                    path,
-                    format!(
-                        "unresolved variable `{token}`; provide it with --var or dashboard templating"
-                    ),
+            self.report(
+                "unresolved_variable",
+                format!(
+                    "unresolved variable `{token}`; provide it with --var or dashboard templating"
                 ),
             );
         }
-        idx = end_idx;
+        end_idx
+    }
+
+    /// Tells if `name` is a valid variable name that nothing defines.
+    fn is_unresolved(&self, name: &str) -> bool {
+        is_valid_variable_name(name)
+            && !is_builtin_variable(name)
+            && !self.known_vars.contains(name)
+    }
+
+    /// Adds a diagnostic for this expression, once for each code and message.
+    fn report(&mut self, code: &str, message: String) {
+        push_variable_diagnostic(
+            self.diagnostics,
+            self.seen,
+            ImportDiagnostic::new(code, self.path, message),
+        );
     }
 }
 
