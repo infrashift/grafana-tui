@@ -27,9 +27,9 @@ Rule R9 forbids function pointer types, and [ADR-0002](/decisions/adr-0002-adapt
 - **Test providers:** `TestProvider` is one enum with the variants `Static`, `Scripted`, `WindowRecorder`, `Recording` and `Handshake`, in a `#[cfg(test)] mod` block of `src/annotations/provider.rs`.
 - **Function pointers:**
   - Conditions get a precomputed `&[Option<bool>]` for the data of each panel.
-  - The variable interpolation uses the trait `VariableLookup`, with one type for each caller. semscope also reports a generic `F: Fn` bound, so a generic is not a solution.
+  - The code that replaces the variables uses the trait `VariableLookup`, with one type for each caller. semscope also reports a generic `F: Fn` bound, so a generic is not a solution.
   - The tick generator takes `StepGrowth { TuiTimeSteps, Double }`.
-  - The annotation projection takes pairs of an `Option<u32>` and an event.
+  - The annotation `projection` module takes pairs of an `Option<u32>` and an event.
   - The TLS settings call `config::expand_path` directly.
 - **Macro:** `ThemeSpec` lists each field. `role_slots` gives a fixed array of the key, the value and the `Theme` field. The error text and the order of the roles do not change.
 - **CLI:** the `KEY=VALUE` parser returns a `String` error. The error text does not change.

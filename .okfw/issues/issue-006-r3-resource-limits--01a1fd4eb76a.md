@@ -19,7 +19,7 @@ description: "Give each growable collection, buffer, input and queue a named lim
 **Status/Phase:** Closed · Phase 5
 
 ## Description
-ADR-0002 records the R3 deviation. Named limits cap the memory. Dashboard, config and PEM files have no size limit. Repeat expansion has no limit.
+ADR-0002 records the R3 deviation. Named limits cap the memory. Dashboard, config and PEM files have no size limit. The repeats of rows, tabs and panels have no limit.
 
 ## Acceptance Criteria
 - [x] `src/limits.rs` holds each new limit.
@@ -29,7 +29,7 @@ ADR-0002 records the R3 deviation. Named limits cap the memory. Dashboard, confi
 - [x] `make check` passes.
 
 ## Related
-[ADR-0002](/decisions/adr-0002-adapt-the-nasa-power-of-10-rules-to-rust--01a1fd4e4878.md) · [ADR-0003](/decisions/adr-0003-semscope-and-clippy-enforce-the-power-of-10-rules--01a1fd4e487d.md) · [Development workflow](/development-workflow--01a1fd4e486d.md)
+[ADR-0002](/decisions/adr-0002-adapt-the-nasa-power-of-10-rules-to-rust--01a1fd4e4878.md) · [ADR-0003](/decisions/adr-0003-semscope-and-clippy-enforce-the-power-of-10-rules--01a1fd4e487d.md) · [The workflow guide](/development-workflow--01a1fd4e486d.md)
 
 ## Resolution
 Done on 2026-11-21. `src/limits.rs` holds 13 new limits. [ADR-0007](/decisions/adr-0007-named-limits-cap-each-input-and-growable-collection--01a1fdaaf533.md) lists each limit, where the program checks it and what the user sees. `zmake check` passes with line coverage 95.74%. The 20 snapshot tests pass with no change, and `validate` accepts each example dashboard.

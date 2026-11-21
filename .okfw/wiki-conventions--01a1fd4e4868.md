@@ -30,15 +30,15 @@ This guide defines how the grafana-tui OKF wiki (`.okfw/`) stores project knowle
 ## ADRs (`decisions/`)
 - Title: `ADR-NNNN: <decision>`. Number the ADRs in sequence. Do not use a number again.
 - Command: `okfw create "ADR-NNNN: <title>" --path decisions --type ADR --tags adr,<topic> -d "<one sentence>" --body "<markdown>"`
-- Body: **Status** (Proposed, Accepted, or Superseded by ADR-XXXX), **Date**, **Source**, then **Context**, **Decision**, **Consequences** and **Alternatives considered**.
+- Body: `Status` (Proposed, Accepted, or Superseded by ADR-XXXX), `Date`, `Source`, then the sections `Context`, `Decision`, `Consequences` and `Alternatives considered`.
 - To replace an ADR, write a new ADR with a link to the old ADR. Change the Status line of the old ADR. Run `okfw set-lifecycle <id> deprecated`.
 
 ## Issues (`issues/`)
 - Title: `ISSUE-NNN: <summary>`. Number the issues in sequence.
 - Command: `okfw create "ISSUE-NNN: <title>" --kind issue --path issues --type Issue --tags issue,open,phase-<n>,<area> -d "<summary>" --body "<markdown>"`
-- Body: a **Status/Phase** line, **Description**, **Acceptance Criteria** (checkboxes), **Notes** and **Related**.
+- Body: a `Status/Phase` line, then the sections `Description`, `Acceptance Criteria` (checkboxes), `Notes` and `Related`.
 - Tags carry the state: `open`, then `in-progress`, then `closed`. Use `okfw remove-tags` and `okfw add-tags`. Keep the Status line the same as the tags.
-- Add a **Resolution** section when you close an issue.
+- Add a `Resolution` section when you close an issue.
 - Find open work with `okfw search --path issues --tag open`.
 
 ## Writing style

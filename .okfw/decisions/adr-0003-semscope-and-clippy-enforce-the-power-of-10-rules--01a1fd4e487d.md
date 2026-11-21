@@ -19,7 +19,7 @@ description: "make p10 runs semscope with a ratchet overlay, and the clippy lint
 **Source:** The Power of 10 refactor plan.
 
 ## Context
-Some Power of 10 rules have no clippy lint: recursion, loop bounds and assertion density. semscope is a static checker from the infrashift tools. Its ruleset `nasa-p10` checks all ten rules on Rust code and skips the test code. On `main` at 0a74e24, semscope found 24 R1, 6 R2, 41 R4, 51 R7, 1 R8 and 4 R9 errors, 162 R3 warnings, and 1 assertion in 683 functions.
+Some Power of 10 rules have no clippy lint: recursion, loop bounds and assertion density. semscope is a static checker from the infrashift tools. Its ruleset `nasa-p10` checks all ten rules on Rust code and skips the test code. On `main` at 0a74e24, semscope found 24 R1, 6 R2, 41 R4, 51 R7, 1 R8 and 4 R9 errors. It also found 162 R3 warnings, and 1 assertion in 683 functions.
 
 ## Decision
 - `make p10` runs `semscope scan --ruleset nasa-p10 --ruleset .semscope.cue --fail-level error src`. `make check` runs it.

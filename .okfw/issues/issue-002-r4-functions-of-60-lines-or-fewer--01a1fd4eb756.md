@@ -30,7 +30,7 @@ semscope found 41 functions longer than 60 lines. The longest are `render_graph_
 - [x] `make check` passes.
 
 ## Related
-[ADR-0002](/decisions/adr-0002-adapt-the-nasa-power-of-10-rules-to-rust--01a1fd4e4878.md) · [ADR-0003](/decisions/adr-0003-semscope-and-clippy-enforce-the-power-of-10-rules--01a1fd4e487d.md) · [Development workflow](/development-workflow--01a1fd4e486d.md)
+[ADR-0002](/decisions/adr-0002-adapt-the-nasa-power-of-10-rules-to-rust--01a1fd4e4878.md) · [ADR-0003](/decisions/adr-0003-semscope-and-clippy-enforce-the-power-of-10-rules--01a1fd4e487d.md) · [The workflow guide](/development-workflow--01a1fd4e486d.md)
 
 ## Resolution
 Done on 2026-11-21. semscope finds 0 functions over 60 lines (41 before). `zmake check` passes: 547 unit tests, 30 CLI tests, line coverage 95.44%. The 20 snapshot tests pass with no change.

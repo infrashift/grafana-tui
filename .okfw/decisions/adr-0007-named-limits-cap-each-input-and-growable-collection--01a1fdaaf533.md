@@ -60,7 +60,7 @@ These paths need no new limit:
 
 ## Consequences
 - The series, point and message cuts run after the program reads the response. `MAX_RESPONSE_BYTES` caps the peak of one request. The new limits cap what the cache and the panels keep.
-- A query over 256 KiB, for example a large "All" alternation, gives an error. Prometheus refuses a URL of that size in most set-ups.
+- A query over 256 KiB, for example a large "All" regex with many alternatives, gives an error. Prometheus refuses a URL of that size in most set-ups.
 
 ## Alternatives considered
 - **Limits in the render path.** A check there has no effect on memory. Rejected.
