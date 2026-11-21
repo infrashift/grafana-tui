@@ -29,7 +29,7 @@ Set up the branch `nasa-p10-refactor`, the gates and the wiki. Add snapshots tha
 - [x] `make check` passes.
 
 ## Related
-[ADR-0002](/decisions/adr-0002-adapt-the-nasa-power-of-10-rules-to-rust--01a1fd4e4878.md) · [ADR-0003](/decisions/adr-0003-semscope-and-clippy-enforce-the-power-of-10-rules--01a1fd4e487d.md) · [Development workflow](/development-workflow--01a1fd4e486d.md)
+[ADR-0002](/decisions/adr-0002-adapt-the-nasa-power-of-10-rules-to-rust--01a1fd4e4878.md) · [ADR-0003](/decisions/adr-0003-semscope-and-clippy-enforce-the-power-of-10-rules--01a1fd4e487d.md) · [The workflow guide](/development-workflow--01a1fd4e486d.md)
 
 ## Resolution
 Done on 2026-11-21. `zmake check` passes: 547 unit tests, 22 CLI tests, line coverage 95.41%, 0 semscope errors, 18 wiki concepts.

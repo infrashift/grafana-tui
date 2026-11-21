@@ -18,9 +18,9 @@ description: "docs-style excludes the 35 Rust files with the Apache header until
 **Status/Phase:** Open · debt
 
 ## Description
-The Apache license header at the top of 35 Rust files is legal text. It breaks the ASD-STE100 rules: a 37-word sentence, the passive voice, and words such as "compliance", "governing" and "obtain". lexiscope cannot skip part of a file. So `make docs-style` excludes each file that holds the header (`STE_LICENSED` in the Makefile and the ZMakefile). The comments below the header follow ASD-STE100, but the gate does not check them.
+The Apache license header at the top of 35 Rust files is legal text. It breaks the ASD-STE100 rules: a 37-word sentence, the passive voice, and words such as `compliance`, `governing` and `obtain`. lexiscope cannot skip part of a file. So `make docs-style` excludes each file that holds the header (`STE_LICENSED` in the Makefile and the ZMakefile). The comments below the header follow ASD-STE100, but the gate does not check them.
 
-The user tracks a lexiscope change that skips a leading license comment block.
+The user tracks a lexiscope change that skips a license comment block at the top of a file.
 
 ## Acceptance Criteria
 - [ ] lexiscope skips the license header.

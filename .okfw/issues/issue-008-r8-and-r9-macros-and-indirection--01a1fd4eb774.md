@@ -26,12 +26,12 @@ semscope found 1 R8 finding (`theme_spec!`) and 4 R9 findings. `Box<dyn Annotati
 - [x] An enum replaces `Box<dyn AnnotationProvider>`. The futures stay `Send`.
 - [x] No production code has a function pointer type or a `dyn Fn`.
 - [x] A const table replaces `theme_spec!`.
-- [x] ADR-0002 records each remaining `dyn`.
+- [x] ADR-0002 records each `dyn` that stays.
 - [x] `.semscope.cue` turns on NASA-P10-08 and NASA-P10-09.
 - [x] `make check` passes.
 
 ## Related
-[ADR-0002](/decisions/adr-0002-adapt-the-nasa-power-of-10-rules-to-rust--01a1fd4e4878.md) · [ADR-0003](/decisions/adr-0003-semscope-and-clippy-enforce-the-power-of-10-rules--01a1fd4e487d.md) · [Development workflow](/development-workflow--01a1fd4e486d.md)
+[ADR-0002](/decisions/adr-0002-adapt-the-nasa-power-of-10-rules-to-rust--01a1fd4e4878.md) · [ADR-0003](/decisions/adr-0003-semscope-and-clippy-enforce-the-power-of-10-rules--01a1fd4e487d.md) · [The workflow guide](/development-workflow--01a1fd4e486d.md)
 
 ## Resolution
 Done on 2026-11-21. semscope finds no R8 or R9 finding, and `.semscope.cue` turns on NASA-P10-08 and NASA-P10-09. `zmake check` passes with line coverage 95.82%. The 20 snapshot tests pass with no change.

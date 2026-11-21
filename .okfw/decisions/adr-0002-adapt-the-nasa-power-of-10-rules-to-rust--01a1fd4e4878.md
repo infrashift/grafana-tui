@@ -15,7 +15,7 @@ description: "The production code follows the ten rules with Rust adaptations fo
 
 **Status:** Accepted
 **Date:** 2026-11-21
-**Source:** User request: refactor grafana-tui to follow the NASA Power of 10 rules for safety-critical software. The user selected the Rust adaptation for rules 3 and 9, and the assertion split for rule 5.
+**Source:** User request: refactor grafana-tui to follow the NASA Power of 10 rules for safety-critical software. For rules 3 and 9, the user selected the Rust version of the rules. For rule 5, the user selected the assertion split.
 
 ## Context
 The Power of 10 rules (Holzmann, NASA/JPL, 2006) are for C. grafana-tui is Rust. It uses tokio, reqwest, serde and ratatui. These crates allocate memory after start-up and use trait objects. A literal application of rules 3 and 9 removes these crates.

@@ -36,7 +36,7 @@ A browser skips an element with a NaN coordinate, so the panel loses a bar or a 
 ## Resolution
 Done on 2026-11-21.
 
-- `bounds_fraction` in `src/export.rs` maps a value to its place between the bounds with halves, so the subtraction stays finite near `f64::MAX`. NaN gives 0. `map_x` and `map_y` use it. For normal values the result is the same bit for bit, because a division by 2 is exact. The 20 snapshot tests pass with no change.
+- `bounds_fraction` in `src/export.rs` maps a value to its place between the bounds with halves, so the difference stays finite near `f64::MAX`. NaN gives 0. `map_x` and `map_y` use it. For normal values the result is the same bit for bit, because the result of a divide by 2 is exact. The 20 snapshot tests pass with no change.
 - `calculate_y_bounds` computes the padding from halves and clamps each bound to `f64::MIN` and `f64::MAX`.
 - A NaN bar gauge value draws an empty bar, as in the TUI. The value label still shows "NaN".
 - `write_rect` and `AxisLabels::claim` now reject NaN in their assertions.
