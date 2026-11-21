@@ -148,9 +148,9 @@ impl AnnotationState {
                     .chain(status.target_warnings.iter().map(ToString::to_string))
                     .collect::<Vec<_>>();
                 let warning_count = parts.len();
-                if warning_count > 1 {
-                    parts.truncate(1);
-                    parts[0].push_str(&format!(" (+{} more)", warning_count - 1));
+                parts.truncate(1);
+                if let Some(first) = parts.first_mut().filter(|_| warning_count > 1) {
+                    first.push_str(&format!(" (+{} more)", warning_count - 1));
                 }
                 if !filter.is_empty() {
                     parts.push(format!("tags {}", filter.summary()));

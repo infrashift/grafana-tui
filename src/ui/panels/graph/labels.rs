@@ -15,6 +15,7 @@
  */
 
 use super::overlay::is_blank_cell;
+use crate::num;
 use crate::ui::format::{DisplayFormat, format_axis_time};
 use ratatui::prelude::*;
 
@@ -50,17 +51,17 @@ pub(super) fn y_label_width(
     // otherwise bytes/percent suffixes can clip or push into the plot area.
     let axis_width = axis_labels
         .iter()
-        .map(|label| label.width() as u16)
+        .map(|label| num::usize_to_u16(label.width()))
         .max()
         .unwrap_or(0);
     let grid_width = autogrid_ticks
         .iter()
-        .map(|tick| display.format_number(*tick).len() as u16)
+        .map(|tick| num::usize_to_u16(display.format_number(*tick).len()))
         .max()
         .unwrap_or(0);
     let threshold_width = threshold_labels
         .iter()
-        .map(|(tick, _)| display.format_number(*tick).len() as u16)
+        .map(|(tick, _)| num::usize_to_u16(display.format_number(*tick).len()))
         .max()
         .unwrap_or(0);
 
@@ -133,9 +134,9 @@ fn value_to_plot_y(value: f64, y_bounds: [f64; 2], plot: PlotBounds) -> Option<u
         return None;
     }
 
-    let height = plot.bottom.saturating_sub(plot.top) as f64;
+    let height = f64::from(plot.bottom.saturating_sub(plot.top));
     let ratio = (value - y_bounds[0]) / (y_bounds[1] - y_bounds[0]);
-    let y_offset = (ratio * height).round() as u16;
+    let y_offset = num::f64_to_u16((ratio * height).round());
     Some(plot.bottom.saturating_sub(y_offset))
 }
 
@@ -148,9 +149,12 @@ pub(super) fn value_to_plot_x(value: f64, x_bounds: [f64; 2], plot: PlotBounds) 
         return None;
     }
 
-    let width = plot.right.saturating_sub(plot.left).saturating_sub(1) as f64;
+    let width = f64::from(plot.right.saturating_sub(plot.left).saturating_sub(1));
     let ratio = (value - x_bounds[0]) / (x_bounds[1] - x_bounds[0]);
-    Some(plot.left.saturating_add((ratio * width).round() as u16))
+    Some(
+        plot.left
+            .saturating_add(num::f64_to_u16((ratio * width).round())),
+    )
 }
 
 fn write_right_aligned_label(
@@ -161,7 +165,7 @@ fn write_right_aligned_label(
     label: &str,
     color: Color,
 ) {
-    let label_width = label.chars().count() as u16;
+    let label_width = num::usize_to_u16(label.chars().count());
     let x = left.saturating_add(width.saturating_sub(label_width));
     write_label(frame, x, y, label, color, false);
 }
@@ -175,7 +179,7 @@ fn write_centered_label(
     label: &str,
     color: Color,
 ) {
-    let label_width = label.chars().count() as u16;
+    let label_width = num::usize_to_u16(label.chars().count());
     let Some(start_x) = centered_label_start(center, label_width, min_x, max_x) else {
         return;
     };
@@ -192,7 +196,7 @@ fn write_centered_label(
 
     let style = Style::default().fg(color);
     for (offset, ch) in label.chars().enumerate() {
-        if let Some(cell) = buf.cell_mut((start_x.saturating_add(offset as u16), y)) {
+        if let Some(cell) = buf.cell_mut((start_x.saturating_add(num::usize_to_u16(offset)), y)) {
             cell.set_char(ch).set_style(style);
         }
     }
@@ -222,7 +226,7 @@ fn write_label(frame: &mut Frame, x: u16, y: u16, label: &str, color: Color, bla
     let style = Style::default().fg(color);
     let buf = frame.buffer_mut();
     for (offset, ch) in label.chars().enumerate() {
-        let Some(cell) = buf.cell_mut((x.saturating_add(offset as u16), y)) else {
+        let Some(cell) = buf.cell_mut((x.saturating_add(num::usize_to_u16(offset)), y)) else {
             continue;
         };
         if !blank_only || is_blank_cell(cell) {

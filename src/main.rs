@@ -53,6 +53,7 @@ mod dashboard;
 mod export;
 mod grafana;
 mod limits;
+mod num;
 mod prom;
 mod theme;
 mod ui;

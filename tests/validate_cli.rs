@@ -469,18 +469,26 @@ fn assert_demo_set_validates(set: &str, count: usize, title_prefix: &str, min_pa
         );
         let summary: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert!(
-            summary["title"].as_str().unwrap().starts_with(title_prefix),
+            summary
+                .get("title")
+                .and_then(|title| title.as_str())
+                .unwrap()
+                .starts_with(title_prefix),
             "{}",
             path.display()
         );
         assert!(
-            summary["panel_count"].as_u64().unwrap() >= min_panels,
+            summary
+                .get("panel_count")
+                .and_then(|count| count.as_u64())
+                .unwrap()
+                >= min_panels,
             "{}",
             path.display()
         );
         assert_eq!(
-            summary["diagnostics"],
-            serde_json::json!([]),
+            summary.get("diagnostics"),
+            Some(&serde_json::json!([])),
             "{}",
             path.display()
         );
@@ -504,7 +512,10 @@ fn assert_demo_set_validates_at_once(set: &str, title_prefix: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
     let summary: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let dashboards = summary["dashboards"].as_array().unwrap();
+    let dashboards = summary
+        .get("dashboards")
+        .and_then(|list| list.as_array())
+        .unwrap();
     assert_eq!(dashboards.len(), paths.len());
     for (dashboard, path) in dashboards.iter().zip(&paths) {
         assert_eq!(dashboard["path"], path.display().to_string());

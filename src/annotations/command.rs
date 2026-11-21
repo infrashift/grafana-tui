@@ -264,7 +264,9 @@ async fn read_stdout_limited(mut stdout: ChildStdout) -> io::Result<CapturedStdo
         if captured.len() + read > MAX_STDOUT_BYTES {
             break;
         }
-        captured.extend_from_slice(&chunk[..read]);
+        // A read gives at most the length of the buffer.
+        debug_assert!(read <= chunk.len(), "a read overran the stdout buffer");
+        captured.extend_from_slice(chunk.get(..read).unwrap_or(&chunk));
     }
     Ok(CapturedStdout::LimitExceeded)
 }
@@ -283,7 +285,8 @@ async fn read_stderr_capped(mut stderr: ChildStderr) -> io::Result<Vec<u8>> {
         }
         drained += read;
         let retained = (MAX_STDERR_BYTES - captured.len()).min(read);
-        captured.extend_from_slice(&chunk[..retained]);
+        debug_assert!(retained <= chunk.len(), "a read overran the stderr buffer");
+        captured.extend_from_slice(chunk.get(..retained).unwrap_or(&chunk));
     }
     Err(io::Error::other(format!(
         "stderr passed the {} MiB drain limit",

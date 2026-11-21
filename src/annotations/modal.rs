@@ -110,7 +110,7 @@ fn moved_index(current: usize, len: usize, delta: isize) -> usize {
     if delta < 0 {
         current.saturating_sub(delta.unsigned_abs())
     } else {
-        current.saturating_add(delta as usize).min(len - 1)
+        current.saturating_add(delta.unsigned_abs()).min(len - 1)
     }
 }
 

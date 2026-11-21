@@ -15,6 +15,7 @@
  */
 
 use crate::app::{AppState, PanelState};
+use crate::num;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph, Sparkline},
@@ -27,13 +28,11 @@ pub(super) fn render_stat(frame: &mut Frame, area: Rect, p: &PanelState, app: &A
     let value = visible_series.and_then(|s| s.value);
     let color = value
         .and_then(|value| p.get_color_for_value(value))
-        .unwrap_or(theme.palette[0]);
+        .unwrap_or(theme.palette_color(0));
 
     // Split area into value (top) and sparkline (bottom)
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(area);
+    let [value_area, sparkline_area] =
+        Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(area);
 
     // Grafana's noValue stands in for a null value and for no series at all.
     let val_str = visible_series
@@ -44,7 +43,7 @@ pub(super) fn render_stat(frame: &mut Frame, area: Rect, p: &PanelState, app: &A
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE));
 
-    frame.render_widget(big_value, chunks[0]);
+    frame.render_widget(big_value, value_area);
 
     // Render Sparkline
     if let Some(s) = visible_series {
@@ -54,7 +53,7 @@ pub(super) fn render_stat(frame: &mut Frame, area: Rect, p: &PanelState, app: &A
             .data(&data)
             .max(SPARKLINE_MAX)
             .style(Style::default().fg(color));
-        frame.render_widget(sparkline, chunks[1]);
+        frame.render_widget(sparkline, sparkline_area);
     }
 }
 
@@ -78,7 +77,8 @@ fn sparkline_heights(points: &[(f64, f64)]) -> Vec<u64> {
                 0
             } else if max > min {
                 // The lowest point keeps a sliver, so the line stays visible.
-                1 + ((value - min) / (max - min) * (SPARKLINE_MAX - 1) as f64).round() as u64
+                let ratio = (value - min) / (max - min);
+                1 + num::f64_to_u64((ratio * num::u64_to_f64(SPARKLINE_MAX - 1)).round())
             } else {
                 SPARKLINE_MAX / 2
             }

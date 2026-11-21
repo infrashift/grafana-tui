@@ -777,17 +777,21 @@ const GRID_UNIT_PX: f64 = 38.0;
 const GRID_MARGIN_PX: f64 = 8.0;
 
 fn auto_grid_column_cells(width_px: f64) -> u16 {
-    (width_px / AUTO_GRID_PX_PER_COLUMN)
-        .round()
-        .clamp(1.0, f64::from(u16::MAX)) as u16
+    crate::num::f64_to_u16(
+        (width_px / AUTO_GRID_PX_PER_COLUMN)
+            .round()
+            .clamp(1.0, f64::from(u16::MAX)),
+    )
 }
 
 /// Converts a pixel height to the fixed-grid units used by `GridPos::h`, where `h`
 /// units span `h * 30px + (h - 1) * 8px`.
 fn auto_grid_row_units(height_px: f64) -> u16 {
-    ((height_px + GRID_MARGIN_PX) / GRID_UNIT_PX)
-        .round()
-        .clamp(1.0, f64::from(u16::MAX)) as u16
+    crate::num::f64_to_u16(
+        ((height_px + GRID_MARGIN_PX) / GRID_UNIT_PX)
+            .round()
+            .clamp(1.0, f64::from(u16::MAX)),
+    )
 }
 
 #[derive(Default)]
@@ -895,7 +899,9 @@ fn graph_options_from_custom(custom: Option<&model::GraphCustom>) -> crate::app:
     crate::app::GraphOptions {
         draw_style: parse_graph_draw_style(custom.draw_style.as_deref()),
         show_points: parse_graph_point_mode(custom.show_points.as_deref()),
-        fill_opacity: custom.fill_opacity.map(|value| value.min(100) as u8),
+        fill_opacity: custom
+            .fill_opacity
+            .map(|value| u8::try_from(value.min(100)).unwrap_or(100)),
         axis_placement: parse_graph_axis_placement(custom.axis_placement.as_deref()),
         line_interpolation: custom
             .line_interpolation

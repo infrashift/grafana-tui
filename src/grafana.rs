@@ -362,66 +362,38 @@ fn collect_variable_diagnostics(
     seen: &mut HashSet<(String, String, String)>,
 ) {
     let mut scan = VariableScan {
-        expr,
         path,
-        chars: expr.char_indices().collect(),
         known_vars,
         diagnostics,
         seen,
     };
-    let mut idx = 0;
-    // Each pass moves `idx` forward one character or more.
-    for _ in 0..scan.chars.len() {
-        if idx >= scan.chars.len() {
+    let mut rest = expr;
+    // Each pass reads one `$` or more, so the expression length bounds the loop.
+    for _ in 0..expr.len() {
+        let Some((_, after)) = rest.split_once('$') else {
             break;
-        }
-        if scan.chars[idx].1 != '$' {
-            idx += 1;
-            continue;
-        }
-
-        if idx + 1 >= scan.chars.len() {
-            idx += 1;
-            continue;
-        }
-
-        idx = if scan.chars[idx + 1].1 == '{' {
-            scan.braced_variable(idx)
-        } else {
-            scan.plain_variable(idx)
+        };
+        rest = match after.strip_prefix('{') {
+            Some(braced) => scan.braced_variable(braced).unwrap_or(after),
+            None => scan.plain_variable(after),
         };
     }
 }
 
 /// One expression to scan for variable references, and the diagnostics it gives.
 struct VariableScan<'a> {
-    expr: &'a str,
     path: &'a str,
-    chars: Vec<(usize, char)>,
     known_vars: &'a HashSet<String>,
     diagnostics: &'a mut Vec<ImportDiagnostic>,
     seen: &'a mut HashSet<(String, String, String)>,
 }
 
 impl VariableScan<'_> {
-    /// Checks a `${name}` reference at `idx`. Returns the index to scan next.
-    fn braced_variable(&mut self, idx: usize) -> usize {
-        let chars = &self.chars;
-        let expr = self.expr;
-        let start = chars[idx].0;
-        let inner_start = chars[idx + 1].0 + 1;
-        let mut end_idx = idx + 2;
-        while end_idx < chars.len() && chars[end_idx].1 != '}' {
-            end_idx += 1;
-        }
-        if end_idx >= chars.len() {
-            return idx + 1;
-        }
-
-        let end = chars[end_idx].0;
-        let token_end = end + 1;
-        let inner = &expr[inner_start..end];
-        let token = &expr[start..token_end];
+    /// Checks the `${name}` reference that `braced` starts after its `{`.
+    /// Returns the text after the `}`, or `None` when the `}` is missing.
+    fn braced_variable<'t>(&mut self, braced: &'t str) -> Option<&'t str> {
+        let (inner, remainder) = braced.split_once('}')?;
+        let token = format!("${{{inner}}}");
         let (name, modifier) = inner.split_once(':').unwrap_or((inner, ""));
         if !modifier.is_empty() {
             self.report(
@@ -439,37 +411,25 @@ impl VariableScan<'_> {
                 ),
             );
         }
-        end_idx + 1
+        Some(remainder)
     }
 
-    /// Checks a `$name` reference at `idx`. Returns the index to scan next.
-    fn plain_variable(&mut self, idx: usize) -> usize {
-        let chars = &self.chars;
-        let expr = self.expr;
-        let name_start = chars[idx + 1].0;
-        let mut end_idx = idx + 1;
-        while end_idx < chars.len() && is_variable_name_char(chars[end_idx].1) {
-            end_idx += 1;
-        }
-        if end_idx == idx + 1 {
-            return idx + 1;
-        }
-
-        let name_end = chars
-            .get(end_idx)
-            .map(|(byte_idx, _)| *byte_idx)
-            .unwrap_or(expr.len());
-        let name = &expr[name_start..name_end];
+    /// Checks the `$name` reference that `after` starts after its `$`.
+    /// Returns the text after the name.
+    fn plain_variable<'t>(&mut self, after: &'t str) -> &'t str {
+        let name_len = after
+            .find(|ch: char| !is_variable_name_char(ch))
+            .unwrap_or(after.len());
+        let (name, remainder) = after.split_at_checked(name_len).unwrap_or((after, ""));
         if self.is_unresolved(name) {
-            let token = &expr[chars[idx].0..name_end];
             self.report(
                 "unresolved_variable",
                 format!(
-                    "unresolved variable `{token}`; provide it with --var or dashboard templating"
+                    "unresolved variable `${name}`; provide it with --var or dashboard templating"
                 ),
             );
         }
-        end_idx
+        remainder
     }
 
     /// Tells if `name` is a valid variable name that nothing defines.
@@ -3858,6 +3818,32 @@ mod tests {
                 && diagnostic.path == "panels[0].targets[1].expr"
                 && diagnostic.message.contains("$cluster")
         }));
+    }
+
+    #[test]
+    fn variable_scan_handles_unclosed_braces_and_non_ascii_text() {
+        let known = HashSet::from(["job".to_string()]);
+        let mut diagnostics = Vec::new();
+        let mut seen = HashSet::new();
+        collect_variable_diagnostics(
+            "rate(x[$__interval]) / ${missing} + $job é$näme ${unclosed $tail$",
+            "expr",
+            &known,
+            &mut diagnostics,
+            &mut seen,
+        );
+        let messages = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            messages,
+            [
+                "unresolved variable `${missing}`; provide it with --var or dashboard templating",
+                "unresolved variable `$n`; provide it with --var or dashboard templating",
+                "unresolved variable `$tail`; provide it with --var or dashboard templating",
+            ]
+        );
     }
 
     /// A V2 dashboard whose layout nests `wrappers` rows or tabs around a grid.

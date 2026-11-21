@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+use crate::num;
 use ratatui::style::Color;
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -149,7 +150,7 @@ fn format_scaled(value: f64, suffixes: &[&str], base: f64, decimals: Option<usiz
         "{:.*}{}",
         decimals.unwrap_or(2),
         scaled,
-        suffixes[suffix_index]
+        suffixes.get(suffix_index).copied().unwrap_or_default()
     )
 }
 
@@ -179,7 +180,7 @@ fn format_duration_seconds(value: f64, decimals: Option<usize>) -> String {
 
 pub(crate) fn format_time(ts: f64) -> String {
     use chrono::TimeZone;
-    if let Some(dt) = chrono::Utc.timestamp_opt(ts as i64, 0).single() {
+    if let Some(dt) = chrono::Utc.timestamp_opt(num::f64_to_i64(ts), 0).single() {
         dt.format("%H:%M:%S").to_string()
     } else {
         format!("{}", ts)
@@ -194,7 +195,7 @@ pub(crate) fn format_axis_time(ts: f64, range_secs: f64) -> String {
         return format_time(ts);
     }
 
-    let Some(dt) = chrono::Utc.timestamp_opt(ts as i64, 0).single() else {
+    let Some(dt) = chrono::Utc.timestamp_opt(num::f64_to_i64(ts), 0).single() else {
         return format!("{}", ts);
     };
 
@@ -225,13 +226,13 @@ pub(crate) fn get_hash_color(name: &str) -> Color {
 
     // Use HSL color space for better color distribution
     // Hue: use the hash to get different hues (0-360 degrees)
-    let hue = (hash % 360) as f32;
+    let hue = num::u64_to_f32(hash % 360);
 
     // Saturation: keep high for vibrant colors (60-90%)
-    let saturation = 60.0 + ((hash >> 8) % 30) as f32;
+    let saturation = 60.0 + num::u64_to_f32((hash >> 8) % 30);
 
     // Lightness: keep in a range that's visible on both light and dark backgrounds (45-65%)
-    let lightness = 45.0 + ((hash >> 16) % 20) as f32;
+    let lightness = 45.0 + num::u64_to_f32((hash >> 16) % 20);
 
     hsl_to_rgb(hue, saturation, lightness)
 }
@@ -260,9 +261,9 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Color {
     };
 
     Color::Rgb(
-        ((r + m) * 255.0) as u8,
-        ((g + m) * 255.0) as u8,
-        ((b + m) * 255.0) as u8,
+        num::f32_to_u8((r + m) * 255.0),
+        num::f32_to_u8((g + m) * 255.0),
+        num::f32_to_u8((b + m) * 255.0),
     )
 }
 

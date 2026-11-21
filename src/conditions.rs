@@ -195,7 +195,7 @@ fn evaluate_variable(
 /// `rangeUtil.intervalToSeconds`, where a month is 30 days and a year 365.
 pub(crate) fn parse_time_range_size(value: &str) -> Option<f64> {
     let unit = value.chars().last()?;
-    let number = &value[..value.len() - unit.len_utf8()];
+    let number = value.strip_suffix(unit)?;
     let valid = !number.is_empty()
         && !number.starts_with('.')
         && !number.ends_with('.')

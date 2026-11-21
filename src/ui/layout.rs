@@ -20,6 +20,7 @@ use crate::{
         DashboardAutoGrid, DashboardItemId, DashboardLayoutItem, DashboardTabs, MAX_LAYOUT_DEPTH,
         MAX_LAYOUT_STEPS, RowId, TabGroupId,
     },
+    num,
 };
 use ratatui::prelude::*;
 
@@ -51,19 +52,20 @@ pub(crate) enum DashboardRectKind {
 }
 
 pub(crate) fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([
+    let [_, middle, _] = Layout::vertical([
         Constraint::Percentage((100 - percent_y) / 2),
         Constraint::Percentage(percent_y),
         Constraint::Percentage((100 - percent_y) / 2),
     ])
-    .split(area);
+    .areas(area);
 
-    Layout::horizontal([
+    let [_, center, _] = Layout::horizontal([
         Constraint::Percentage((100 - percent_x) / 2),
         Constraint::Percentage(percent_x),
         Constraint::Percentage((100 - percent_x) / 2),
     ])
-    .split(vertical[1])[1]
+    .areas(middle);
+    center
 }
 
 /// Returns a list of (Rect, panel_index) for all panels to be rendered.
@@ -77,7 +79,7 @@ pub(crate) fn calculate_grid_layout(area: Rect, app: &AppState) -> Vec<(Rect, us
     let cell_h = std::cmp::max(3, area.height / 24);
 
     // Render grid-backed panels with scroll offset
-    let scroll_offset = app.vertical_scroll as u16 * cell_h;
+    let scroll_offset = num::usize_to_u16(app.vertical_scroll).saturating_mul(cell_h);
     let cells = GridCells {
         area,
         cell_w,
@@ -87,7 +89,9 @@ pub(crate) fn calculate_grid_layout(area: Rect, app: &AppState) -> Vec<(Rect, us
 
     let shown = app.flat_panel_indices();
     for &i in &shown {
-        let p = &app.panels[i];
+        let Some(p) = app.panels.get(i) else {
+            continue;
+        };
         if let Some(rect) = p.grid.and_then(|g| scrolled_grid_rect(&cells, g)) {
             results.push((rect, i));
         }
@@ -113,8 +117,8 @@ fn scrolled_grid_rect(cells: &GridCells, g: GridUnit) -> Option<Rect> {
     }
     let x = area
         .x
-        .saturating_add((g.x as u16).saturating_mul(cells.cell_w));
-    let y_absolute = (g.y as u16).saturating_mul(cells.cell_h);
+        .saturating_add(num::i32_to_u16(g.x).saturating_mul(cells.cell_w));
+    let y_absolute = num::i32_to_u16(g.y).saturating_mul(cells.cell_h);
 
     // Apply scroll offset
     if y_absolute < cells.scroll_offset {
@@ -125,8 +129,8 @@ fn scrolled_grid_rect(cells: &GridCells, g: GridUnit) -> Option<Rect> {
         .y
         .saturating_add(y_absolute.saturating_sub(cells.scroll_offset));
 
-    let w = (g.w as u16).saturating_mul(cells.cell_w);
-    let h = (g.h as u16).saturating_mul(cells.cell_h);
+    let w = num::i32_to_u16(g.w).saturating_mul(cells.cell_w);
+    let h = num::i32_to_u16(g.h).saturating_mul(cells.cell_h);
 
     // Skip panels that are completely below the visible area
     if y >= area.bottom() {
@@ -153,7 +157,7 @@ fn grid_extras_layout(
     // Extras (panels without grid)
     let extras: Vec<(usize, &PanelState)> = shown
         .iter()
-        .map(|&i| (i, &app.panels[i]))
+        .filter_map(|&i| app.panels.get(i).map(|p| (i, p)))
         .filter(|(_, p)| p.grid.is_none())
         .collect();
     if extras.is_empty() {
@@ -163,7 +167,7 @@ fn grid_extras_layout(
     let max_y_h = shown
         .iter()
         .filter_map(|&i| {
-            let g = app.panels[i].grid?;
+            let g = app.panels.get(i)?.grid?;
             Some(g.y + g.h)
         })
         .max()
@@ -171,7 +175,7 @@ fn grid_extras_layout(
 
     let start_y_px = area
         .y
-        .saturating_add((max_y_h as u16).saturating_mul(cell_h));
+        .saturating_add(num::i32_to_u16(max_y_h).saturating_mul(cell_h));
 
     if start_y_px >= area.bottom() {
         return Vec::new();
@@ -203,13 +207,11 @@ pub(crate) fn calculate_two_column_layout_subset(
         return results;
     }
 
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
+    let [left_column, right_column] =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
 
     let panel_height = 12u16;
-    let rows_fit = (area.height / panel_height).saturating_mul(2).max(1) as usize;
+    let rows_fit = usize::from((area.height / panel_height).saturating_mul(2).max(1));
 
     // Scroll handling
     // If we are rendering the main list (not extras), we use app.vertical_scroll.
@@ -222,7 +224,7 @@ pub(crate) fn calculate_two_column_layout_subset(
         .min(panel_indices.len().saturating_sub(rows_fit));
     let end = (start + rows_fit).min(panel_indices.len());
 
-    let visible_indices = &panel_indices[start..end];
+    let visible_indices = panel_indices.get(start..end).unwrap_or_default();
 
     let mut left_indices = Vec::new();
     let mut right_indices = Vec::new();
@@ -235,8 +237,8 @@ pub(crate) fn calculate_two_column_layout_subset(
         }
     }
 
-    stack_column(cols[0], &left_indices, panel_height, &mut results);
-    stack_column(cols[1], &right_indices, panel_height, &mut results);
+    stack_column(left_column, &left_indices, panel_height, &mut results);
+    stack_column(right_column, &right_indices, panel_height, &mut results);
 
     results
 }
@@ -258,16 +260,14 @@ fn stack_column(
 }
 
 fn dashboard_inner_area(area: Rect) -> Rect {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(2),
-        ])
-        .split(area);
+    let [_, body, _] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(5),
+        Constraint::Length(2),
+    ])
+    .areas(area);
 
-    chunks[1].inner(Margin {
+    body.inner(Margin {
         vertical: 1,
         horizontal: 1,
     })
@@ -296,11 +296,11 @@ pub(crate) fn visible_dashboard_rects(area: Rect, app: &AppState) -> Vec<Dashboa
         .iter()
         .all(|item| matches!(item, DashboardLayoutItem::Panel(_)));
     if structurally_flat {
-        let panel_rects = if app
-            .flat_panel_indices()
-            .into_iter()
-            .any(|index| app.panels[index].grid.is_some())
-        {
+        let panel_rects = if app.flat_panel_indices().into_iter().any(|index| {
+            app.panels
+                .get(index)
+                .is_some_and(|panel| panel.grid.is_some())
+        }) {
             calculate_grid_layout(inner_area, app)
         } else {
             calculate_two_column_layout(inner_area, app)
@@ -441,11 +441,11 @@ pub(crate) fn scroll_selected_into_view(area: Rect, app: &mut AppState) {
     }) else {
         return;
     };
-    let cell_h = u32::from(cell_h.max(1));
-    let top_delta = u32::from(item.rect.y.saturating_sub(inner.y));
-    let bottom_delta = u32::from(item.rect.bottom().saturating_sub(inner.bottom()));
-    let lower = bottom_delta.div_ceil(cell_h) as usize;
-    let upper = (top_delta / cell_h) as usize;
+    let cell_h = usize::from(cell_h.max(1));
+    let top_delta = usize::from(item.rect.y.saturating_sub(inner.y));
+    let bottom_delta = usize::from(item.rect.bottom().saturating_sub(inner.bottom()));
+    let lower = bottom_delta.div_ceil(cell_h);
+    let upper = top_delta / cell_h;
     app.vertical_scroll = if item.rect.height > inner.height {
         upper
     } else {
@@ -635,8 +635,8 @@ fn project_panel_group(
             output.push(panel_rect(index, rect));
         }
         grid_height = grid_height.max(
-            (grid.y as u16)
-                .saturating_add(grid.h as u16)
+            num::i32_to_u16(grid.y)
+                .saturating_add(num::i32_to_u16(grid.h))
                 .saturating_mul(cell_h),
         );
     }
@@ -655,15 +655,15 @@ fn project_grid_rect(
 ) -> Option<Rect> {
     let x = area
         .x
-        .saturating_add((grid.x as u16).saturating_mul(cell_w));
-    let y = origin_y.saturating_add((grid.y as u16).saturating_mul(cell_h));
+        .saturating_add(num::i32_to_u16(grid.x).saturating_mul(cell_w));
+    let y = origin_y.saturating_add(num::i32_to_u16(grid.y).saturating_mul(cell_h));
     let rect = Rect::new(
         x,
         y,
-        (grid.w as u16)
+        num::i32_to_u16(grid.w)
             .saturating_mul(cell_w)
             .min(area.right().saturating_sub(x)),
-        (grid.h as u16).saturating_mul(cell_h),
+        num::i32_to_u16(grid.h).saturating_mul(cell_h),
     );
     (rect.width >= 8 && rect.height >= 4).then_some(rect)
 }
@@ -675,20 +675,21 @@ fn project_panel_columns(
     panel_indices: &[usize],
     output: &mut Vec<DashboardRect>,
 ) -> u16 {
-    let columns = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(Rect::new(area.x, origin_y, area.width, u16::MAX - origin_y));
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .areas(Rect::new(area.x, origin_y, area.width, u16::MAX - origin_y));
     for (position, &index) in panel_indices.iter().enumerate() {
-        let row = (position / 2) as u16;
-        let column = position % 2;
+        let row = num::usize_to_u16(position / 2);
+        let column = if position % 2 == 0 { left } else { right };
         let rect = Rect::new(
-            columns[column].x,
+            column.x,
             origin_y.saturating_add(row.saturating_mul(12)),
-            columns[column].width,
+            column.width,
             12,
         );
         output.push(panel_rect(index, rect));
     }
-    let rows = panel_indices.len().div_ceil(2) as u16;
+    let rows = num::usize_to_u16(panel_indices.len().div_ceil(2));
     origin_y.saturating_add(rows.saturating_mul(12))
 }
 
@@ -710,10 +711,17 @@ fn project_auto_grid(
         usize::from(columns)
     ])
     .split(Rect::new(area.x, origin_y, area.width, 1));
+    debug_assert_eq!(
+        column_rects.len(),
+        usize::from(columns),
+        "the layout gives one rect for each column"
+    );
     let row_height = grid.row_height.saturating_mul(cell_h);
     for (position, &index) in grid.panels.iter().enumerate() {
         let row = u16::try_from(position / usize::from(columns)).unwrap_or(u16::MAX);
-        let column = &column_rects[position % usize::from(columns)];
+        let Some(column) = column_rects.get(position % usize::from(columns)) else {
+            continue;
+        };
         output.push(panel_rect(
             index,
             Rect::new(

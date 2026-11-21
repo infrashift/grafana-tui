@@ -184,10 +184,10 @@ where
     U: std::str::FromStr,
     U::Err: std::error::Error + Send + Sync + 'static,
 {
-    let pos = s
-        .find('=')
+    let (key, value) = s
+        .split_once('=')
         .ok_or_else(|| format!("invalid KEY=value: no `=` found in `{}`", s))?;
-    Ok((s[..pos].parse()?, s[pos + 1..].parse()?))
+    Ok((key.parse()?, value.parse()?))
 }
 
 #[cfg(test)]

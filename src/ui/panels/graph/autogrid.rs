@@ -20,7 +20,7 @@ pub(super) fn nice_grid_step(range: f64, target_lines: usize) -> f64 {
         return 0.0;
     }
 
-    let raw_step = range / target_lines as f64;
+    let raw_step = range / crate::num::usize_to_f64(target_lines);
     let magnitude = 10_f64.powf(raw_step.log10().floor());
     let fraction = raw_step / magnitude;
     let nice_fraction = if fraction <= 1.0 {
@@ -82,7 +82,7 @@ pub(super) fn build_autogrid_datasets(
 }
 
 fn interpolate(start: f64, end: f64, index: usize, total: usize) -> f64 {
-    start + (end - start) * index as f64 / total as f64
+    start + (end - start) * crate::num::usize_to_f64(index) / crate::num::usize_to_f64(total)
 }
 
 #[cfg(test)]

@@ -23,14 +23,13 @@ fn modal_area(size: Size) -> Rect {
 }
 
 fn cluster_chunks(area: Rect) -> [Rect; 4] {
-    let chunks = Layout::vertical([
+    Layout::vertical([
         Constraint::Length(1),
         Constraint::Percentage(45),
         Constraint::Min(2),
         Constraint::Length(1),
     ])
-    .split(area);
-    [chunks[0], chunks[1], chunks[2], chunks[3]]
+    .areas(area)
 }
 
 pub(crate) fn annotation_cluster_page_size(size: Size) -> usize {
@@ -88,7 +87,8 @@ fn render_cluster_modal(frame: &mut Frame, area: Rect, state: &ClusterModalState
 
     let rows = usize::from(list_area.height);
     let visible = visible_range(total, state.selected(), rows);
-    let items = state.events()[visible.clone()]
+    let shown = state.events().get(visible.clone()).unwrap_or_default();
+    let items = shown
         .iter()
         .map(|event| {
             let time = if event.time.timestamp_subsec_millis() == 0 {
@@ -141,13 +141,13 @@ fn render_tag_filter_modal(
         vertical: 1,
         horizontal: 1,
     });
-    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
-    let list_area = chunks[0];
-    let hints_area = chunks[1];
+    let [list_area, hints_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
     let rows = usize::from(list_area.height);
     let visible = visible_range(state.entries().len(), state.selected(), rows);
     let row_width = usize::from(list_area.width);
-    let items = state.entries()[visible.clone()]
+    let shown = state.entries().get(visible.clone()).unwrap_or_default();
+    let items = shown
         .iter()
         .map(|entry| {
             let checked = if state.draft().selected().contains(&entry.tag) {

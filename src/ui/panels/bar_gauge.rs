@@ -15,6 +15,7 @@
  */
 
 use crate::app::{AppState, PanelState, SeriesView};
+use crate::num;
 use ratatui::{
     prelude::*,
     widgets::{Bar, BarChart, BarGroup, Block, Borders, Paragraph},
@@ -37,7 +38,7 @@ pub(super) fn render_bar_gauge(frame: &mut Frame, area: Rect, p: &PanelState, ap
             continue;
         };
         max_label_len = max_label_len.max(s.name.len());
-        let color = p.get_color_for_value(v).unwrap_or(theme.palette[0]);
+        let color = p.get_color_for_value(v).unwrap_or(theme.palette_color(0));
         let bar = Bar::default()
             .value(bar_height(v, min, max, scale))
             .text_value(p.display.format_number(v))
@@ -53,16 +54,16 @@ pub(super) fn render_bar_gauge(frame: &mut Frame, area: Rect, p: &PanelState, ap
         return;
     }
 
-    let bar_width = (area.width / bars.len() as u16)
+    let bar_width = (area.width / num::usize_to_u16(bars.len()))
         .saturating_sub(1)
-        .min(max_label_len as u16)
+        .min(num::usize_to_u16(max_label_len))
         .max(3);
 
     let bar_group = BarGroup::default().bars(&bars);
 
     let bar_chart = BarChart::default()
         .block(Block::default().borders(Borders::NONE))
-        .max(scale as u64)
+        .max(num::f64_to_u64(scale))
         .data(bar_group)
         .bar_width(bar_width)
         .bar_gap(1);
@@ -87,7 +88,7 @@ fn bar_series(p: &PanelState, width: u16) -> Vec<&SeriesView> {
     });
 
     // Truncate based on area width
-    let max_bars = (width / 4).saturating_sub(1).max(1) as usize;
+    let max_bars = usize::from((width / 4).saturating_sub(1).max(1));
     valid_series.truncate(max_bars);
     valid_series
 }
@@ -106,9 +107,9 @@ fn bar_range(p: &PanelState, values: impl Iterator<Item = f64>) -> (f64, f64) {
 /// A bar's height in `0..=scale`, so negative values still draw against `min`.
 fn bar_height(value: f64, min: f64, max: f64, scale: f64) -> u64 {
     if max > min {
-        (((value - min) / (max - min)).clamp(0.0, 1.0) * scale).round() as u64
+        num::f64_to_u64((((value - min) / (max - min)).clamp(0.0, 1.0) * scale).round())
     } else {
-        scale as u64
+        num::f64_to_u64(scale)
     }
 }
 

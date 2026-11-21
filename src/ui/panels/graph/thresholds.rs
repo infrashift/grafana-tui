@@ -63,7 +63,7 @@ pub(super) fn render_raw_threshold_lines(
         return;
     }
 
-    let chart_height = plot.bottom.saturating_sub(plot.top) as f64;
+    let chart_height = f64::from(plot.bottom.saturating_sub(plot.top));
     if chart_height <= 0.0 {
         return;
     }
@@ -78,7 +78,7 @@ pub(super) fn render_raw_threshold_lines(
         }
 
         let ratio = (*threshold_value - y_bounds[0]) / (y_bounds[1] - y_bounds[0]);
-        let y_offset = (ratio * chart_height).round() as u16;
+        let y_offset = crate::num::f64_to_u16((ratio * chart_height).round());
         let y = plot.bottom.saturating_sub(y_offset);
 
         if y < plot.top || y > plot.bottom {
@@ -120,10 +120,10 @@ fn draw_threshold_cell(
 fn threshold_dataset(dashed: bool, x_bounds: [f64; 2], threshold_value: f64) -> Vec<(f64, f64)> {
     let [start, end] = x_bounds;
     if dashed {
-        let points_count = 15;
-        let step_x = (end - start) / points_count as f64;
+        let points_count: i32 = 15;
+        let step_x = (end - start) / f64::from(points_count);
         return (0..=points_count)
-            .map(|i| (start + (i as f64 * step_x), threshold_value))
+            .map(|i| (start + (f64::from(i) * step_x), threshold_value))
             .collect();
     }
 

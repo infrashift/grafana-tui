@@ -686,7 +686,11 @@ impl<'a> Builder<'a, '_> {
         let mut shifts = Vec::new();
         for &source in sources {
             let copies = self.panel_copies(source, scope, primary);
-            if let Some(grid) = self.templates[source].grid {
+            if let Some(grid) = self
+                .templates
+                .get(source)
+                .and_then(|template| template.grid)
+            {
                 let bottom = copies
                     .iter()
                     .filter_map(|(index, _)| self.instance(*index)?.grid)
@@ -702,7 +706,11 @@ impl<'a> Builder<'a, '_> {
         }
 
         for (source, index) in placed {
-            let shift: i32 = match self.templates[source].grid {
+            let shift: i32 = match self
+                .templates
+                .get(source)
+                .and_then(|template| template.grid)
+            {
                 Some(grid) => shifts
                     .iter()
                     .filter(|(from, _)| grid.y > *from)
@@ -731,8 +739,15 @@ impl<'a> Builder<'a, '_> {
         copies.truncate(room.max(1));
         self.nodes = self.nodes.saturating_add(copies.len());
         let count = copies.len();
-        let template = &self.templates[source];
-        let (title, grid) = (template.title.clone(), template.grid);
+        debug_assert!(
+            source < self.templates.len(),
+            "a source indexes a template panel"
+        );
+        let (title, grid) = self
+            .templates
+            .get(source)
+            .map(|template| (template.title.clone(), template.grid))
+            .unwrap_or_default();
         copies
             .into_iter()
             .enumerate()

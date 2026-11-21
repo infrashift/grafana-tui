@@ -37,19 +37,17 @@ pub(crate) fn draw_ui(frame: &mut Frame, app: &mut AppState) {
     );
 
     // Layout: title bar, charts area, footer
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(2),
-        ])
-        .split(size);
+    let [title_area, charts_area, footer_area] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(5),
+        Constraint::Length(2),
+    ])
+    .areas(size);
 
-    render_title_bar(frame, chunks[0], app, &theme);
-    let selected_rendered_cluster = render_charts_area(frame, chunks[1], size, app, &theme);
+    render_title_bar(frame, title_area, app, &theme);
+    let selected_rendered_cluster = render_charts_area(frame, charts_area, size, app, &theme);
     app.rendered_annotation_cluster = selected_rendered_cluster;
-    render_footer(frame, chunks[2], app, &theme);
+    render_footer(frame, footer_area, app, &theme);
 
     if app.mode == AppMode::Search {
         render_search_popup(frame, size, app, &theme);
@@ -253,7 +251,11 @@ fn footer_summary(app: &AppState, theme: &Theme) -> Vec<Span<'static>> {
     let errors = app
         .dashboard_panel_indices()
         .into_iter()
-        .filter(|&index| app.panels[index].last_error.is_some())
+        .filter(|&index| {
+            app.panels
+                .get(index)
+                .is_some_and(|panel| panel.last_error.is_some())
+        })
         .count();
     let panel_count_display = if is_fullscreen(app) {
         "1 (Fullscreen)".to_string()
@@ -307,15 +309,13 @@ fn render_search_popup(frame: &mut Frame, size: Rect, app: &AppState, theme: &Th
         vertical: 1,
         horizontal: 1,
     });
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
-        .split(inner_area);
+    let [input_area, results_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner_area);
 
     // Input
     let input = Paragraph::new(format!("> {}", app.search_query))
         .style(Style::default().fg(app.theme.text));
-    frame.render_widget(input, chunks[0]);
+    frame.render_widget(input, input_area);
 
     // Results
     let results: Vec<ListItem> = app
@@ -336,7 +336,7 @@ fn render_search_popup(frame: &mut Frame, size: Rect, app: &AppState, theme: &Th
     if !app.search_results.is_empty() {
         list_state.select(Some(0));
     }
-    frame.render_stateful_widget(list, chunks[1], &mut list_state);
+    frame.render_stateful_widget(list, results_area, &mut list_state);
 }
 
 /// Builds the list item for one search result.
@@ -445,7 +445,7 @@ fn build_footer_detail(app: &AppState) -> String {
     if matches!(app.mode, AppMode::Inspect | AppMode::FullscreenInspect)
         && let Some(cx) = app.cursor_x
     {
-        let cursor_time = chrono::DateTime::from_timestamp(cx as i64, 0)
+        let cursor_time = chrono::DateTime::from_timestamp(crate::num::f64_to_i64(cx), 0)
             .map(|dt| dt.format("%H:%M:%S").to_string())
             .unwrap_or_default();
         parts.push(format!("Cursor: {cursor_time}"));
@@ -488,7 +488,7 @@ fn debug_panel(app: &AppState) -> Option<&PanelState> {
     let shown: Vec<&PanelState> = app
         .rendered_panel_indices()
         .into_iter()
-        .map(|index| &app.panels[index])
+        .filter_map(|index| app.panels.get(index))
         .collect();
     if shown.iter().any(|p| p.grid.is_some()) {
         shown

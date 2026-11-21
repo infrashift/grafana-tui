@@ -112,8 +112,11 @@ pub(crate) fn expand_path(path: &std::path::Path) -> PathBuf {
         if path_str == "~" {
             return home.to_path_buf();
         }
-        if path_str.starts_with("~/") || path_str.starts_with("~\\") {
-            return home.join(&path_str[2..]);
+        if let Some(rest) = path_str
+            .strip_prefix("~/")
+            .or_else(|| path_str.strip_prefix("~\\"))
+        {
+            return home.join(rest);
         }
     }
     path.to_path_buf()
