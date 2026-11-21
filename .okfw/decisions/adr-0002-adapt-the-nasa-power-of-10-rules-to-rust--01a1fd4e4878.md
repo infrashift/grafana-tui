@@ -41,6 +41,9 @@ The rules apply to production code. Test code (`#[cfg(test)]` modules and `tests
 |---|---|---|
 | Whole program | R3 | The dependencies allocate. Limits cap the memory (ADR-0007). |
 | `src/app/event_loop.rs` `run_app` | R2 | The TUI event loop runs until the user quits. |
+| `src/num.rs` | R10 | The one place with `as` casts. Each function maps NaN, clamps, then casts, and tests compare it bit for bit with `as`. Each has an `#[allow]` with a reason. |
+| `LayoutNode` in `src/grafana/model.rs` | R3 | `large_enum_variant` is allowed: `MAX_LAYOUT_NODES` caps the nodes, and a `Box` adds one allocation for each panel. |
+| `AppState::new` | R4 | `too_many_arguments` is allowed: the constructor takes each start-up setting, and many tests call it. |
 
 The phases add rows to this table when they find a deviation.
 
