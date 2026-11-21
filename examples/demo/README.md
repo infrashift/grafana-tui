@@ -1,6 +1,6 @@
 # grafana-tui Demo Setup
 
-Get started with grafana-tui in less than a minute using this pre-configured Prometheus + node-exporter stack.
+This pre-configured Prometheus + node-exporter stack starts grafana-tui in less than a minute.
 
 ## Quick Start (One-Liner)
 
@@ -8,9 +8,9 @@ Get started with grafana-tui in less than a minute using this pre-configured Pro
 docker-compose up -d && sleep 5 && cargo run -- --grafana-json ../dashboards/prometheus_demo.json --prometheus-url http://localhost:19090
 ```
 
-> **Note**: The docker-compose is configured to use port **19090** to avoid conflicts with development tools and other services.
+> **Note**: The docker-compose file uses port **19090**. So it does not conflict with the ports of other tools and services.
 
-This will:
+The command does these steps:
 1. Start Prometheus (port **19090**) and node-exporter (port 9100)
 2. Wait 5 seconds for metrics to populate
 3. Launch grafana-tui with the demo dashboard
@@ -20,19 +20,19 @@ This will:
 **Services:**
 - **Prometheus**: Scrapes itself and node-exporter every 5 seconds (port **19090**)
 - **node-exporter**: Exposes system metrics (CPU, memory, network, etc.) (port 9100)
-- **vLLM Mock Instances**: Two dummy vLLM services producing random inference metrics (ports 8001, 8002)
+- **vLLM Mock Instances**: Two dummy vLLM services that make random vLLM metrics (ports 8001, 8002)
 
 **Dashboard (`prometheus_demo.json`):**
-All 6 visualization types, optimized for their use cases:
+All 6 panel types, each with data that suits it:
 
 1. **Graph** - HTTP request rate by status code
-2. **Gauge** - Current memory usage
+2. **Gauge** - Current memory use
 3. **Stat** - Uptime with trend sparkline
 4. **Graph** - Network receive rate per interface
 5. **Bar Gauge** - Active targets count
 6. **Table** - Target health status
-7. **Heatmap** - HTTP request duration distribution
-8. **Graph** - TSDB chunk creation rate
+7. **Heatmap** - Histogram of the HTTP request durations
+8. **Graph** - Rate at which the TSDB creates chunks
 
 ## Manual Setup
 
@@ -71,7 +71,7 @@ docker-compose down -v  # -v removes volumes (data)
 - Check services: `docker-compose ps`
 - Check logs: `docker-compose logs prometheus`
 
-**No data showing:**
+**The panels show no data:**
 - Prometheus needs ~10-15 seconds to scrape and build TSDB
 - Try: `docker-compose restart prometheus`
 

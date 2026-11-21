@@ -11,8 +11,8 @@ are the companion set to [`../hashistack-rdw`](../hashistack-rdw/README.md),
 which covers the platform underneath: the hosts, Nomad, Consul, Vault and the
 mesh.
 
-Unlike the bundled examples, these need a running datacenter with SSHadowForge
-and the NATS exporter deployed. The docker-compose stack exposes none of these
+Unlike the bundled examples, these need a datacenter in operation, with
+SSHadowForge and the NATS exporter deployed. The docker-compose stack exposes none of these
 metrics.
 
 ## Prerequisites
@@ -21,7 +21,7 @@ The same two as the HashiStack set: a route to the datacenter, and a reader
 certificate from `make reader-cert`. See [the HashiStack
 README](../hashistack-rdw/README.md#prerequisites).
 
-The data comes from three places. All of them were added to the platform for
+The data comes from three places. We added all of them to the platform for
 these dashboards:
 
 - **The forge's own metrics.** The five sfd services (gateway, projector,
@@ -64,26 +64,27 @@ at once, pass both globs.
 
 ### The `repo` label
 
-The per-repository series (`sfd_commands_total`, `sfd_builds_finished_total`,
+Some series have a label for each repository. Each of these series carries a
+repository NAME: `<owner>/<name>`, or `<name>` for a shared repository. These
+series are `sfd_commands_total`, `sfd_builds_finished_total`,
 `sfd_build_duration_seconds`, `sfd_scan_matches`, `sfd_merge_decisions_total`,
 `sfd_build_requests_total`, `sfd_notifications_total`, and the sweep and
-challenge counters) carry a repository NAME: `<owner>/<name>`, or `<name>` for a
-shared repository.
+challenge counters.
 
 A service names only a repository it has verified:
 
-- one the gateway authorized;
-- one the dispatcher resolved;
-- one the workflow validated;
+- one that the gateway authorized;
+- one that the dispatcher resolved;
+- one that the workflow checked;
 - one carried by an event whose seal the notifier checked.
 
-Everything else is labelled `other`. So is every repository past
-`SFD_METRICS_MAX_REPOS` (default 200) in one process.
+All other repositories get the label `other`. A process also gives the label
+`other` to each repository after the first `SFD_METRICS_MAX_REPOS` (default 200).
 
-A command refused before authorization carries `repo=""`, because its repository
-tag is whatever the caller typed. The developer dashboard shows those
-forge-wide, in "Refused before authorization": not enrolled, wrong key,
-forbidden.
+Sometimes the gateway refuses a command before it authorizes the caller. Such a
+command carries `repo=""`, because the caller typed its repository tag. The
+developer dashboard shows these commands for all of the forge, in the
+`Refused before authorization` panel: not enrolled, wrong key, forbidden.
 
 ### Conventions
 
@@ -93,7 +94,7 @@ forbidden.
   - `NatsJetStreamStorageHigh`: above 80%.
   - `SshadowforgeGatewayErrors`: 5xx above 5%.
 - **Row 1 of each dashboard is the summary.**
-- **Dispatched jobs are summed under their parent.** A build runner, scan or
+- **Each parent shows the sum of its dispatched jobs.** A build runner, scan or
   challenge is a dispatched Nomad job (`<parent>/dispatch-<ts>-<id>`). Panels
   aggregate them by parent through `label_replace`, so a burst of builds is one
   series, not hundreds.
@@ -102,29 +103,31 @@ forbidden.
 
 - **Empty can be the healthy state.** These show `none (healthy)` or say why
   they are empty:
-  - "Firing alerts", "Stuck durables", "Failed at stage".
+  - `Firing alerts`, `Stuck durables`, `Failed at stage`.
   - The sweep and challenge panels, which fill only after the nightly (03:00)
     and weekly (Sunday 04:00) runs.
 - **Per-repository counters reset when a service restarts**, like every counter.
   - A 24h panel shows what the current process has seen.
   - After a deploy, the build panels stay empty until a build finishes.
 - **The stall clocks grow on an idle forge.** `sfd_progress_idle_seconds` is
-  "time since work was completed". It is a problem only with a backlog, which is
+  the time since the forge completed its last work. It is a problem only with a backlog, which is
   what the alert checks.
 - **`SshadowforgeEventsRefused` fires after every `make verify`.** Check 45
   publishes forged events on purpose. Match their ids against the verify output.
 - **`make verify` also leaves failed builds behind, on purpose.** The probe
   repositories of checks 28, 39 and 40 (`prupd-*`, `dcprobe/*`, `svcprobe/*`)
-  build red by design, so they appear in "Dispatched runs failed (Nomad)" until
-  Nomad garbage-collects them, and as `build_failed` in the build panels. A
-  failure in any other repository is worth a look.
+  fail by design. Until Nomad garbage-collects them, they show in the
+  `Dispatched runs failed (Nomad)` panel. They also show as `build_failed` in the
+  build panels. Examine a failure in any other repository.
 
 ## Editing
 
-The JSON files are generated; do not edit them by hand. Change
-[`generator/generate.py`](generator/generate.py), which reuses the HashiStack
-set's builder (`../hashistack-rdw/generator/dash.py`), then regenerate and
-validate:
+A generator makes the JSON files. Do not edit them by hand. To change the
+dashboards, do these steps:
+
+1. Change [`generator/generate.py`](generator/generate.py). It uses the builder
+   of the HashiStack set (`../hashistack-rdw/generator/dash.py`).
+2. Run the generator and the test:
 
 ```bash
 python3 examples/demo/sshadowforge/generator/generate.py
