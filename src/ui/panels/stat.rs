@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-use crate::app::{AppState, PanelState};
+use crate::app::{AppState, PanelState, PanelType};
 use crate::num;
 use ratatui::{
     prelude::*,
@@ -22,6 +22,10 @@ use ratatui::{
 };
 
 pub(super) fn render_stat(frame: &mut Frame, area: Rect, p: &PanelState, app: &AppState) {
+    debug_assert!(
+        matches!(p.panel_type, PanelType::Stat),
+        "the panel is a stat"
+    );
     let theme = &app.theme;
 
     let visible_series = p.series.iter().find(|s| s.visible);
@@ -33,6 +37,10 @@ pub(super) fn render_stat(frame: &mut Frame, area: Rect, p: &PanelState, app: &A
     // Split area into value (top) and sparkline (bottom)
     let [value_area, sparkline_area] =
         Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(area);
+    debug_assert!(
+        value_area.height + sparkline_area.height <= area.height,
+        "the value and the sparkline share the panel height"
+    );
 
     // Grafana's noValue stands in for a null value and for no series at all.
     let val_str = visible_series
@@ -70,7 +78,7 @@ fn sparkline_heights(points: &[(f64, f64)]) -> Vec<u64> {
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
             (min.min(value), max.max(value))
         });
-    points
+    let heights: Vec<u64> = points
         .iter()
         .map(|(_, value)| {
             if !value.is_finite() {
@@ -83,7 +91,13 @@ fn sparkline_heights(points: &[(f64, f64)]) -> Vec<u64> {
                 SPARKLINE_MAX / 2
             }
         })
-        .collect()
+        .collect();
+    debug_assert!(heights.len() == points.len(), "each point has one bar");
+    debug_assert!(
+        heights.iter().all(|height| *height <= SPARKLINE_MAX),
+        "each bar is SPARKLINE_MAX high or less"
+    );
+    heights
 }
 
 #[cfg(test)]

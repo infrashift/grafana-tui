@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-use crate::app::{AppState, PanelState, SeriesView};
+use crate::app::{AppState, PanelState, PanelType, SeriesView};
 use crate::num;
 use crate::theme::Theme;
 use crate::ui::format::value_to_heatmap_color;
@@ -24,6 +24,10 @@ use ratatui::{
 };
 
 pub(super) fn render_heatmap(frame: &mut Frame, area: Rect, p: &PanelState, app: &AppState) {
+    debug_assert!(
+        matches!(p.panel_type, PanelType::Heatmap),
+        "the panel is a heatmap"
+    );
     let theme = &app.theme;
 
     if p.series.is_empty() {
@@ -56,6 +60,7 @@ pub(super) fn render_heatmap(frame: &mut Frame, area: Rect, p: &PanelState, app:
         return;
     }
 
+    debug_assert!(global_min < global_max, "the color scale has a width");
     // Prepare text lines for the heatmap
     let scale = HeatmapScale {
         cols: cols_available,
@@ -95,6 +100,14 @@ fn value_range(series: &[&SeriesView]) -> (f64, f64) {
             }
         }
     }
+    debug_assert!(
+        global_min <= global_max || (global_min == f64::MAX && global_max == f64::MIN),
+        "the range is in order, or empty when no value is finite"
+    );
+    debug_assert!(
+        !global_min.is_nan() && !global_max.is_nan(),
+        "the range has no NaN bound"
+    );
     (global_min, global_max)
 }
 
@@ -115,6 +128,10 @@ fn heatmap_line(series: &SeriesView, scale: &HeatmapScale, theme: &Theme) -> Opt
         return None;
     }
 
+    debug_assert!(
+        cols_available >= 1 && global_min < global_max,
+        "the row has columns and the color scale has a width"
+    );
     let step = (num::usize_to_f64(total_points) / num::usize_to_f64(cols_available)).max(1.0);
 
     let mut spans = Vec::new();
@@ -136,6 +153,7 @@ fn heatmap_line(series: &SeriesView, scale: &HeatmapScale, theme: &Theme) -> Opt
 
         spans.push(Span::styled("█", Style::default().fg(color)));
     }
+    debug_assert!(spans.len() == cols_available, "the row fills each column");
 
     Some(Line::from(spans))
 }

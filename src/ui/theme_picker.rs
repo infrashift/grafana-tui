@@ -30,6 +30,15 @@ fn picker_rows(themes: &[Theme]) -> Vec<PickerRow<'_>> {
         }
         rows.push(PickerRow::Theme(index, theme));
     }
+    debug_assert!(
+        rows.len() >= themes.len() && rows.len() <= themes.len() * 2,
+        "the list has one row for each theme and one heading for each family at most"
+    );
+    debug_assert!(
+        rows.first()
+            .is_none_or(|row| matches!(row, PickerRow::Family(_))),
+        "the list starts with a family heading"
+    );
     rows
 }
 
@@ -46,12 +55,21 @@ fn picker_area(size: Size, themes: &[Theme]) -> Rect {
         .min(size.width);
     let rows = picker_rows(themes).len() + 1;
     let height = u16::try_from(rows + 2).unwrap_or(u16::MAX).min(size.height);
-    Rect::new(
+    let area = Rect::new(
         (size.width - width) / 2,
         (size.height - height) / 2,
         width,
         height,
-    )
+    );
+    debug_assert!(
+        super::layout::rect_inside(Rect::new(0, 0, size.width, size.height), area),
+        "the picker is inside the screen"
+    );
+    debug_assert!(
+        usize::from(area.width) >= (HINT.chars().count() + 2).min(usize::from(size.width)),
+        "the picker is wide enough for the hint, or as wide as the screen"
+    );
+    area
 }
 
 fn list_height(area: Rect) -> usize {
@@ -68,8 +86,16 @@ pub(crate) fn render_theme_picker(frame: &mut Frame, app: &AppState) {
     let Some(picker) = app.theme_picker.as_ref() else {
         return;
     };
+    debug_assert!(
+        app.theme_picker_in_range(),
+        "the selected theme is in the theme list"
+    );
     let frame_area = frame.area();
     let area = picker_area(Size::new(frame_area.width, frame_area.height), &app.themes);
+    debug_assert!(
+        super::layout::rect_inside(frame_area, area),
+        "the picker is inside the frame"
+    );
     let theme = &app.theme;
     frame.render_widget(Clear, area);
     frame.render_widget(
@@ -93,6 +119,10 @@ pub(crate) fn render_theme_picker(frame: &mut Frame, app: &AppState) {
         .position(|row| matches!(row, PickerRow::Theme(index, _) if *index == picker.selected))
         .unwrap_or_default();
     let visible = visible_range(rows.len(), selected_row, list_height(area));
+    debug_assert!(
+        visible.end <= rows.len(),
+        "the visible rows are inside the list"
+    );
     let name_width = usize::from(list_area.width).saturating_sub(SWATCH_WIDTH + 3);
     let marks = PickerMarks {
         selected: picker.selected,
@@ -122,12 +152,15 @@ struct PickerMarks<'a> {
 /// Builds the line for one picker row.
 fn picker_line<'a>(row: &PickerRow<'a>, marks: &PickerMarks, theme: &Theme) -> Line<'a> {
     match row {
-        PickerRow::Family(family) => Line::styled(
-            *family,
-            Style::default()
-                .fg(theme.title)
-                .add_modifier(Modifier::BOLD),
-        ),
+        PickerRow::Family(family) => {
+            debug_assert!(!family.is_empty(), "a family heading has text");
+            Line::styled(
+                *family,
+                Style::default()
+                    .fg(theme.title)
+                    .add_modifier(Modifier::BOLD),
+            )
+        }
         PickerRow::Theme(index, candidate) => {
             let selected = *index == marks.selected;
             let style = if selected {
@@ -150,6 +183,10 @@ fn picker_line<'a>(row: &PickerRow<'a>, marks: &PickerMarks, theme: &Theme) -> L
                 style,
             )];
             spans.extend(swatch(candidate));
+            debug_assert!(
+                spans.len() <= SWATCH_WIDTH,
+                "the row has the name and a swatch of SWATCH_WIDTH columns at most"
+            );
             Line::from(spans)
         }
     }
@@ -164,6 +201,14 @@ fn swatch(theme: &Theme) -> Vec<Span<'static>> {
             .iter()
             .take(SWATCH_WIDTH - 2)
             .map(|color| Span::styled("█", Style::default().fg(*color))),
+    );
+    debug_assert!(
+        spans.len() == 1 + theme.palette.len().min(SWATCH_WIDTH - 2),
+        "the swatch has the background and the leading series colors"
+    );
+    debug_assert!(
+        spans.iter().map(Span::width).sum::<usize>() <= SWATCH_WIDTH,
+        "the swatch is SWATCH_WIDTH columns wide or less"
     );
     spans
 }

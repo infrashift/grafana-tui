@@ -1,6 +1,7 @@
 use super::layout::centered_rect;
 use crate::annotations::{
-    AnnotationModal, ClusterModalState, TagFilterModalState, format_event_time, visible_range,
+    AnnotationEvent, AnnotationModal, ClusterModalState, TagFilterModalState, format_event_time,
+    visible_range,
 };
 use crate::app::AppState;
 use ratatui::{
@@ -15,38 +16,65 @@ const MODAL_WIDTH_PERCENT: u16 = 80;
 const MODAL_HEIGHT_PERCENT: u16 = 70;
 
 fn modal_area(size: Size) -> Rect {
-    centered_rect(
-        MODAL_WIDTH_PERCENT,
-        MODAL_HEIGHT_PERCENT,
-        Rect::new(0, 0, size.width, size.height),
-    )
+    let screen = Rect::new(0, 0, size.width, size.height);
+    let area = centered_rect(MODAL_WIDTH_PERCENT, MODAL_HEIGHT_PERCENT, screen);
+    debug_assert!(
+        super::layout::rect_inside(screen, area),
+        "the modal is inside the screen"
+    );
+    area
 }
 
-fn cluster_chunks(area: Rect) -> [Rect; 4] {
-    Layout::vertical([
+/// The header, list, detail and hint parts inside the border of the cluster modal.
+fn cluster_chunks(modal: Rect) -> [Rect; 4] {
+    let area = modal.inner(Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+    let chunks = Layout::vertical([
         Constraint::Length(1),
         Constraint::Percentage(45),
         Constraint::Min(2),
         Constraint::Length(1),
     ])
-    .areas(area)
+    .areas(area);
+    debug_assert!(
+        chunks
+            .iter()
+            .all(|chunk| super::layout::rect_inside(area, *chunk)),
+        "each part of the modal is inside the modal"
+    );
+    debug_assert!(
+        chunks.iter().map(|chunk| chunk.height).sum::<u16>() <= area.height,
+        "the parts of the modal do not overlap"
+    );
+    debug_assert!(
+        chunks[0].height <= 1 && chunks[3].height <= 1,
+        "the header and the hints are one row high"
+    );
+    chunks
 }
 
 pub(crate) fn annotation_cluster_page_size(size: Size) -> usize {
-    let outer = modal_area(size);
-    let inner = outer.inner(Margin {
-        vertical: 1,
-        horizontal: 1,
-    });
-    usize::from(cluster_chunks(inner)[1].height).max(1)
+    let page = usize::from(cluster_chunks(modal_area(size))[1].height).max(1);
+    debug_assert!(
+        page <= usize::from(size.height).max(1),
+        "a page is not taller than the screen"
+    );
+    page
 }
 
 pub(crate) fn render_annotation_modal(frame: &mut Frame, app: &AppState) {
     let Some(modal) = app.annotation_modal.as_ref() else {
         return;
     };
+    debug_assert!(app.one_dialog_or_less(), "one dialog is open at most");
     let frame_area = frame.area();
     let area = modal_area(Size::new(frame_area.width, frame_area.height));
+    debug_assert!(
+        super::layout::rect_inside(frame_area, area),
+        "the modal is inside the frame"
+    );
     frame.render_widget(Clear, area);
     match modal {
         AnnotationModal::Cluster(state) => render_cluster_modal(frame, area, state, app),
@@ -55,6 +83,11 @@ pub(crate) fn render_annotation_modal(frame: &mut Frame, app: &AppState) {
 }
 
 fn modal_block<'a>(title: &'a str, app: &AppState) -> Block<'a> {
+    debug_assert!(!title.trim().is_empty(), "a modal title has text");
+    debug_assert!(
+        title.starts_with(' ') && title.ends_with(' '),
+        "a modal title has a space at each end"
+    );
     Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -63,19 +96,24 @@ fn modal_block<'a>(title: &'a str, app: &AppState) -> Block<'a> {
 }
 
 fn selection_style(app: &AppState) -> Style {
-    Style::default()
+    let style = Style::default()
         .fg(app.theme.selection_fg)
         .bg(app.theme.selection_bg)
-        .add_modifier(Modifier::BOLD)
+        .add_modifier(Modifier::BOLD);
+    debug_assert!(
+        style.add_modifier.contains(Modifier::BOLD),
+        "the selection is bold"
+    );
+    style
 }
 
 fn render_cluster_modal(frame: &mut Frame, area: Rect, state: &ClusterModalState, app: &AppState) {
+    debug_assert!(
+        state.selected() < state.events().len(),
+        "the selected event is in the cluster"
+    );
     frame.render_widget(modal_block(" Annotation cluster ", app), area);
-    let inner = area.inner(Margin {
-        vertical: 1,
-        horizontal: 1,
-    });
-    let [header_area, list_area, detail_area, hints_area] = cluster_chunks(inner);
+    let [header_area, list_area, detail_area, hints_area] = cluster_chunks(area);
     let total = state.events().len();
     frame.render_widget(
         Paragraph::new(format!(
@@ -87,18 +125,16 @@ fn render_cluster_modal(frame: &mut Frame, area: Rect, state: &ClusterModalState
 
     let rows = usize::from(list_area.height);
     let visible = visible_range(total, state.selected(), rows);
+    debug_assert!(
+        rows == 0 || visible.contains(&state.selected()),
+        "the list shows the selected event"
+    );
     let shown = state.events().get(visible.clone()).unwrap_or_default();
-    let items = shown
-        .iter()
-        .map(|event| {
-            let time = if event.time.timestamp_subsec_millis() == 0 {
-                event.time.format("%H:%M:%S").to_string()
-            } else {
-                event.time.format("%H:%M:%S%.3f").to_string()
-            };
-            ListItem::new(format!("{time}  {}", event.text))
-        })
-        .collect::<Vec<_>>();
+    debug_assert!(
+        shown.len() <= rows,
+        "the list shows a page of events or fewer"
+    );
+    let items = cluster_list_items(shown);
     let mut list_state = ListState::default();
     if !items.is_empty() {
         list_state.select(Some(state.selected().saturating_sub(visible.start)));
@@ -130,12 +166,37 @@ fn render_cluster_modal(frame: &mut Frame, area: Rect, state: &ClusterModalState
     );
 }
 
+/// The list rows of the shown events: the time of day and the text.
+fn cluster_list_items(shown: &[AnnotationEvent]) -> Vec<ListItem<'static>> {
+    let items = shown
+        .iter()
+        .map(|event| {
+            let time = if event.time.timestamp_subsec_millis() == 0 {
+                event.time.format("%H:%M:%S").to_string()
+            } else {
+                event.time.format("%H:%M:%S%.3f").to_string()
+            };
+            ListItem::new(format!("{time}  {}", event.text))
+        })
+        .collect::<Vec<_>>();
+    debug_assert!(items.len() == shown.len(), "each shown event has one row");
+    debug_assert!(
+        items.iter().all(|item| item.height() >= 1),
+        "each row has one line or more"
+    );
+    items
+}
+
 fn render_tag_filter_modal(
     frame: &mut Frame,
     area: Rect,
     state: &TagFilterModalState,
     app: &AppState,
 ) {
+    debug_assert!(
+        state.entries().is_empty() || state.selected() < state.entries().len(),
+        "the selected tag is in the catalogue"
+    );
     frame.render_widget(modal_block(" Filter annotations by tag ", app), area);
     let inner = area.inner(Margin {
         vertical: 1,
@@ -146,6 +207,10 @@ fn render_tag_filter_modal(
     let rows = usize::from(list_area.height);
     let visible = visible_range(state.entries().len(), state.selected(), rows);
     let row_width = usize::from(list_area.width);
+    debug_assert!(
+        visible.end <= state.entries().len(),
+        "the visible tags are inside the catalogue"
+    );
     let shown = state.entries().get(visible.clone()).unwrap_or_default();
     let items = shown
         .iter()
@@ -162,6 +227,10 @@ fn render_tag_filter_modal(
             ))
         })
         .collect::<Vec<_>>();
+    debug_assert!(
+        items.len() <= rows,
+        "the list shows a page of tags or fewer"
+    );
     let mut list_state = ListState::default();
     if !items.is_empty() {
         list_state.select(Some(state.selected().saturating_sub(visible.start)));

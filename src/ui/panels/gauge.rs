@@ -14,13 +14,17 @@
  * limitations under the License.
  */
 
-use crate::app::{AppState, PanelState};
+use crate::app::{AppState, PanelState, PanelType};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Gauge, Paragraph},
 };
 
 pub(super) fn render_gauge(frame: &mut Frame, area: Rect, p: &PanelState, app: &AppState) {
+    debug_assert!(
+        matches!(p.panel_type, PanelType::Gauge),
+        "the panel is a gauge"
+    );
     let theme = &app.theme;
 
     // Find the latest value from the first visible series
@@ -50,6 +54,7 @@ pub(super) fn render_gauge(frame: &mut Frame, area: Rect, p: &PanelState, app: &
         0.0
     };
     let ratio = if ratio.is_finite() { ratio } else { 0.0 };
+    debug_assert!((0.0..=1.0).contains(&ratio), "the gauge ratio is in 0..=1");
 
     let gauge = Gauge::default()
         .block(Block::default().borders(Borders::NONE))

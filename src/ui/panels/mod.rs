@@ -48,7 +48,7 @@ pub(crate) enum NoticeLevel {
 /// whose latest fetch failed or returned warnings. The footer shows the
 /// details for the selected panel.
 pub(crate) fn data_notice(p: &PanelState) -> Option<(&'static str, NoticeLevel)> {
-    if p.last_error.is_some() {
+    let notice = if p.last_error.is_some() {
         let text = if p.notices.stale {
             "⚠ stale: queries failed"
         } else {
@@ -59,7 +59,16 @@ pub(crate) fn data_notice(p: &PanelState) -> Option<(&'static str, NoticeLevel)>
         Some(("⚠ warning", NoticeLevel::Warning))
     } else {
         None
-    }
+    };
+    debug_assert!(
+        notice.is_none_or(|(text, _)| text.starts_with(NOTICE_ICON)),
+        "a notice starts with its icon"
+    );
+    debug_assert!(
+        notice.is_none_or(|(_, level)| (level == NoticeLevel::Error) == p.last_error.is_some()),
+        "only a failed fetch gives an error notice"
+    );
+    notice
 }
 
 /// Title columns kept before a notice shrinks to its icon.
@@ -82,11 +91,21 @@ pub(crate) fn fit_panel_title(
         for badge in [notice, NOTICE_ICON] {
             let room = columns.saturating_sub(Span::raw(badge).width() + 1);
             if room >= title_width.min(MIN_TITLE_COLUMNS) {
-                return (truncate_title(title, to_u16(room)), Some(badge));
+                let fitted = truncate_title(title, to_u16(room));
+                debug_assert!(
+                    Span::raw(fitted.as_str()).width() <= room,
+                    "the title leaves room for the notice"
+                );
+                return (fitted, Some(badge));
             }
         }
     }
-    (truncate_title(title, to_u16(columns)), None)
+    let fitted = truncate_title(title, to_u16(columns));
+    debug_assert!(
+        Span::raw(fitted.as_str()).width() <= columns,
+        "the title fits the columns"
+    );
+    (fitted, None)
 }
 
 /// Renders a single panel.
@@ -106,6 +125,10 @@ pub(crate) fn render_panel(
     is_selected: bool,
     cursor_x: Option<f64>,
 ) -> Option<Vec<crate::annotations::AnnotationEvent>> {
+    debug_assert!(
+        panel_index < app.panels.len(),
+        "the panel is in the panel list"
+    );
     let theme = &app.theme;
     let border_style = if is_selected {
         Style::default().fg(theme.border_focused)
@@ -130,6 +153,10 @@ pub(crate) fn render_panel(
     frame.render_widget(block.clone(), area);
 
     let inner_area = block.inner(area);
+    debug_assert!(
+        super::layout::rect_inside(area, inner_area),
+        "the panel body is inside the panel"
+    );
     let body = PanelBody {
         area: inner_area,
         panel_index,
@@ -148,6 +175,8 @@ fn render_error_panel(
     border_style: Style,
     theme: &Theme,
 ) {
+    debug_assert!(p.last_error.is_some(), "an error panel has an error");
+    debug_assert!(p.series.is_empty(), "an error panel has no data to show");
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
@@ -170,6 +199,8 @@ fn render_loading_panel(
     border_style: Style,
     theme: &Theme,
 ) {
+    debug_assert!(!p.has_loaded(), "a loading panel has no first result");
+    debug_assert!(!p.exprs.is_empty(), "a loading panel has queries");
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
@@ -202,6 +233,14 @@ fn panel_block(p: &PanelState, area: Rect, border_style: Style, theme: &Theme) -
             Style::default().fg(color),
         ));
     }
+    debug_assert!(
+        badge.is_none() || notice.is_some(),
+        "only a panel with a notice has a badge"
+    );
+    debug_assert!(
+        title.len() <= 2,
+        "the title has the text and one badge at most"
+    );
     Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
@@ -223,8 +262,12 @@ fn render_panel_body(
     p: &PanelState,
     app: &AppState,
 ) -> Option<Vec<crate::annotations::AnnotationEvent>> {
+    debug_assert!(
+        body.panel_index < app.panels.len(),
+        "the panel is in the panel list"
+    );
     let inner_area = body.area;
-    match p.panel_type {
+    let events = match p.panel_type {
         PanelType::Graph => render_graph_panel(
             frame,
             inner_area,
@@ -266,7 +309,10 @@ fn render_panel_body(
             render_heatmap(frame, inner_area, p, app);
             None
         }
-    }
+    };
+    let graph = matches!(p.panel_type, PanelType::Graph);
+    debug_assert!(events.is_none() || graph, "only a graph shows events");
+    events
 }
 
 #[cfg(test)]

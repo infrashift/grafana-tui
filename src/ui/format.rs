@@ -40,7 +40,7 @@ impl DisplayFormat {
     pub(crate) fn format_number(&self, value: f64) -> String {
         // Grafana's common units; unknown units keep the compact SI format.
         let decimals = self.decimals;
-        match self.unit_key().as_deref() {
+        let text = match self.unit_key().as_deref() {
             Some("bytes") => format_scaled(value, &BYTES_IEC, KIB, decimals),
             Some("decbytes") => format_scaled(value, &BYTES_SI, 1000.0, decimals),
             Some("kbytes") => format_scaled(value * KIB, &BYTES_IEC, KIB, decimals),
@@ -72,7 +72,10 @@ impl DisplayFormat {
             Some("reqps" | "rps") => format_rate(value, decimals, " req/s"),
             Some("short" | "none") | None => format_si_with_decimals(value, decimals),
             Some(_) => format_si_with_decimals(value, decimals),
-        }
+        };
+        debug_assert!(!text.is_empty(), "a formatted number has text");
+        debug_assert!(!text.contains('\n'), "a formatted number is one line");
+        text
     }
 
     /// The unit, ignoring case except where Grafana units differ only by
@@ -83,10 +86,16 @@ impl DisplayFormat {
             .as_deref()
             .map(str::trim)
             .filter(|unit| !unit.is_empty())?;
-        Some(match unit {
+        let key = match unit {
             "Bps" | "binBps" | "binbps" => unit.to_string(),
             _ => unit.to_lowercase(),
-        })
+        };
+        debug_assert!(!key.is_empty(), "a unit key has text");
+        debug_assert!(
+            key.trim() == key,
+            "a unit key has no leading or trailing space"
+        );
+        Some(key)
     }
 }
 
@@ -104,7 +113,7 @@ pub(crate) fn value_to_heatmap_color(normalized: f64, bands: [Color; 3]) -> Colo
 fn format_si_with_decimals(val: f64, decimals: Option<usize>) -> String {
     let abs = val.abs();
     let decimals = decimals.unwrap_or(2);
-    if abs >= 1e9 {
+    let text = if abs >= 1e9 {
         format!("{:.*}G", decimals, val / 1e9)
     } else if abs >= 1e6 {
         format!("{:.*}M", decimals, val / 1e6)
@@ -112,7 +121,13 @@ fn format_si_with_decimals(val: f64, decimals: Option<usize>) -> String {
         format!("{:.*}k", decimals, val / 1e3)
     } else {
         format!("{:.*}", decimals, val)
-    }
+    };
+    debug_assert!(!text.is_empty(), "a formatted number has text");
+    debug_assert!(
+        abs < 1e3 || abs.is_nan() || text.ends_with(['G', 'M', 'k']),
+        "a value of 1000 or more has an SI suffix"
+    );
+    text
 }
 
 fn format_suffix(value: f64, decimals: Option<usize>, suffix: &str) -> String {
@@ -135,6 +150,8 @@ const BYTE_RATE_IEC: [&str; 6] = ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s", "Pi
 
 /// Scales `value` by `base` until it fits the largest suffix it reaches.
 fn format_scaled(value: f64, suffixes: &[&str], base: f64, decimals: Option<usize>) -> String {
+    debug_assert!(base > 1.0, "each suffix step divides by more than 1");
+    debug_assert!(!suffixes.is_empty(), "the unit has one suffix or more");
     let mut scaled = value;
     let mut suffix_index = 0;
 
@@ -145,6 +162,10 @@ fn format_scaled(value: f64, suffixes: &[&str], base: f64, decimals: Option<usiz
         scaled /= base;
         suffix_index = next_index;
     }
+    debug_assert!(
+        suffix_index < suffixes.len(),
+        "the scale stops at the largest suffix"
+    );
 
     format!(
         "{:.*}{}",
@@ -175,16 +196,32 @@ fn format_duration_seconds(value: f64, decimals: Option<usize>) -> String {
         .into_iter()
         .find(|(size, _)| abs >= *size)
         .unwrap_or((1e-9, "ns"));
-    format_suffix(value / size, decimals, suffix)
+    debug_assert!(
+        abs.is_nan() || suffix == "ns" || abs / size >= 1.0,
+        "the unit is the largest that keeps the value at 1 or more"
+    );
+    let text = format_suffix(value / size, decimals, suffix);
+    debug_assert!(
+        text.ends_with(char::is_alphabetic),
+        "a duration ends with its unit"
+    );
+    text
 }
 
 pub(crate) fn format_time(ts: f64) -> String {
     use chrono::TimeZone;
-    if let Some(dt) = chrono::Utc.timestamp_opt(num::f64_to_i64(ts), 0).single() {
+    let time = chrono::Utc.timestamp_opt(num::f64_to_i64(ts), 0).single();
+    let text = if let Some(dt) = time {
         dt.format("%H:%M:%S").to_string()
     } else {
         format!("{}", ts)
-    }
+    };
+    debug_assert!(!text.is_empty(), "a time label has text");
+    debug_assert!(
+        time.is_none() || text.len() == "HH:MM:SS".len(),
+        "a time label has hours, minutes and seconds"
+    );
+    text
 }
 
 pub(crate) fn format_axis_time(ts: f64, range_secs: f64) -> String {
@@ -199,7 +236,7 @@ pub(crate) fn format_axis_time(ts: f64, range_secs: f64) -> String {
         return format!("{}", ts);
     };
 
-    if range_secs < 7.0 * DAY {
+    let label = if range_secs < 7.0 * DAY {
         if dt.hour() == 0 && dt.minute() == 0 && dt.second() == 0 {
             dt.format("%b %d").to_string()
         } else {
@@ -211,7 +248,10 @@ pub(crate) fn format_axis_time(ts: f64, range_secs: f64) -> String {
         dt.format("%Y-%m").to_string()
     } else {
         dt.format("%Y").to_string()
-    }
+    };
+    debug_assert!(!label.is_empty(), "an axis label has text");
+    debug_assert!(label.chars().count() <= 12, "an axis label is short");
+    label
 }
 
 /// Generate a color from a string using hash-based approach.
@@ -233,12 +273,26 @@ pub(crate) fn get_hash_color(name: &str) -> Color {
 
     // Lightness: keep in a range that's visible on both light and dark backgrounds (45-65%)
     let lightness = 45.0 + num::u64_to_f32((hash >> 16) % 20);
+    debug_assert!((0.0..360.0).contains(&hue), "the hue is an angle below 360");
+    debug_assert!(
+        (60.0..90.0).contains(&saturation),
+        "the saturation keeps the colors vivid"
+    );
+    debug_assert!(
+        (45.0..65.0).contains(&lightness),
+        "the lightness keeps the colors visible on each background"
+    );
 
     hsl_to_rgb(hue, saturation, lightness)
 }
 
 /// Convert HSL to RGB color for ratatui.
 fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Color {
+    debug_assert!((0.0..360.0).contains(&h), "the hue is an angle below 360");
+    debug_assert!(
+        (0.0..=100.0).contains(&s) && (0.0..=100.0).contains(&l),
+        "the saturation and the lightness are percentages"
+    );
     let s = s / 100.0;
     let l = l / 100.0;
 
