@@ -1,3 +1,9 @@
+// The Power of 10 rules apply to production code only (ADR-0002).
+#![allow(
+    clippy::unwrap_used,
+    reason = "P10-R7: the rules apply to production code only"
+)]
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};

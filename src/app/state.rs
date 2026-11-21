@@ -481,7 +481,10 @@ impl AppState {
     /// * `panels` - The list of panels to display.
     /// * `skipped_panels` - The count of panels that were skipped during import.
     /// * `theme` - The UI theme to use.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "P10-R4: the constructor takes each start-up setting, and many tests call it"
+    )]
     pub(crate) fn new(
         prometheus: prom::PromClient,
         range: Duration,

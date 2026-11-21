@@ -15,7 +15,10 @@ pub(super) struct Dashboard {
 }
 
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "P10-R3: MAX_LAYOUT_NODES caps the nodes, so the size gap costs little. A Box adds one allocation for each panel."
+)]
 pub(super) enum LayoutNode {
     Panel(Panel),
     Row(Row),
@@ -74,8 +77,6 @@ pub(super) struct Variable {
     pub(super) include_all: bool,
     /// Statically known option values, which `All` selects.
     pub(super) options: Vec<String>,
-    #[allow(dead_code)]
-    pub(super) source_path: String,
     pub(super) query_path: Option<String>,
     /// When Grafana re-runs a query variable's query; unset means on load.
     pub(super) refresh: Option<VariableRefresh>,
@@ -108,7 +109,6 @@ pub(super) struct Panel {
     pub(super) grid: Option<GridPos>,
     pub(super) field_defaults: Option<FieldDefaults>,
     pub(super) reduce_options_path: Option<String>,
-    #[allow(dead_code)]
     pub(super) transformations_path: Option<String>,
     /// Panel min interval (Classic `interval`, V2 `queryOptions.interval`).
     pub(super) min_interval: Option<MinInterval>,

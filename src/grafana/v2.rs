@@ -504,7 +504,6 @@ fn normalize_query_variable(
     source_path: &str,
     diagnostics: &mut Vec<super::ImportDiagnostic>,
 ) -> Result<Option<model::Variable>> {
-    let source_path = source_path.to_string();
     let name = require_string_from(spec, "name", &format!("{source_path}.spec.name"))?.to_string();
     let query_path = format!("{source_path}.spec.query");
     let query = require_object_from(spec, "query", &query_path)?;
@@ -520,7 +519,7 @@ fn normalize_query_variable(
     }
     let query_spec_path = format!("{query_path}.spec");
     let query_spec = require_object_from(query, "spec", &query_spec_path)?;
-    let query = query_variable_text(spec, query_spec, &source_path);
+    let query = query_variable_text(spec, query_spec, source_path);
 
     Ok(Some(model::Variable {
         name,
@@ -529,10 +528,9 @@ fn normalize_query_variable(
         query: query.as_ref().map(|(query, _)| query.clone()),
         regex: optional_string(spec, "regex"),
         all_value: optional_string(spec, "allValue"),
-        multi: optional_bool_from(spec, "multi", &source_path)?,
-        include_all: optional_bool_from(spec, "includeAll", &source_path)?,
+        multi: optional_bool_from(spec, "multi", source_path)?,
+        include_all: optional_bool_from(spec, "includeAll", source_path)?,
         options: option_values(spec),
-        source_path,
         query_path: query.map(|(_, path)| path),
         refresh: query_variable_refresh(spec),
     }))
@@ -586,7 +584,6 @@ fn normalize_option_variable(
     spec: &JsonObject,
     source_path: &str,
 ) -> Result<model::Variable> {
-    let source_path = source_path.to_string();
     let mut options = option_values(spec);
     if options.is_empty()
         && matches!(kind, "CustomVariable" | "IntervalVariable")
@@ -602,10 +599,9 @@ fn normalize_option_variable(
         query: None,
         regex: None,
         all_value: optional_string(spec, "allValue"),
-        multi: optional_bool_from(spec, "multi", &source_path)?,
-        include_all: optional_bool_from(spec, "includeAll", &source_path)?,
+        multi: optional_bool_from(spec, "multi", source_path)?,
+        include_all: optional_bool_from(spec, "includeAll", source_path)?,
         options,
-        source_path,
         query_path: None,
         refresh: None,
     })
@@ -627,7 +623,6 @@ fn option_values(spec: &JsonObject) -> Vec<String> {
 }
 
 fn normalize_switch_variable(spec: &JsonObject, source_path: &str) -> Result<model::Variable> {
-    let source_path = source_path.to_string();
     Ok(model::Variable {
         name: require_string_from(spec, "name", &format!("{source_path}.spec.name"))?.to_string(),
         kind: None,
@@ -643,7 +638,6 @@ fn normalize_switch_variable(spec: &JsonObject, source_path: &str) -> Result<mod
         multi: false,
         include_all: false,
         options: Vec::new(),
-        source_path,
         query_path: None,
         refresh: None,
     })
@@ -736,7 +730,7 @@ fn require_i32_from(object: &JsonObject, key: &str, path: &str) -> Result<i32> {
         anyhow!("invalid Grafana V2 grid coordinate at {path}: expected an integer")
     })?;
     i32::try_from(value)
-        .map_err(|_| anyhow!("invalid Grafana V2 grid coordinate at {path}: expected an i32"))
+        .with_context(|| format!("invalid Grafana V2 grid coordinate at {path}: expected an i32"))
 }
 
 fn parse_grid_item(value: &Value, path: &str) -> Result<ResolvedGridItem> {

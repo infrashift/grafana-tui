@@ -765,19 +765,6 @@ fn clip_scrolled_rect(
     Some(item)
 }
 
-#[allow(dead_code)]
-pub(crate) fn visible_panel_rects(area: Rect, app: &AppState) -> Vec<(Rect, usize)> {
-    visible_dashboard_rects(area, app)
-        .into_iter()
-        .filter_map(|item| match item.kind {
-            DashboardRectKind::Panel { index } => Some((item.rect, index)),
-            DashboardRectKind::Row { .. }
-            | DashboardRectKind::Tabs { .. }
-            | DashboardRectKind::TabEmpty { .. } => None,
-        })
-        .collect()
-}
-
 /// Determines which visible dashboard item is located at the given coordinates.
 ///
 /// # Arguments
@@ -801,6 +788,25 @@ pub(crate) fn hit_test(app: &AppState, area: Rect, x: u16, y: u16) -> Option<Das
         !matches!(item.kind, DashboardRectKind::TabEmpty { .. })
             && item.rect.contains(ratatui::layout::Position { x, y })
     })
+}
+
+/// Layout helpers for tests in other modules.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::{AppState, DashboardRectKind, Rect, visible_dashboard_rects};
+
+    /// Returns the rectangle and index of each visible panel.
+    pub(crate) fn visible_panel_rects(area: Rect, app: &AppState) -> Vec<(Rect, usize)> {
+        visible_dashboard_rects(area, app)
+            .into_iter()
+            .filter_map(|item| match item.kind {
+                DashboardRectKind::Panel { index } => Some((item.rect, index)),
+                DashboardRectKind::Row { .. }
+                | DashboardRectKind::Tabs { .. }
+                | DashboardRectKind::TabEmpty { .. } => None,
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
