@@ -2,6 +2,21 @@ use std::collections::{HashMap, HashSet};
 
 use crate::conditions::ConditionTarget;
 
+/// The most levels of child lists in a layout. The top-level list is level 1.
+///
+/// The example dashboards and the test fixtures use 3 levels at most, and a
+/// set of dashboards adds 1 level. The limit gives a large margin.
+pub(crate) const MAX_LAYOUT_DEPTH: usize = 16;
+
+/// The most rows, tab groups, tabs, auto grids and panels in a layout.
+///
+/// The largest example dashboard has 46 items. The limit gives a large margin.
+pub(crate) const MAX_LAYOUT_NODES: usize = 4096;
+
+/// The most steps of a loop that builds a layout: one step for each item and
+/// one step for each child list.
+pub(crate) const MAX_LAYOUT_STEPS: usize = 2 * MAX_LAYOUT_NODES + 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct RowId(usize);
 

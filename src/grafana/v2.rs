@@ -3,6 +3,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::model;
+use crate::dashboard::{MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES, MAX_LAYOUT_STEPS};
 
 pub(super) const V2_API_VERSION: &str = "dashboard.grafana.app/v2";
 
@@ -73,18 +74,175 @@ pub(super) fn adapt(value: Value) -> Result<model::Dashboard> {
     Ok(dashboard)
 }
 
+/// Parses a V2 layout and its nested rows and tabs with an explicit stack.
 fn parse_layout(
     layout: &JsonObject,
     elements: &JsonObject,
     path: &str,
     diagnostics: &mut Vec<super::ImportDiagnostic>,
 ) -> Result<Vec<model::LayoutNode>> {
-    match require_string_from(layout, "kind", &format!("{path}.kind"))? {
-        "GridLayout" => parse_grid_layout(layout, elements, path, diagnostics),
-        "RowsLayout" => parse_rows_layout(layout, elements, path, diagnostics),
-        "TabsLayout" => parse_tabs_layout(layout, elements, path, diagnostics),
-        "AutoGridLayout" => parse_auto_grid_layout(layout, elements, path, diagnostics),
-        kind => anyhow::bail!("unsupported Grafana V2 layout `{kind}` at {path}.kind"),
+    let mut parser = LayoutParser {
+        elements,
+        diagnostics,
+        frames: Vec::with_capacity(MAX_LAYOUT_DEPTH),
+        nodes: 0,
+    };
+    let mut finished = parser.start(layout, path)?;
+    for _ in 0..MAX_LAYOUT_STEPS {
+        let Some(mut frame) = parser.frames.pop() else {
+            return Ok(finished.unwrap_or_default());
+        };
+        if let Some(children) = finished.take() {
+            frame.close_section(children);
+        }
+        match parser.open_section(&mut frame)? {
+            Some((child, child_path)) => {
+                parser.frames.push(frame);
+                finished = parser.start(child, &child_path)?;
+            }
+            None => finished = Some(frame.into_nodes()),
+        }
+    }
+    anyhow::bail!("Grafana V2 layout at {path} has more than {MAX_LAYOUT_STEPS} parse steps")
+}
+
+/// The state of a V2 layout parse: the open rows and tabs layouts, and the item count.
+struct LayoutParser<'a, 'd> {
+    elements: &'a JsonObject,
+    diagnostics: &'d mut Vec<super::ImportDiagnostic>,
+    frames: Vec<SectionFrame<'a>>,
+    nodes: usize,
+}
+
+impl<'a> LayoutParser<'a, '_> {
+    /// Starts the layout at `path`. A rows or tabs layout opens a frame and gives `None`.
+    fn start(
+        &mut self,
+        layout: &'a JsonObject,
+        path: &str,
+    ) -> Result<Option<Vec<model::LayoutNode>>> {
+        ensure!(
+            self.frames.len() < MAX_LAYOUT_DEPTH,
+            "Grafana V2 layout at {path} nests rows and tabs deeper than the limit of \
+             {MAX_LAYOUT_DEPTH} levels"
+        );
+        let kind = require_string_from(layout, "kind", &format!("{path}.kind"))?;
+        let nodes = match kind {
+            "GridLayout" => parse_grid_layout(layout, self.elements, path, self.diagnostics)?,
+            "AutoGridLayout" => {
+                parse_auto_grid_layout(layout, self.elements, path, self.diagnostics)?
+            }
+            "RowsLayout" | "TabsLayout" => {
+                let frame = SectionFrame::new(kind == "TabsLayout", layout, path)?;
+                self.count(usize::from(frame.tabs), path)?;
+                self.frames.push(frame);
+                return Ok(None);
+            }
+            kind => anyhow::bail!("unsupported Grafana V2 layout `{kind}` at {path}.kind"),
+        };
+        self.count(nodes.iter().map(node_weight).sum(), path)?;
+        Ok(Some(nodes))
+    }
+
+    /// Reads the next row or tab of `frame`, and gives its child layout and the path to it.
+    fn open_section(
+        &mut self,
+        frame: &mut SectionFrame<'a>,
+    ) -> Result<Option<(&'a JsonObject, String)>> {
+        let Some((index, entry)) = frame.entries.next() else {
+            return Ok(None);
+        };
+        self.count(1, &frame.entries_path)?;
+        let entry_path = format!("{}[{index}]", frame.entries_path);
+        let (section, child, child_path) = if frame.tabs {
+            parse_tab_header(entry, entry_path, self.diagnostics)?
+        } else {
+            parse_row_header(entry, entry_path, self.diagnostics)?
+        };
+        frame.open = Some(section);
+        Ok(Some((child, child_path)))
+    }
+
+    /// Adds `added` items to the count, and fails over MAX_LAYOUT_NODES.
+    fn count(&mut self, added: usize, path: &str) -> Result<()> {
+        self.nodes = self.nodes.saturating_add(added);
+        ensure!(
+            self.nodes <= MAX_LAYOUT_NODES,
+            "Grafana V2 layout at {path} holds more than the limit of {MAX_LAYOUT_NODES} rows, \
+             tabs and panels"
+        );
+        Ok(())
+    }
+}
+
+/// The number of layout items in a grid or auto grid node.
+fn node_weight(node: &model::LayoutNode) -> usize {
+    match node {
+        model::LayoutNode::AutoGrid(grid) => grid.panels.len().saturating_add(1),
+        model::LayoutNode::Panel(_) | model::LayoutNode::Row(_) | model::LayoutNode::Tabs(_) => 1,
+    }
+}
+
+/// A row or tab whose child layout the parser reads now.
+enum OpenSection {
+    Row(model::Row),
+    Tab(model::Tab),
+}
+
+/// A rows or tabs layout whose rows or tabs the parser reads one at a time.
+struct SectionFrame<'a> {
+    tabs: bool,
+    entries: std::iter::Enumerate<std::slice::Iter<'a, Value>>,
+    entries_path: String,
+    rows: Vec<model::LayoutNode>,
+    tab_list: Vec<model::Tab>,
+    open: Option<OpenSection>,
+}
+
+impl<'a> SectionFrame<'a> {
+    /// Opens the rows or tabs list of `layout`.
+    fn new(tabs: bool, layout: &'a JsonObject, path: &str) -> Result<Self> {
+        let spec_path = format!("{path}.spec");
+        let spec = require_object_from(layout, "spec", &spec_path)?;
+        let key = if tabs { "tabs" } else { "rows" };
+        let entries_path = format!("{spec_path}.{key}");
+        let entries = optional_array_from(spec, key, &entries_path)?
+            .iter()
+            .enumerate();
+        Ok(Self {
+            tabs,
+            entries,
+            entries_path,
+            rows: Vec::new(),
+            tab_list: Vec::new(),
+            open: None,
+        })
+    }
+
+    /// Gives the open row or tab its children, and adds it to the finished list.
+    fn close_section(&mut self, children: Vec<model::LayoutNode>) {
+        match self.open.take() {
+            Some(OpenSection::Row(mut row)) => {
+                row.children = children;
+                self.rows.push(model::LayoutNode::Row(row));
+            }
+            Some(OpenSection::Tab(mut tab)) => {
+                tab.children = children;
+                self.tab_list.push(tab);
+            }
+            None => {}
+        }
+    }
+
+    /// The finished rows, or one tab group that holds the finished tabs.
+    fn into_nodes(self) -> Vec<model::LayoutNode> {
+        if self.tabs {
+            vec![model::LayoutNode::Tabs(model::Tabs {
+                tabs: self.tab_list,
+            })]
+        } else {
+            self.rows
+        }
     }
 }
 
@@ -193,45 +351,37 @@ fn auto_grid_size_px(
     })
 }
 
-fn parse_tabs_layout(
-    layout: &JsonObject,
-    elements: &JsonObject,
-    path: &str,
+/// A row or tab with no children yet, its child layout, and the path to that layout.
+type SectionHeader<'a> = (OpenSection, &'a JsonObject, String);
+
+/// Parses a tab of a tabs layout. The caller parses its child layout.
+fn parse_tab_header<'a>(
+    tab: &'a Value,
+    tab_path: String,
     diagnostics: &mut Vec<super::ImportDiagnostic>,
-) -> Result<Vec<model::LayoutNode>> {
-    let spec_path = format!("{path}.spec");
-    let spec = require_object_from(layout, "spec", &spec_path)?;
-    let tabs_path = format!("{spec_path}.tabs");
-    let tabs = optional_array_from(spec, "tabs", &tabs_path)?;
-    let mut normalized = Vec::new();
-    for (index, tab) in tabs.iter().enumerate() {
-        let tab_path = format!("{tabs_path}[{index}]");
-        let tab = tab
-            .as_object()
-            .ok_or_else(|| anyhow!("invalid Grafana V2 tab at {tab_path}: expected an object"))?;
-        require_expected_kind(tab, &tab_path, "TabsLayoutTab")?;
-        let tab_spec_path = format!("{tab_path}.spec");
-        let tab_spec = require_object_from(tab, "spec", &tab_spec_path)?;
-        let title = optional_string_from(tab_spec, "title", &tab_spec_path)?.unwrap_or_default();
-        let condition = parse_condition_group(tab_spec, &tab_spec_path, diagnostics)?;
-        let repeat = parse_repeat(tab_spec, &tab_spec_path)?;
-        let variables =
-            normalize_variables(tab_spec, &format!("{tab_spec_path}.variables"), diagnostics)?;
-        let child_path = format!("{tab_spec_path}.layout");
-        let child_layout = require_object_from(tab_spec, "layout", &child_path)?;
-        let children = parse_layout(child_layout, elements, &child_path, diagnostics)?;
-        normalized.push(model::Tab {
-            title,
-            repeat,
-            condition,
-            variables,
-            source_path: tab_path,
-            children,
-        });
-    }
-    Ok(vec![model::LayoutNode::Tabs(model::Tabs {
-        tabs: normalized,
-    })])
+) -> Result<SectionHeader<'a>> {
+    let tab = tab
+        .as_object()
+        .ok_or_else(|| anyhow!("invalid Grafana V2 tab at {tab_path}: expected an object"))?;
+    require_expected_kind(tab, &tab_path, "TabsLayoutTab")?;
+    let tab_spec_path = format!("{tab_path}.spec");
+    let tab_spec = require_object_from(tab, "spec", &tab_spec_path)?;
+    let title = optional_string_from(tab_spec, "title", &tab_spec_path)?.unwrap_or_default();
+    let condition = parse_condition_group(tab_spec, &tab_spec_path, diagnostics)?;
+    let repeat = parse_repeat(tab_spec, &tab_spec_path)?;
+    let variables =
+        normalize_variables(tab_spec, &format!("{tab_spec_path}.variables"), diagnostics)?;
+    let child_path = format!("{tab_spec_path}.layout");
+    let child_layout = require_object_from(tab_spec, "layout", &child_path)?;
+    let tab = model::Tab {
+        title,
+        repeat,
+        condition,
+        variables,
+        source_path: tab_path,
+        children: Vec::new(),
+    };
+    Ok((OpenSection::Tab(tab), child_layout, child_path))
 }
 
 fn parse_grid_layout(
@@ -260,54 +410,45 @@ fn parse_grid_layout(
     Ok(nodes)
 }
 
-fn parse_rows_layout(
-    layout: &JsonObject,
-    elements: &JsonObject,
-    path: &str,
+/// Parses a row of a rows layout. The caller parses its child layout.
+fn parse_row_header<'a>(
+    row: &'a Value,
+    row_path: String,
     diagnostics: &mut Vec<super::ImportDiagnostic>,
-) -> Result<Vec<model::LayoutNode>> {
-    let spec_path = format!("{path}.spec");
-    let spec = require_object_from(layout, "spec", &spec_path)?;
-    let rows_path = format!("{spec_path}.rows");
-    let rows = optional_array_from(spec, "rows", &rows_path)?;
-    let mut nodes = Vec::new();
-    for (index, row) in rows.iter().enumerate() {
-        let row_path = format!("{rows_path}[{index}]");
-        let row = row
-            .as_object()
-            .ok_or_else(|| anyhow!("invalid Grafana V2 row at {row_path}: expected an object"))?;
-        require_expected_kind(row, &row_path, "RowsLayoutRow")?;
-        let row_spec_path = format!("{row_path}.spec");
-        let row_spec = require_object_from(row, "spec", &row_spec_path)?;
-        let title = optional_string_from(row_spec, "title", &row_spec_path)?.unwrap_or_default();
-        let collapsed = optional_bool_from(row_spec, "collapse", &row_spec_path)?;
-        let hidden_header = optional_bool_from(row_spec, "hideHeader", &row_spec_path)?;
+) -> Result<SectionHeader<'a>> {
+    let row = row
+        .as_object()
+        .ok_or_else(|| anyhow!("invalid Grafana V2 row at {row_path}: expected an object"))?;
+    require_expected_kind(row, &row_path, "RowsLayoutRow")?;
+    let row_spec_path = format!("{row_path}.spec");
+    let row_spec = require_object_from(row, "spec", &row_spec_path)?;
+    let title = optional_string_from(row_spec, "title", &row_spec_path)?.unwrap_or_default();
+    let collapsed = optional_bool_from(row_spec, "collapse", &row_spec_path)?;
+    let hidden_header = optional_bool_from(row_spec, "hideHeader", &row_spec_path)?;
 
-        let condition = parse_condition_group(row_spec, &row_spec_path, diagnostics)?;
-        let repeat = parse_repeat(row_spec, &row_spec_path)?;
+    let condition = parse_condition_group(row_spec, &row_spec_path, diagnostics)?;
+    let repeat = parse_repeat(row_spec, &row_spec_path)?;
 
-        let variables =
-            normalize_variables(row_spec, &format!("{row_spec_path}.variables"), diagnostics)?;
+    let variables =
+        normalize_variables(row_spec, &format!("{row_spec_path}.variables"), diagnostics)?;
 
-        // `fillScreen` stretches a row to the browser viewport; terminal rows already
-        // size to their content, so the flag is validated and otherwise ignored.
-        optional_bool_from(row_spec, "fillScreen", &row_spec_path)?;
+    // `fillScreen` stretches a row to the browser viewport; terminal rows already
+    // size to their content, so the flag is validated and otherwise ignored.
+    optional_bool_from(row_spec, "fillScreen", &row_spec_path)?;
 
-        let child_path = format!("{row_spec_path}.layout");
-        let child_layout = require_object_from(row_spec, "layout", &child_path)?;
-        let children = parse_layout(child_layout, elements, &child_path, diagnostics)?;
-        nodes.push(model::LayoutNode::Row(model::Row {
-            title,
-            repeat,
-            condition,
-            variables,
-            collapsed,
-            hidden_header,
-            source_path: row_path,
-            children,
-        }));
-    }
-    Ok(nodes)
+    let child_path = format!("{row_spec_path}.layout");
+    let child_layout = require_object_from(row_spec, "layout", &child_path)?;
+    let row = model::Row {
+        title,
+        repeat,
+        condition,
+        variables,
+        collapsed,
+        hidden_header,
+        source_path: row_path,
+        children: Vec::new(),
+    };
+    Ok((OpenSection::Row(row), child_layout, child_path))
 }
 
 /// Reads the `variables` of the dashboard spec, or of a row or tab spec, whose

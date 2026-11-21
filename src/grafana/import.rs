@@ -4,7 +4,11 @@ use super::{
     DashboardImport, GridPos, ImportDiagnostic, QueryPanel, SectionVariable, TemplateQueryVar,
     VariableRefresh, model,
 };
-use crate::dashboard::SectionId;
+use anyhow::ensure;
+
+use crate::dashboard::{
+    DashboardLayoutItem, MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES, MAX_LAYOUT_STEPS, SectionId,
+};
 
 pub(super) fn finish(dashboard: model::Dashboard) -> Result<DashboardImport> {
     let model::Dashboard {
@@ -33,7 +37,7 @@ pub(super) fn finish(dashboard: model::Dashboard) -> Result<DashboardImport> {
         ..LayoutIds::default()
     };
     out.layout =
-        crate::dashboard::DashboardLayout::new(import_layout_nodes(layout, &mut out, &mut ids)?);
+        crate::dashboard::DashboardLayout::new(import_layout_nodes(layout, &mut out, &mut ids, 1)?);
     Ok(out)
 }
 
@@ -47,6 +51,7 @@ pub(super) fn finish_many(
     let mut ids = LayoutIds::default();
     let root = crate::dashboard::TabGroupId::new(ids.next_tabs);
     ids.next_tabs += 1;
+    ids.count(dashboards.len().saturating_add(1))?;
     let mut tabs = Vec::with_capacity(dashboards.len());
     for (index, dashboard) in dashboards.into_iter().enumerate() {
         out.skipped_panels += dashboard.skipped_panels;
@@ -64,7 +69,7 @@ pub(super) fn finish_many(
         }
         tabs.push(crate::dashboard::DashboardTab {
             title: dashboard.title,
-            children: import_layout_nodes(dashboard.layout, &mut out, &mut ids)?,
+            children: import_layout_nodes(dashboard.layout, &mut out, &mut ids, 2)?,
         });
     }
     out.layout =
@@ -241,16 +246,20 @@ fn current_is_all(current: Option<&model::VariableCurrent>) -> bool {
     })
 }
 
+/// Whether a variable value, or one string in a value list, selects `All`.
 fn value_is_all(value: Option<&serde_json::Value>) -> bool {
     match value {
-        Some(serde_json::Value::String(value)) => {
-            value == "$__all" || value.eq_ignore_ascii_case("all")
-        }
-        Some(serde_json::Value::Array(values)) => {
-            values.iter().any(|value| value_is_all(Some(value)))
-        }
+        Some(serde_json::Value::String(value)) => text_is_all(value),
+        Some(serde_json::Value::Array(values)) => values
+            .iter()
+            .any(|value| matches!(value, serde_json::Value::String(text) if text_is_all(text))),
         _ => false,
     }
+}
+
+/// Whether a text is Grafana's `$__all` marker or the word `All`.
+fn text_is_all(text: &str) -> bool {
+    text == "$__all" || text.eq_ignore_ascii_case("all")
 }
 
 fn import_panel(panel: model::Panel, out: &mut DashboardImport) -> Result<Option<usize>> {
@@ -446,53 +455,209 @@ fn field_settings_from(
     }
 }
 
+/// Imports layout nodes and the nodes nested in their rows and tabs with an
+/// explicit stack. `base_level` is the level of `nodes`.
 fn import_layout_nodes(
     nodes: Vec<model::LayoutNode>,
     out: &mut DashboardImport,
     ids: &mut LayoutIds,
-) -> Result<Vec<crate::dashboard::DashboardLayoutItem>> {
-    let mut items = Vec::new();
-    for node in nodes {
-        match node {
-            model::LayoutNode::Panel(panel) => {
-                if let Some(index) = import_placed_panel(panel, out, ids)? {
-                    items.push(crate::dashboard::DashboardLayoutItem::Panel(index));
+    base_level: usize,
+) -> Result<Vec<DashboardLayoutItem>> {
+    let mut frames = Vec::with_capacity(MAX_LAYOUT_DEPTH);
+    frames.push(ImportFrame::new(nodes, ImportParent::Root));
+    for _ in 0..MAX_LAYOUT_STEPS {
+        let child_level = base_level.saturating_add(frames.len());
+        let Some(frame) = frames.last_mut() else {
+            break;
+        };
+        if let Some(node) = frame.nodes.next() {
+            if let Some(child) = import_node(node, &mut frame.items, out, ids, child_level)? {
+                frames.push(child);
+            }
+        } else if let Some(items) = close_import_frame(&mut frames, out, ids, base_level)? {
+            return Ok(items);
+        }
+    }
+    anyhow::bail!("the dashboard layout has more than {MAX_LAYOUT_STEPS} import steps")
+}
+
+/// Imports one node into `items`. A row or a tab group gives the frame of its
+/// first child list, at level `child_level`.
+fn import_node(
+    node: model::LayoutNode,
+    items: &mut Vec<DashboardLayoutItem>,
+    out: &mut DashboardImport,
+    ids: &mut LayoutIds,
+    child_level: usize,
+) -> Result<Option<ImportFrame>> {
+    ids.count(1)?;
+    match node {
+        model::LayoutNode::Panel(panel) => {
+            if let Some(index) = import_placed_panel(panel, out, ids)? {
+                items.push(DashboardLayoutItem::Panel(index));
+            }
+            Ok(None)
+        }
+        model::LayoutNode::AutoGrid(grid) => {
+            ids.count(grid.panels.len())?;
+            items.extend(import_auto_grid(grid, out, ids)?);
+            Ok(None)
+        }
+        model::LayoutNode::Row(mut row) => {
+            check_depth(child_level, &row.source_path)?;
+            let id = register_row(&mut row, out, ids);
+            let header = RowHeader {
+                id,
+                title: row.title,
+                collapsed: row.collapsed,
+                hidden_header: row.hidden_header,
+            };
+            Ok(Some(ImportFrame::new(
+                row.children,
+                ImportParent::Row(header),
+            )))
+        }
+        model::LayoutNode::Tabs(group) => {
+            let id = crate::dashboard::TabGroupId::new(ids.next_tabs);
+            ids.next_tabs += 1;
+            let open = OpenTabs {
+                id,
+                title: String::new(),
+                tabs: Vec::with_capacity(group.tabs.len()),
+                rest: group.tabs.into_iter().enumerate(),
+            };
+            match open_next_tab(open, out, ids, child_level)? {
+                TabStep::Open(frame) => Ok(Some(frame)),
+                TabStep::Done(item) => {
+                    items.push(item);
+                    Ok(None)
                 }
-            }
-            model::LayoutNode::Row(mut row) => {
-                let id = register_row(&mut row, out, ids);
-                let children = import_layout_nodes(row.children, out, ids)?;
-                items.push(crate::dashboard::DashboardLayoutItem::Row(
-                    crate::dashboard::DashboardRow::new(
-                        id,
-                        row.title,
-                        row.collapsed,
-                        row.hidden_header,
-                        children,
-                    ),
-                ));
-            }
-            model::LayoutNode::Tabs(group) => {
-                let id = crate::dashboard::TabGroupId::new(ids.next_tabs);
-                ids.next_tabs += 1;
-                let mut tabs = Vec::with_capacity(group.tabs.len());
-                for (index, mut tab) in group.tabs.into_iter().enumerate() {
-                    register_tab(&mut tab, (id, index), out, ids);
-                    tabs.push(crate::dashboard::DashboardTab {
-                        title: tab.title,
-                        children: import_layout_nodes(tab.children, out, ids)?,
-                    });
-                }
-                items.push(crate::dashboard::DashboardLayoutItem::Tabs(
-                    crate::dashboard::DashboardTabs::new(id, tabs),
-                ));
-            }
-            model::LayoutNode::AutoGrid(grid) => {
-                items.extend(import_auto_grid(grid, out, ids)?);
             }
         }
     }
-    Ok(items)
+}
+
+/// Ends the top frame and adds its row or tab to the frame below. Gives the
+/// items of the top-level list when the root frame ends.
+fn close_import_frame(
+    frames: &mut Vec<ImportFrame>,
+    out: &mut DashboardImport,
+    ids: &mut LayoutIds,
+    base_level: usize,
+) -> Result<Option<Vec<DashboardLayoutItem>>> {
+    let Some(ImportFrame { items, parent, .. }) = frames.pop() else {
+        return Ok(Some(Vec::new()));
+    };
+    let finished = match parent {
+        ImportParent::Root => return Ok(Some(items)),
+        ImportParent::Row(row) => DashboardLayoutItem::Row(crate::dashboard::DashboardRow::new(
+            row.id,
+            row.title,
+            row.collapsed,
+            row.hidden_header,
+            items,
+        )),
+        ImportParent::Tab(mut open) => {
+            open.tabs.push(crate::dashboard::DashboardTab {
+                title: std::mem::take(&mut open.title),
+                children: items,
+            });
+            let child_level = base_level.saturating_add(frames.len());
+            match open_next_tab(open, out, ids, child_level)? {
+                TabStep::Open(frame) => {
+                    frames.push(frame);
+                    return Ok(None);
+                }
+                TabStep::Done(item) => item,
+            }
+        }
+    };
+    if let Some(outer) = frames.last_mut() {
+        outer.items.push(finished);
+    }
+    Ok(None)
+}
+
+/// Registers the next tab of `open` and gives the frame of its children, or
+/// gives the finished tab group after the last tab.
+fn open_next_tab(
+    mut open: OpenTabs,
+    out: &mut DashboardImport,
+    ids: &mut LayoutIds,
+    child_level: usize,
+) -> Result<TabStep> {
+    let Some((index, mut tab)) = open.rest.next() else {
+        return Ok(TabStep::Done(DashboardLayoutItem::Tabs(
+            crate::dashboard::DashboardTabs::new(open.id, open.tabs),
+        )));
+    };
+    check_depth(child_level, &tab.source_path)?;
+    ids.count(1)?;
+    register_tab(&mut tab, (open.id, index), out, ids);
+    open.title = tab.title;
+    let children = tab.children;
+    Ok(TabStep::Open(ImportFrame::new(
+        children,
+        ImportParent::Tab(open),
+    )))
+}
+
+/// Fails when a child list at `level` nests deeper than MAX_LAYOUT_DEPTH.
+fn check_depth(level: usize, path: &str) -> Result<()> {
+    ensure!(
+        level <= MAX_LAYOUT_DEPTH,
+        "the dashboard layout at {path} nests rows and tabs deeper than the limit of \
+         {MAX_LAYOUT_DEPTH} levels"
+    );
+    Ok(())
+}
+
+/// A list of layout nodes that the importer reads, with the row or tab that holds it.
+struct ImportFrame {
+    nodes: std::vec::IntoIter<model::LayoutNode>,
+    items: Vec<DashboardLayoutItem>,
+    parent: ImportParent,
+}
+
+impl ImportFrame {
+    /// Starts a list of nodes inside `parent`.
+    fn new(nodes: Vec<model::LayoutNode>, parent: ImportParent) -> Self {
+        Self {
+            nodes: nodes.into_iter(),
+            items: Vec::new(),
+            parent,
+        }
+    }
+}
+
+/// The row or tab that holds a list of imported items.
+enum ImportParent {
+    Root,
+    Row(RowHeader),
+    Tab(OpenTabs),
+}
+
+/// A row with no children yet.
+struct RowHeader {
+    id: crate::dashboard::RowId,
+    title: String,
+    collapsed: bool,
+    hidden_header: bool,
+}
+
+/// A tab group that the importer fills one tab at a time.
+struct OpenTabs {
+    id: crate::dashboard::TabGroupId,
+    /// The title of the tab whose children the importer reads now.
+    title: String,
+    tabs: Vec<crate::dashboard::DashboardTab>,
+    rest: std::iter::Enumerate<std::vec::IntoIter<model::Tab>>,
+}
+
+/// The frame of the next tab, or the finished tab group.
+enum TabStep {
+    Open(ImportFrame),
+    Done(DashboardLayoutItem),
 }
 
 /// Imports a panel with its repeat and condition. Returns its query index.
@@ -623,9 +788,22 @@ struct LayoutIds {
     next_row: usize,
     next_tabs: usize,
     variable_names: std::collections::HashSet<String>,
+    /// The layout items imported so far, across every dashboard of a set.
+    nodes: usize,
 }
 
 impl LayoutIds {
+    /// Adds `added` items to the count, and fails over MAX_LAYOUT_NODES.
+    fn count(&mut self, added: usize) -> Result<()> {
+        self.nodes = self.nodes.saturating_add(added);
+        ensure!(
+            self.nodes <= MAX_LAYOUT_NODES,
+            "the dashboard layout holds more than the limit of {MAX_LAYOUT_NODES} rows, tabs \
+             and panels"
+        );
+        Ok(())
+    }
+
     /// Keeps a repeat whose variable the dashboard defines; otherwise the item is
     /// shown once, as Grafana does, with a diagnostic.
     fn checked_repeat(
