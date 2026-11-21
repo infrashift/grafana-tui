@@ -51,46 +51,11 @@ where
                 let Some(event) = event else {
                     return Ok(());
                 };
-                let action = match event? {
-                    Event::Key(key) => {
-                        let size = terminal.size()?;
-                        input::handle_key(key, size, app).await?
-                    }
-                    Event::Mouse(mouse) => {
-                        let size = terminal.size()?;
-                        input::handle_mouse(mouse, size, app).await?
-                    }
-                    Event::Resize(width, height) => {
-                        ui::scroll_selected_into_view(Rect::new(0, 0, width, height), app);
-                        InputAction::Redraw
-                    }
-                    _ => InputAction::Redraw,
-                };
-
-                match action {
-                    InputAction::Quit => {
-                        finalize_recording_before_quit(app)?;
-                        return Ok(());
-                    }
-                    InputAction::ExportCurrent => {
-                        let viewport = terminal_viewport(terminal)?;
-                        let exported = export::export_current(app, viewport);
-                        report_export_error(app, "Export", exported);
-                        needs_draw = true;
-                        capture_recording_after_change(terminal, app)?;
-                    }
-                    InputAction::ToggleRecording => {
-                        let viewport = terminal_viewport(terminal)?;
-                        let toggled = export::toggle_recording(app, viewport);
-                        report_export_error(app, "Recording", toggled);
-                        needs_draw = true;
-                        capture_recording_after_change(terminal, app)?;
-                    }
-                    InputAction::Redraw => {
-                        needs_draw = true;
-                        capture_recording_after_change(terminal, app)?;
-                    }
+                let action = event_action(event?, terminal, app).await?;
+                if !apply_action(action, terminal, app)? {
+                    return Ok(());
                 }
+                needs_draw = true;
             }
             Some(finished) = app.join_refresh_task() => {
                 if app.finish_refresh_task(finished) {
@@ -105,6 +70,63 @@ where
             }
         }
     }
+}
+
+/// Handles one terminal event and returns the action that it causes.
+async fn event_action<B: ratatui::backend::Backend>(
+    event: Event,
+    terminal: &Terminal<B>,
+    app: &mut AppState,
+) -> Result<InputAction>
+where
+    <B as ratatui::backend::Backend>::Error: Send + Sync + 'static,
+{
+    let action = match event {
+        Event::Key(key) => {
+            let size = terminal.size()?;
+            input::handle_key(key, size, app).await?
+        }
+        Event::Mouse(mouse) => {
+            let size = terminal.size()?;
+            input::handle_mouse(mouse, size, app).await?
+        }
+        Event::Resize(width, height) => {
+            ui::scroll_selected_into_view(Rect::new(0, 0, width, height), app);
+            InputAction::Redraw
+        }
+        _ => InputAction::Redraw,
+    };
+    Ok(action)
+}
+
+/// Does what `action` asks for. Returns `false` when the app quits.
+fn apply_action<B: ratatui::backend::Backend>(
+    action: InputAction,
+    terminal: &Terminal<B>,
+    app: &mut AppState,
+) -> Result<bool>
+where
+    <B as ratatui::backend::Backend>::Error: Send + Sync + 'static,
+{
+    match action {
+        InputAction::Quit => {
+            finalize_recording_before_quit(app)?;
+            return Ok(false);
+        }
+        InputAction::ExportCurrent => {
+            let viewport = terminal_viewport(terminal)?;
+            let exported = export::export_current(app, viewport);
+            report_export_error(app, "Export", exported);
+        }
+        InputAction::ToggleRecording => {
+            let viewport = terminal_viewport(terminal)?;
+            let toggled = export::toggle_recording(app, viewport);
+            report_export_error(app, "Recording", toggled);
+        }
+        InputAction::Redraw => {}
+    }
+    capture_recording_after_change(terminal, app)?;
+    Ok(true)
 }
 
 /// Sleeps until `deadline`, or forever without one.

@@ -16,11 +16,11 @@
 
 use super::state::{AppMode, AppState, YAxisMode};
 use crate::annotations::AnnotationModal;
-use crate::dashboard::DashboardItemId;
+use crate::dashboard::{DashboardItemId, TabGroupId};
 use crate::ui;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::layout::{Rect, Size};
+use ratatui::layout::{Position, Rect, Size};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum InputAction {
@@ -169,80 +169,81 @@ pub(super) async fn handle_mouse(
 
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left) => {
-            let rect = Rect::new(0, 0, terminal_size.width, terminal_size.height);
-            if let Some(item) = ui::hit_test(app, rect, mouse.column, mouse.row) {
-                let tab_target = if app.mode == AppMode::Normal
-                    && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-                {
-                    match item.kind {
-                        ui::DashboardRectKind::Tabs { group_id, depth } => app
-                            .layout
-                            .tabs(group_id)
-                            .and_then(|group| {
-                                let titles = group
-                                    .tabs
-                                    .iter()
-                                    .map(|tab| tab.title.clone())
-                                    .collect::<Vec<_>>();
-                                let geometry =
-                                    ui::tab_bar_geometry(item.rect, &titles, group.active, depth);
-                                ui::tab_at(
-                                    &geometry,
-                                    ratatui::layout::Position {
-                                        x: mouse.column,
-                                        y: mouse.row,
-                                    },
-                                )
-                            })
-                            .map(|index| (group_id, index)),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                let clicked_disclosure =
-                    matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-                        && item.disclosure_rect.is_some_and(|disclosure| {
-                            disclosure.contains(ratatui::layout::Position {
-                                x: mouse.column,
-                                y: mouse.row,
-                            })
-                        });
-                app.selected_item = Some(item.id);
-                if clicked_disclosure {
-                    app.toggle_selected_row()?;
-                }
-                if let Some((group_id, index)) = tab_target {
-                    app.activate_tab(group_id, index)?;
-                }
-
-                match app.mode {
-                    AppMode::Normal | AppMode::Inspect => {}
-                    AppMode::Fullscreen | AppMode::FullscreenInspect => {
-                        app.mode = AppMode::FullscreenInspect;
-
-                        let chart_width = item.rect.width.saturating_sub(2) as f64;
-                        if chart_width > 0.0 {
-                            let relative_x = (mouse.column.saturating_sub(item.rect.x + 1)) as f64;
-                            let fraction = (relative_x / chart_width).clamp(0.0, 1.0);
-                            let (start_ts, _) = app.time_bounds();
-                            app.cursor_x = Some(start_ts + fraction * app.range.as_secs_f64());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            Ok(InputAction::Redraw)
+            select_at_mouse(mouse, terminal_size, app)?;
         }
         MouseEventKind::ScrollDown => {
             app.vertical_scroll = app.vertical_scroll.saturating_add(1);
-            Ok(InputAction::Redraw)
         }
         MouseEventKind::ScrollUp => {
             app.vertical_scroll = app.vertical_scroll.saturating_sub(1);
-            Ok(InputAction::Redraw)
         }
-        _ => Ok(InputAction::Redraw),
+        _ => {}
+    }
+    Ok(InputAction::Redraw)
+}
+
+/// Selects the item under a left click or drag, and opens the row or tab clicked.
+fn select_at_mouse(mouse: MouseEvent, terminal_size: Size, app: &mut AppState) -> Result<()> {
+    let rect = Rect::new(0, 0, terminal_size.width, terminal_size.height);
+    let Some(item) = ui::hit_test(app, rect, mouse.column, mouse.row) else {
+        return Ok(());
+    };
+    let pressed = matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left));
+    let position = Position {
+        x: mouse.column,
+        y: mouse.row,
+    };
+    let tab_target = if app.mode == AppMode::Normal && pressed {
+        clicked_tab(app, &item, position)
+    } else {
+        None
+    };
+    let clicked_disclosure = pressed
+        && item
+            .disclosure_rect
+            .is_some_and(|disclosure| disclosure.contains(position));
+    app.selected_item = Some(item.id);
+    if clicked_disclosure {
+        app.toggle_selected_row()?;
+    }
+    if let Some((group_id, index)) = tab_target {
+        app.activate_tab(group_id, index)?;
+    }
+
+    if matches!(app.mode, AppMode::Fullscreen | AppMode::FullscreenInspect) {
+        app.mode = AppMode::FullscreenInspect;
+        place_cursor_at_column(app, item.rect, mouse.column);
+    }
+    Ok(())
+}
+
+/// The tab group and tab index under `position`, when `item` is a tab bar.
+fn clicked_tab(
+    app: &AppState,
+    item: &ui::DashboardRect,
+    position: Position,
+) -> Option<(TabGroupId, usize)> {
+    let ui::DashboardRectKind::Tabs { group_id, depth } = item.kind else {
+        return None;
+    };
+    let group = app.layout.tabs(group_id)?;
+    let titles = group
+        .tabs
+        .iter()
+        .map(|tab| tab.title.clone())
+        .collect::<Vec<_>>();
+    let geometry = ui::tab_bar_geometry(item.rect, &titles, group.active, depth);
+    ui::tab_at(&geometry, position).map(|index| (group_id, index))
+}
+
+/// Moves the inspect cursor to the time at `column` in the chart of `rect`.
+fn place_cursor_at_column(app: &mut AppState, rect: Rect, column: u16) {
+    let chart_width = rect.width.saturating_sub(2) as f64;
+    if chart_width > 0.0 {
+        let relative_x = (column.saturating_sub(rect.x + 1)) as f64;
+        let fraction = (relative_x / chart_width).clamp(0.0, 1.0);
+        let (start_ts, _) = app.time_bounds();
+        app.cursor_x = Some(start_ts + fraction * app.range.as_secs_f64());
     }
 }
 
@@ -361,6 +362,10 @@ async fn handle_normal_key(
     terminal_size: Size,
     app: &mut AppState,
 ) -> Result<InputAction> {
+    if handle_selection_key(key, app)? {
+        ensure_selected_item_visible(terminal_size, app);
+        return Ok(InputAction::Redraw);
+    }
     let action = match key.code {
         KeyCode::Char('f') if app.selected_panel_index().is_some() => {
             app.mode = AppMode::Fullscreen;
@@ -369,49 +374,6 @@ async fn handle_normal_key(
         KeyCode::Char('v') if app.selected_panel_index().is_some() => {
             app.mode = AppMode::Inspect;
             app.center_cursor();
-            InputAction::Redraw
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            app.select_previous_item();
-            ensure_selected_item_visible(terminal_size, app);
-            InputAction::Redraw
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            app.select_next_item();
-            ensure_selected_item_visible(terminal_size, app);
-            InputAction::Redraw
-        }
-        KeyCode::Enter | KeyCode::Char(' ') if key.modifiers.is_empty() => {
-            if app.selected_tab_group_id().is_some() {
-                app.enter_selected_tab();
-            } else {
-                app.toggle_selected_row()?;
-            }
-            ensure_selected_item_visible(terminal_size, app);
-            InputAction::Redraw
-        }
-        KeyCode::Left if key.modifiers.is_empty() => {
-            if app.selected_tab_group_id().is_some() {
-                app.move_selected_tab(-1)?;
-            } else {
-                app.set_selected_row_collapsed(true)?;
-            }
-            ensure_selected_item_visible(terminal_size, app);
-            InputAction::Redraw
-        }
-        KeyCode::Right if key.modifiers.is_empty() => {
-            if app.selected_tab_group_id().is_some() {
-                app.move_selected_tab(1)?;
-            } else {
-                app.set_selected_row_collapsed(false)?;
-            }
-            ensure_selected_item_visible(terminal_size, app);
-            InputAction::Redraw
-        }
-        KeyCode::Tab | KeyCode::BackTab if app.dashboards.is_some() => {
-            let direction = if key.code == KeyCode::BackTab { -1 } else { 1 };
-            app.cycle_dashboard(direction)?;
-            ensure_selected_item_visible(terminal_size, app);
             InputAction::Redraw
         }
         KeyCode::PageUp => {
@@ -449,63 +411,54 @@ async fn handle_normal_key(
     Ok(action)
 }
 
+/// Moves the selection, opens and closes rows, or changes the tab or
+/// dashboard. Returns `false` when `key` does none of these.
+fn handle_selection_key(key: KeyEvent, app: &mut AppState) -> Result<bool> {
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => app.select_previous_item(),
+        KeyCode::Down | KeyCode::Char('j') => app.select_next_item(),
+        KeyCode::Enter | KeyCode::Char(' ') if key.modifiers.is_empty() => {
+            if app.selected_tab_group_id().is_some() {
+                app.enter_selected_tab();
+            } else {
+                app.toggle_selected_row()?;
+            }
+        }
+        KeyCode::Left | KeyCode::Right if key.modifiers.is_empty() => {
+            let left = key.code == KeyCode::Left;
+            if app.selected_tab_group_id().is_some() {
+                app.move_selected_tab(if left { -1 } else { 1 })?;
+            } else {
+                app.set_selected_row_collapsed(left)?;
+            }
+        }
+        KeyCode::Tab | KeyCode::BackTab if app.dashboards.is_some() => {
+            let direction = if key.code == KeyCode::BackTab { -1 } else { 1 };
+            app.cycle_dashboard(direction)?;
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
 fn ensure_selected_item_visible(terminal_size: Size, app: &mut AppState) {
     let area = Rect::new(0, 0, terminal_size.width, terminal_size.height);
     ui::scroll_selected_into_view(area, app);
 }
 
 async fn handle_shared_keys(key: KeyEvent, app: &mut AppState) -> Result<SharedKeyResult> {
+    if shift_time_window(key, app) {
+        app.start_refresh();
+        return Ok(SharedKeyResult::Handled);
+    }
     match key.code {
         KeyCode::Char('q') => Ok(SharedKeyResult::Quit),
         KeyCode::Char('r') | KeyCode::Char('R') => {
             app.reload();
             Ok(SharedKeyResult::Handled)
         }
-        KeyCode::Char('+') => {
-            app.zoom_out();
-            app.start_refresh();
-            Ok(SharedKeyResult::Handled)
-        }
-        KeyCode::Char('-') => {
-            app.zoom_in();
-            app.start_refresh();
-            Ok(SharedKeyResult::Handled)
-        }
-        KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::SHIFT) => {
-            app.pan_left();
-            app.start_refresh();
-            Ok(SharedKeyResult::Handled)
-        }
-        KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
-            app.pan_left();
-            app.start_refresh();
-            Ok(SharedKeyResult::Handled)
-        }
-        KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::SHIFT) => {
-            app.pan_right();
-            app.start_refresh();
-            Ok(SharedKeyResult::Handled)
-        }
-        KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
-            app.pan_right();
-            app.start_refresh();
-            Ok(SharedKeyResult::Handled)
-        }
-        KeyCode::Char('0') => {
-            app.reset_to_live();
-            app.start_refresh();
-            Ok(SharedKeyResult::Handled)
-        }
         KeyCode::Char('y') => {
-            if let Some(panel) = app
-                .selected_panel_index()
-                .and_then(|index| app.panels.get_mut(index))
-            {
-                panel.y_axis_mode = match panel.y_axis_mode {
-                    YAxisMode::Auto => YAxisMode::ZeroBased,
-                    YAxisMode::ZeroBased => YAxisMode::Auto,
-                };
-            }
+            toggle_selected_y_axis(app);
             Ok(SharedKeyResult::Handled)
         }
         KeyCode::Char('g') => {
@@ -513,6 +466,34 @@ async fn handle_shared_keys(key: KeyEvent, app: &mut AppState) -> Result<SharedK
             Ok(SharedKeyResult::Handled)
         }
         _ => Ok(SharedKeyResult::Unhandled),
+    }
+}
+
+/// Zooms, pans or goes back to live for the keys that do so.
+/// Returns `false` when `key` does none of these.
+fn shift_time_window(key: KeyEvent, app: &mut AppState) -> bool {
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    match key.code {
+        KeyCode::Char('+') => app.zoom_out(),
+        KeyCode::Char('-') => app.zoom_in(),
+        KeyCode::Char('[') | KeyCode::Left if shift => app.pan_left(),
+        KeyCode::Char(']') | KeyCode::Right if shift => app.pan_right(),
+        KeyCode::Char('0') => app.reset_to_live(),
+        _ => return false,
+    }
+    true
+}
+
+/// Switches the y-axis mode of the selected panel.
+fn toggle_selected_y_axis(app: &mut AppState) {
+    if let Some(panel) = app
+        .selected_panel_index()
+        .and_then(|index| app.panels.get_mut(index))
+    {
+        panel.y_axis_mode = match panel.y_axis_mode {
+            YAxisMode::Auto => YAxisMode::ZeroBased,
+            YAxisMode::ZeroBased => YAxisMode::Auto,
+        };
     }
 }
 

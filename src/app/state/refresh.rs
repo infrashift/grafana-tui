@@ -14,7 +14,9 @@ use crate::annotations::{AnnotationProvider, AnnotationRefreshContext, ProviderP
 use crate::app::QueryMode;
 use crate::app::data::{QueryIntervals, custom_legend, downsample, expand_expr, format_legend};
 use crate::app::template::{ResolvedSections, Scope, SectionInstance, scoped_vars};
-use crate::app::variables::{VariableReport, VariableUpdate, refresh_query_variables};
+use crate::app::variables::{
+    VariableQueryContext, VariableReport, VariableUpdate, refresh_query_variables,
+};
 use crate::grafana::TemplateQueryVar;
 use crate::prom;
 use futures::StreamExt;
@@ -221,12 +223,69 @@ struct QueryWindow {
     end_ts: i64,
 }
 
+impl QueryWindow {
+    /// The context that query variables resolve in for this window.
+    fn variable_context(self, prometheus: &prom::PromClient) -> VariableQueryContext<'_> {
+        VariableQueryContext {
+            prometheus,
+            range: self.range,
+            intervals: QueryIntervals::new(self.range, self.min_step, self.scrape_interval, None),
+            end_ts: self.end_ts,
+        }
+    }
+}
+
 /// A panel's queries, copied so they can run in the background.
 #[derive(Debug)]
 struct PanelJob {
     index: usize,
     panel: PanelState,
     scope: Option<Scope>,
+}
+
+/// The first stage of a refresh, copied so it can run in the background.
+#[derive(Debug)]
+struct FirstStage {
+    generation: u64,
+    jobs: Vec<PanelJob>,
+    seq: u64,
+    epoch: u64,
+    window: QueryWindow,
+    update: VariableUpdate,
+    prometheus: prom::PromClient,
+    query_vars: Vec<TemplateQueryVar>,
+    vars: HashMap<String, String>,
+    var_values: HashMap<String, Vec<String>>,
+}
+
+impl FirstStage {
+    /// Resolves the query variables, then fetches the visible panels' data.
+    async fn resolve_and_fetch(mut self) -> RefreshMessage {
+        let context = self.window.variable_context(&self.prometheus);
+        let report = refresh_query_variables(
+            &context,
+            &self.query_vars,
+            self.update,
+            &mut self.vars,
+            &mut self.var_values,
+        )
+        .await;
+        let (fetches, counts) =
+            fetch_panels(&self.prometheus, self.window, &self.vars, self.jobs).await;
+        RefreshMessage::Data {
+            generation: self.generation,
+            vars: self.vars,
+            var_values: self.var_values,
+            report,
+            batch: PanelBatch {
+                seq: self.seq,
+                epoch: self.epoch,
+                pipeline: None,
+                fetches,
+                counts,
+            },
+        }
+    }
 }
 
 impl AppState {
@@ -238,49 +297,23 @@ impl AppState {
         self.refreshes.generation += 1;
         let generation = self.refreshes.generation;
         let variables_window = (self.range, self.time_offset);
-        let variable_update = match self.refreshes.variables_window {
-            None => VariableUpdate::Load,
-            Some(_) if self.refreshes.load_dashboard => VariableUpdate::Load,
-            Some(window) if window != variables_window || self.refreshes.reload_requested => {
-                VariableUpdate::TimeRangeChange
-            }
-            Some(_) => VariableUpdate::Tick,
-        };
+        let variable_update = self.variable_update(variables_window);
         let end_ts = chrono::Utc::now().timestamp() - self.time_offset.as_secs() as i64;
         let window = self.query_window(end_ts);
         let fetched = self.panels_to_fetch();
-        let jobs = self.panel_jobs(&fetched);
-        let seq = self.refreshes.next_seq();
-        let epoch = self.refreshes.layout_epoch;
-        let prometheus = self.prometheus.clone();
-        let query_vars = self.query_vars.clone();
-        let mut vars = self.vars.clone();
-        let mut var_values = self.var_values.clone();
-        let abort = self.refreshes.tasks.spawn(async move {
-            let report = refresh_variables(
-                &prometheus,
-                &query_vars,
-                variable_update,
-                window,
-                &mut vars,
-                &mut var_values,
-            )
-            .await;
-            let (fetches, counts) = fetch_panels(&prometheus, window, &vars, jobs).await;
-            RefreshMessage::Data {
-                generation,
-                vars,
-                var_values,
-                report,
-                batch: PanelBatch {
-                    seq,
-                    epoch,
-                    pipeline: None,
-                    fetches,
-                    counts,
-                },
-            }
-        });
+        let stage = FirstStage {
+            generation,
+            jobs: self.panel_jobs(&fetched),
+            seq: self.refreshes.next_seq(),
+            epoch: self.refreshes.layout_epoch,
+            window,
+            update: variable_update,
+            prometheus: self.prometheus.clone(),
+            query_vars: self.query_vars.clone(),
+            vars: self.vars.clone(),
+            var_values: self.var_values.clone(),
+        };
+        let abort = self.refreshes.tasks.spawn(stage.resolve_and_fetch());
         self.refreshes.pipeline = Some(Pipeline {
             generation,
             started: Instant::now(),
@@ -297,6 +330,18 @@ impl AppState {
         self.start_annotation_refresh(AnnotationRefreshContext::from_unix_window(
             end_ts, self.range,
         ));
+    }
+
+    /// Why variables resolve in a refresh of `variables_window`.
+    fn variable_update(&self, variables_window: (Duration, Duration)) -> VariableUpdate {
+        match self.refreshes.variables_window {
+            None => VariableUpdate::Load,
+            Some(_) if self.refreshes.load_dashboard => VariableUpdate::Load,
+            Some(window) if window != variables_window || self.refreshes.reload_requested => {
+                VariableUpdate::TimeRangeChange
+            }
+            Some(_) => VariableUpdate::Tick,
+        }
     }
 
     /// Refreshes at the user's request, re-querying variables that refresh
@@ -693,29 +738,6 @@ impl AppState {
     }
 }
 
-async fn refresh_variables(
-    prometheus: &prom::PromClient,
-    query_vars: &[TemplateQueryVar],
-    update: VariableUpdate,
-    window: QueryWindow,
-    vars: &mut HashMap<String, String>,
-    var_values: &mut HashMap<String, Vec<String>>,
-) -> VariableReport {
-    let intervals =
-        QueryIntervals::new(window.range, window.min_step, window.scrape_interval, None);
-    refresh_query_variables(
-        prometheus,
-        query_vars,
-        update,
-        window.range,
-        intervals,
-        window.end_ts,
-        vars,
-        var_values,
-    )
-    .await
-}
-
 /// Resolves the query variables of every row and tab copy that defines
 /// them, expanded with the variables around that copy. Copies shown for the
 /// first time resolve as on load.
@@ -728,8 +750,7 @@ async fn resolve_sections(
     window: QueryWindow,
 ) -> VariableReport {
     let mut report = VariableReport::default();
-    let intervals =
-        QueryIntervals::new(window.range, window.min_step, window.scrape_interval, None);
+    let context = window.variable_context(prometheus);
     for instance in instances {
         let key = (instance.id, instance.scope.clone());
         let mut vars = scoped_vars(vars, Some(&instance.scope)).into_owned();
@@ -738,12 +759,9 @@ async fn resolve_sections(
             None => (VariableUpdate::Load, instance.selected.clone()),
         };
         let instance_report = refresh_query_variables(
-            prometheus,
+            &context,
             &instance.queries,
             update,
-            window.range,
-            intervals,
-            window.end_ts,
             &mut vars,
             &mut selected,
         )
@@ -787,129 +805,192 @@ async fn fetch_panel(
     window: QueryWindow,
     vars: &HashMap<String, String>,
 ) -> (PanelFetch, FetchCounts) {
-    let QueryWindow {
-        range,
-        min_step,
-        scrape_interval,
-        end_ts,
-    } = window;
-    let mut panel_results = Vec::new();
-    let mut last_url = None;
-    let mut errors = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-    let mut infos: Vec<String> = Vec::new();
-    let mut counts = FetchCounts::default();
-
+    let mut results = PanelResults::default();
     for (i, expr) in p.exprs.iter().enumerate() {
+        let query = PanelQuery::expand(p, i, expr, window, vars);
+        results.url = Some(query.url(prometheus));
+        match query.execute(prometheus).await {
+            Ok(result) => results.add_result(&query, result),
+            Err(e) => results.add_error(&query, &e),
+        }
+    }
+    results.into_fetch(index)
+}
+
+/// One panel query, expanded with the variables and the window.
+struct PanelQuery<'a> {
+    expr: String,
+    legend: Option<&'a str>,
+    mode: QueryMode,
+    start_ts: i64,
+    end_ts: i64,
+    step: Duration,
+}
+
+impl<'a> PanelQuery<'a> {
+    /// Expands query `i` of panel `p`, whose expression is `expr`.
+    fn expand(
+        p: &'a PanelState,
+        i: usize,
+        expr: &str,
+        window: QueryWindow,
+        vars: &HashMap<String, String>,
+    ) -> Self {
+        let QueryWindow {
+            range,
+            min_step,
+            scrape_interval,
+            end_ts,
+        } = window;
         let intervals = p.query_intervals(i, range, min_step, scrape_interval, vars);
-        let step = intervals.step;
-        let expr_expanded = expand_expr(expr, range, intervals, vars);
-        let legend_fmt = custom_legend(p.legends.get(i).and_then(Option::as_ref));
-        let query_mode = p.query_mode(i);
+        Self {
+            expr: expand_expr(expr, range, intervals, vars),
+            legend: custom_legend(p.legends.get(i).and_then(Option::as_ref)),
+            mode: p.query_mode(i),
+            // Calculate start/end for URL display purposes
+            start_ts: end_ts - (range.as_secs() as i64),
+            end_ts,
+            step: intervals.step,
+        }
+    }
 
-        // Calculate start/end for URL display purposes
-        let start_ts = end_ts - (range.as_secs() as i64);
-
-        let url = match query_mode {
+    /// The URL of this query, which the panel shows.
+    fn url(&self, prometheus: &prom::PromClient) -> String {
+        match self.mode {
             QueryMode::Range => {
-                prometheus.build_query_range_url(&expr_expanded, start_ts, end_ts, step)
+                prometheus.build_query_range_url(&self.expr, self.start_ts, self.end_ts, self.step)
             }
-            QueryMode::Instant => prometheus.build_query_url(&expr_expanded, end_ts),
-        };
-        last_url = Some(url);
+            QueryMode::Instant => prometheus.build_query_url(&self.expr, self.end_ts),
+        }
+    }
 
-        let query_result = match query_mode {
+    /// Sends this query to Prometheus.
+    async fn execute(&self, prometheus: &prom::PromClient) -> anyhow::Result<prom::QueryResult> {
+        match self.mode {
             QueryMode::Range => {
                 prometheus
-                    .query_range(&expr_expanded, start_ts, end_ts, step)
+                    .query_range(&self.expr, self.start_ts, self.end_ts, self.step)
                     .await
             }
             QueryMode::Instant => {
                 prometheus
-                    .query_instant_series(&expr_expanded, end_ts)
+                    .query_instant_series(&self.expr, self.end_ts)
                     .await
-            }
-        };
-
-        match query_result {
-            Ok(result) => {
-                counts.succeeded += 1;
-                for warning in result.warnings {
-                    if !warnings.contains(&warning) {
-                        warnings.push(warning);
-                    }
-                }
-                for info in result.infos {
-                    if !infos.contains(&info) {
-                        infos.push(info);
-                    }
-                }
-                for s in result.series {
-                    // NaN and ±Inf show as no value, as they cannot be
-                    // scaled for gauges or compared with thresholds.
-                    let latest_val = s
-                        .values
-                        .last()
-                        .and_then(|(_, v)| v.parse::<f64>().ok())
-                        .filter(|v| v.is_finite());
-                    let legend_base = if let Some(fmt) = legend_fmt {
-                        format_legend(fmt, &s.metric)
-                    } else if s.metric.is_empty() {
-                        expr_expanded.clone()
-                    } else {
-                        let mut labels: Vec<_> = s
-                            .metric
-                            .iter()
-                            .map(|(k, v)| format!("{}=\"{}\"", k, v))
-                            .collect();
-                        labels.sort();
-                        format!("{} {{{}}}", expr_expanded, labels.join(", "))
-                    };
-
-                    let mut pts = Vec::with_capacity(s.values.len());
-                    for (ts, val) in s.values {
-                        if let Ok(y) = val.parse::<f64>()
-                            && y.is_finite()
-                        {
-                            pts.push((ts, y));
-                        }
-                    }
-                    panel_results.push(SeriesView {
-                        name: legend_base,
-                        value: latest_val,
-                        points: downsample(pts, 200),
-                        visible: true,
-                    });
-                }
-            }
-            Err(e) => {
-                if prom::is_transport_error(&e) {
-                    counts.unreachable += 1;
-                    if counts.tls_failure.is_none() {
-                        counts.tls_failure = prom::tls_failure_cause(&e).map(str::to_string);
-                    }
-                }
-                let query_name = match query_mode {
-                    QueryMode::Range => "query_range",
-                    QueryMode::Instant => "query",
-                };
-                errors.push(format!(
-                    "{} failed for `{}`: {}",
-                    query_name, expr_expanded, e
-                ));
             }
         }
     }
-    let fetch = PanelFetch {
-        index,
-        series: panel_results,
-        url: last_url,
-        errors,
-        warnings,
-        infos,
-        succeeded: counts.succeeded > 0,
-    };
-    (fetch, counts)
+
+    /// The name of the Prometheus API that this query uses.
+    fn api_name(&self) -> &'static str {
+        match self.mode {
+            QueryMode::Range => "query_range",
+            QueryMode::Instant => "query",
+        }
+    }
+
+    /// Converts one result series to a view, named by the legend format.
+    fn series_view(&self, s: prom::Series) -> SeriesView {
+        // NaN and ±Inf show as no value, as they cannot be
+        // scaled for gauges or compared with thresholds.
+        let latest_val = s
+            .values
+            .last()
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite());
+        let name = self.legend_name(&s.metric);
+        let mut pts = Vec::with_capacity(s.values.len());
+        for (ts, val) in s.values {
+            if let Ok(y) = val.parse::<f64>()
+                && y.is_finite()
+            {
+                pts.push((ts, y));
+            }
+        }
+        SeriesView {
+            name,
+            value: latest_val,
+            points: downsample(pts, 200),
+            visible: true,
+        }
+    }
+
+    /// The legend of a series with the labels `metric`.
+    fn legend_name(&self, metric: &HashMap<String, String>) -> String {
+        if let Some(fmt) = self.legend {
+            format_legend(fmt, metric)
+        } else if metric.is_empty() {
+            self.expr.clone()
+        } else {
+            let mut labels: Vec<_> = metric
+                .iter()
+                .map(|(k, v)| format!("{}=\"{}\"", k, v))
+                .collect();
+            labels.sort();
+            format!("{} {{{}}}", self.expr, labels.join(", "))
+        }
+    }
+}
+
+/// The results of a panel's queries, collected in query order.
+#[derive(Debug, Default)]
+struct PanelResults {
+    series: Vec<SeriesView>,
+    url: Option<String>,
+    errors: Vec<String>,
+    warnings: Vec<String>,
+    infos: Vec<String>,
+    counts: FetchCounts,
+}
+
+impl PanelResults {
+    /// Adds the series, warnings and infos of a successful query.
+    fn add_result(&mut self, query: &PanelQuery<'_>, result: prom::QueryResult) {
+        self.counts.succeeded += 1;
+        push_new_messages(&mut self.warnings, result.warnings);
+        push_new_messages(&mut self.infos, result.infos);
+        for s in result.series {
+            self.series.push(query.series_view(s));
+        }
+    }
+
+    /// Adds the error of a failed query, and counts an unreachable backend.
+    fn add_error(&mut self, query: &PanelQuery<'_>, e: &anyhow::Error) {
+        if prom::is_transport_error(e) {
+            self.counts.unreachable += 1;
+            if self.counts.tls_failure.is_none() {
+                self.counts.tls_failure = prom::tls_failure_cause(e).map(str::to_string);
+            }
+        }
+        self.errors.push(format!(
+            "{} failed for `{}`: {}",
+            query.api_name(),
+            query.expr,
+            e
+        ));
+    }
+
+    /// The fetch of panel `index`, with the query counts.
+    fn into_fetch(self, index: usize) -> (PanelFetch, FetchCounts) {
+        let fetch = PanelFetch {
+            index,
+            series: self.series,
+            url: self.url,
+            errors: self.errors,
+            warnings: self.warnings,
+            infos: self.infos,
+            succeeded: self.counts.succeeded > 0,
+        };
+        (fetch, self.counts)
+    }
+}
+
+/// Appends each message of `messages` that `target` does not contain yet.
+fn push_new_messages(target: &mut Vec<String>, messages: Vec<String>) {
+    for message in messages {
+        if !target.contains(&message) {
+            target.push(message);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -299,50 +299,40 @@ impl PanelState {
 
     pub(crate) fn get_color_for_value(&self, val: f64) -> Option<Color> {
         let thresholds = self.thresholds.as_ref()?;
-
-        let mut matched_color = None;
-
-        match thresholds.mode {
-            ThresholdMode::Absolute => {
-                for step in &thresholds.steps {
-                    if let Some(step_val) = step.value {
-                        if val >= step_val {
-                            matched_color = Some(step.color);
-                        }
-                    } else {
-                        // Null value represents the base step (lowest possible)
-                        if matched_color.is_none() {
-                            matched_color = Some(step.color);
-                        }
-                    }
-                }
-            }
-            ThresholdMode::Percentage => {
-                let min = self.min.unwrap_or(0.0);
-                let max = self.max.unwrap_or(100.0);
-                let range = max - min;
-
-                let pct = if range > 0.0 {
-                    (val - min) / range * 100.0
-                } else {
-                    0.0
-                };
-
-                for step in &thresholds.steps {
-                    if let Some(step_val) = step.value {
-                        if pct >= step_val {
-                            matched_color = Some(step.color);
-                        }
-                    } else {
-                        if matched_color.is_none() {
-                            matched_color = Some(step.color);
-                        }
-                    }
-                }
-            }
-        }
-        matched_color
+        let value = match thresholds.mode {
+            ThresholdMode::Absolute => val,
+            ThresholdMode::Percentage => self.percent_of_range(val),
+        };
+        threshold_color(&thresholds.steps, value)
     }
+
+    /// Where `val` lies between the panel's min and max, from 0 to 100.
+    fn percent_of_range(&self, val: f64) -> f64 {
+        let min = self.min.unwrap_or(0.0);
+        let max = self.max.unwrap_or(100.0);
+        let range = max - min;
+
+        if range > 0.0 {
+            (val - min) / range * 100.0
+        } else {
+            0.0
+        }
+    }
+}
+
+/// The color of the last step that `value` reaches. A step without a value is
+/// the base step, which applies when no step before it matched.
+fn threshold_color(steps: &[ThresholdStep], value: f64) -> Option<Color> {
+    let mut matched_color = None;
+    for step in steps {
+        match step.value {
+            Some(step_val) if value >= step_val => matched_color = Some(step.color),
+            Some(_) => {}
+            None if matched_color.is_none() => matched_color = Some(step.color),
+            None => {}
+        }
+    }
+    matched_color
 }
 
 /// Application mode.
@@ -362,6 +352,20 @@ pub(crate) enum AppMode {
 pub(crate) struct ThemePicker {
     pub(crate) selected: usize,
     pub(crate) original: Theme,
+}
+
+/// The values that `AppState::new` receives. The other fields get defaults.
+struct StateParts {
+    prometheus: prom::PromClient,
+    range: Duration,
+    min_step: Duration,
+    refresh_every: Duration,
+    title: String,
+    panels: Vec<PanelState>,
+    skipped_panels: usize,
+    theme: Theme,
+    threshold_marker: String,
+    export: ExportOptions,
 }
 
 #[derive(Debug)]
@@ -490,23 +494,39 @@ impl AppState {
         threshold_marker: String,
         export: ExportOptions,
     ) -> Self {
-        let layout = DashboardLayout::flat(panels.len());
+        Self::from_parts(StateParts {
+            prometheus,
+            range,
+            min_step,
+            refresh_every,
+            title,
+            panels,
+            skipped_panels,
+            theme,
+            threshold_marker,
+            export,
+        })
+    }
+
+    /// Builds the state from the values of `new`, and gives the other fields their defaults.
+    fn from_parts(parts: StateParts) -> Self {
+        let layout = DashboardLayout::flat(parts.panels.len());
         let selected_item = layout.first_visible();
         Self {
-            prometheus,
+            prometheus: parts.prometheus,
             annotations: crate::annotations::AnnotationState::from_path(None),
             rendered_annotation_cluster: None,
             annotation_modal: None,
-            range,
-            min_step,
+            range: parts.range,
+            min_step: parts.min_step,
             scrape_interval: crate::app::data::DEFAULT_SCRAPE_INTERVAL,
-            refresh_every,
-            panels,
-            last_refresh: Instant::now() - refresh_every,
+            refresh_every: parts.refresh_every,
+            panels: parts.panels,
+            last_refresh: Instant::now() - parts.refresh_every,
             refreshes: refresh::RefreshTasks::default(),
             view_end_ts: chrono::Utc::now().timestamp(),
             vertical_scroll: 0,
-            title,
+            title: parts.title,
             debug_bar: false,
             vars: HashMap::new(),
             var_values: HashMap::new(),
@@ -521,10 +541,10 @@ impl AppState {
             section_instances: Vec::new(),
             section_values: ResolvedSections::new(),
             query_vars: Vec::new(),
-            skipped_panels,
+            skipped_panels: parts.skipped_panels,
             layout,
             selected_item,
-            theme,
+            theme: parts.theme,
             themes: crate::theme::catalog(&[]),
             theme_picker: None,
             time_offset: Duration::from_secs(0),
@@ -532,11 +552,11 @@ impl AppState {
             search_query: String::new(),
             search_results: Vec::new(),
             cursor_x: None,
-            threshold_marker,
+            threshold_marker: parts.threshold_marker,
             autogrid_enabled: true,
             autogrid_color: None,
             transparent_background: false,
-            export,
+            export: parts.export,
             recording: None,
             export_status: None,
             dashboards: None,
