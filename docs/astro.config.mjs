@@ -45,6 +45,7 @@ export default defineConfig({
           items: [
             { label: 'Grafana Compatibility', slug: 'grafana-compatibility' },
             { label: 'Troubleshooting', slug: 'troubleshooting' },
+            { label: 'Limits', slug: 'limits' },
           ],
         },
       ],

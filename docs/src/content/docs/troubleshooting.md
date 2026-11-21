@@ -3,6 +3,9 @@ title: Troubleshooting
 description: Diagnose connection, TLS, variable, and rendering problems.
 ---
 
+For the limits on files, variables, queries, series and layouts, and for the
+messages at each limit, see [Limits](/grafana-tui/limits/).
+
 ## Prometheus Connection Refused
 
 grafana-tui continues to respond to keys while Prometheus is slow or down. The
