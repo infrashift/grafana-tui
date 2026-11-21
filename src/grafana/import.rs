@@ -138,8 +138,8 @@ fn import_variable(out: &mut DashboardImport, variable: model::Variable) {
     let selected = record_selection(out, &variable, select_all, regex_values);
     let queries = out.query_vars.len();
 
-    // A `Never` refresh keeps the saved options, as Grafana does; only a
-    // variable saved without any is resolved once so the dashboard works.
+    // A `Never` refresh keeps the saved options, as Grafana does. Only a variable
+    // with no saved options resolves once, so that the dashboard works.
     let saved = if select_all {
         !variable.options.is_empty()
     } else {
@@ -149,8 +149,8 @@ fn import_variable(out: &mut DashboardImport, variable: model::Variable) {
         Some(model::VariableRefresh::Never) => !saved,
         _ => true,
     };
-    // An explicit multi-value selection is kept as chosen; otherwise query
-    // variables resolve against Prometheus like Grafana does on load.
+    // The import keeps an explicit multi-value selection as the user chose it.
+    // Otherwise query variables resolve against Prometheus, as Grafana does on load.
     if variable.kind.as_deref() == Some("query")
         && resolves
         && selected.len() <= 1
@@ -191,7 +191,7 @@ fn record_selection(
 ) -> Vec<String> {
     let mut selected = selected_values(variable.current.as_ref());
     if selected.is_empty() && !select_all && variable.kind.as_deref() != Some("query") {
-        // Grafana selects the first option when nothing is saved.
+        // Grafana selects the first option when the dashboard has no saved value.
         selected.extend(variable.options.first().cloned());
     }
     if select_all {
@@ -237,8 +237,8 @@ fn record_selection(
     selected
 }
 
-/// Imports the variables a row or tab defines, with the same selection and
-/// formatting rules as dashboard variables.
+/// Imports the variables that a row or tab defines. The selection and format
+/// rules are the same as for dashboard variables.
 fn import_section_variables(variables: Vec<model::Variable>) -> Vec<SectionVariable> {
     let names: Vec<String> = variables
         .iter()
@@ -278,8 +278,8 @@ fn import_section_variables(variables: Vec<model::Variable>) -> Vec<SectionVaria
     sections
 }
 
-/// Non-empty values selected by a variable's `current` value, or its text as a
-/// fallback, excluding Grafana's `$__all` marker.
+/// Non-empty values that a variable's `current` value selects, or its text as a
+/// fallback. The result does not include Grafana's `$__all` marker.
 fn selected_values(current: Option<&model::VariableCurrent>) -> Vec<String> {
     let Some(current) = current else {
         return Vec::new();
@@ -318,7 +318,7 @@ fn selected_values(current: Option<&model::VariableCurrent>) -> Vec<String> {
     selected
 }
 
-/// Whether `All` is selected: the value is Grafana's `$__all` marker, or, when
+/// Whether the variable selects `All`: the value is Grafana's `$__all` marker, or, when
 /// there is no value, the text says `All`. An explicit value list wins over text.
 fn current_is_all(current: Option<&model::VariableCurrent>) -> bool {
     let all = current.is_some_and(|current| match current.value.as_ref() {
@@ -901,8 +901,8 @@ fn register_row(
         !out.sections.contains_key(&SectionId::Row(id)),
         "a new row has no section"
     );
-    // A row's variables apply to the row itself, so they are known
-    // before its own repeat is checked.
+    // A row's variables apply to the row itself, so the import knows them
+    // before it checks the row's own repeat.
     let variables = std::mem::take(&mut row.variables);
     if !variables.is_empty() {
         ids.variable_names
@@ -984,8 +984,8 @@ fn import_auto_grid(
 
 /// Grafana CSS pixels per terminal column, used to size auto grid columns.
 ///
-/// This is Grafana's 8px design-system spacing unit, close to a typical monospace
-/// cell width, so column counts match what Grafana shows at a similar pixel width.
+/// This is Grafana's 8px design-system space unit, close to a typical monospace
+/// cell width. So column counts match what Grafana shows at a similar pixel width.
 const AUTO_GRID_PX_PER_COLUMN: f64 = 8.0;
 /// Height of one fixed-grid unit in Grafana: a 30px cell plus its 8px margin.
 const GRID_UNIT_PX: f64 = 38.0;
@@ -1055,8 +1055,8 @@ impl LayoutIds {
         Ok(())
     }
 
-    /// Keeps a repeat whose variable the dashboard defines; otherwise the item is
-    /// shown once, as Grafana does, with a diagnostic.
+    /// Keeps a repeat whose variable the dashboard defines. Otherwise the import
+    /// shows the item once, as Grafana does, with a diagnostic.
     fn checked_repeat(
         &self,
         repeat: Option<model::Repeat>,
@@ -1086,7 +1086,7 @@ impl LayoutIds {
 }
 
 /// Keeps a min interval that is a duration or references a variable, which
-/// resolves when queries run; anything else is dropped with a diagnostic.
+/// resolves when queries run. The import drops anything else with a diagnostic.
 fn checked_min_interval(
     interval: Option<model::MinInterval>,
     out: &mut DashboardImport,

@@ -41,8 +41,8 @@ const PANEL_PADDING: f64 = 12.0;
 const TITLE_HEIGHT: f64 = 28.0;
 const X_LABEL_HEIGHT: f64 = 24.0;
 const LEGEND_HEIGHT: f64 = 28.0;
-/// Advance of a monospace character, in ems, with slack for glyphs such as
-/// `⚠` that a fallback font may draw wider.
+/// The width that a monospace character takes, in ems, with slack for glyphs
+/// such as `⚠` that a fallback font can draw wider.
 const CHAR_ADVANCE: f64 = 0.62;
 /// Distance between the baselines of wrapped error lines.
 const ERROR_LINE_HEIGHT: f64 = 16.0;
@@ -468,7 +468,7 @@ fn render_dashboard_item(app: &AppState, item: &ui::DashboardRect, text: &str, o
     }
 }
 
-/// Draws the tab titles of a tab group. The active tab is bold, and a selected bar is underlined.
+/// Draws the tab titles of a tab group. The active tab is bold, and a selected bar has an underline.
 fn render_tab_group(
     app: &AppState,
     item: &ui::DashboardRect,
@@ -827,7 +827,7 @@ fn render_graph_panel(
     // Area fills remain behind annotations so marker lines stay legible.
     render_area_fills(&graph, out);
     let clusters = render_graph_annotations(app, view.events, plot, graph.x_bounds, out);
-    // Primary data follows annotations to preserve graph-data precedence.
+    // Primary data comes after the annotations, so the graph data stays on top.
     render_series(&graph, out);
     render_cursor(&graph, out);
     render_legend_or_detail(&graph, &clusters, &legend, out);
@@ -1501,8 +1501,8 @@ fn render_bar_gauge_panel(app: &AppState, panel: &PanelState, rect: PlotRect, ou
         !shown.is_empty() && shown.len() <= max_rows,
         "the panel shows one bar or more, up to the row limit"
     );
-    // The name column is as wide as the widest name, up to half the panel,
-    // and the value column as wide as the widest value, up to 30%.
+    // The name column is as wide as the widest name, up to half the panel.
+    // The value column is as wide as the widest value, up to 30%.
     let label_width = shown
         .iter()
         .map(|(series, _)| text_width(&series.name, SMALL_FONT_SIZE) + 8.0)
@@ -1955,7 +1955,7 @@ struct LegendEntry {
     row: usize,
 }
 
-/// Lays legend entries out in rows of `width` pixels, shortening any label
+/// Lays legend entries out in rows of `width` pixels, and cuts short any label
 /// wider than a row. Past `max_rows`, the last row ends with "+N more".
 fn layout_legend(items: Vec<(usize, String)>, width: f64, max_rows: usize) -> LegendLayout {
     let entry_width = |label: &str| LEGEND_SWATCH + text_width(label, SMALL_FONT_SIZE);
@@ -2256,8 +2256,8 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     result.with_context(|| format!("failed to write {}", path.display()))
 }
 
-/// System fonts for PNG rendering, loaded once; scanning them is slow and
-/// recordings render a PNG for every changed frame.
+/// System fonts for PNG export, loaded once. A scan of the fonts is slow, and
+/// recordings make a PNG for every changed frame.
 fn system_fonts() -> Arc<resvg::usvg::fontdb::Database> {
     static FONTS: OnceLock<Arc<resvg::usvg::fontdb::Database>> = OnceLock::new();
     let fonts = Arc::clone(FONTS.get_or_init(|| {
@@ -2336,14 +2336,14 @@ fn text_columns(width: f64, size: f64) -> usize {
     columns
 }
 
-/// Extents of the labels placed along one axis, so that a later label can
-/// give way instead of overprinting one already there.
+/// Extents of the labels placed along one axis. With them, a later label can
+/// give way and not print over a label that is already there.
 #[derive(Default)]
 struct AxisLabels(Vec<[f64; 2]>);
 
 impl AxisLabels {
-    /// Places a label over `[start, end]`, unless it would come within
-    /// `AXIS_LABEL_GAP` of a placed one. Returns whether it was placed.
+    /// Places a label over `[start, end]`, unless it comes within
+    /// `AXIS_LABEL_GAP` of a placed one. Returns true when it places the label.
     fn claim(&mut self, [start, end]: [f64; 2]) -> bool {
         debug_assert!(
             !start.is_infinite() && !end.is_infinite(),
@@ -2382,8 +2382,8 @@ fn fit_text(text: &str, width: f64, size: f64) -> (String, f64) {
     (ui::truncate_title(text, columns), size)
 }
 
-/// Wraps `text` at spaces into at most `max_lines` lines of `columns`
-/// characters, keeping its line breaks and breaking words longer than a line.
+/// Wraps `text` at spaces into at most `max_lines` lines of `columns` characters.
+/// It keeps the line breaks of `text` and breaks words longer than a line.
 /// Text that does not fit ends the last line with `…`.
 fn wrap_text(text: &str, columns: usize, max_lines: usize) -> Vec<String> {
     let mut lines = Vec::new();
@@ -2722,7 +2722,7 @@ mod tests {
         write_atomic(&path, b"second").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"second");
 
-        // Renaming onto a directory fails; the temporary file must not linger.
+        // A rename onto a directory fails. The temporary file must not linger.
         let occupied = dir.join("occupied");
         fs::create_dir_all(occupied.join("inner")).unwrap();
         assert!(write_atomic(&occupied, b"data").is_err());
@@ -3681,7 +3681,7 @@ mod tests {
         let (text, size) = fit_text("0.00 ops/s", 124.0, 28.0);
         assert_eq!(text, "0.00 ops/s");
         assert!((size - 20.0).abs() < 1e-9, "{size}");
-        // Below the small size, the text is cut short instead.
+        // Below the small size, `fit_text` cuts the text short instead.
         let (text, size) = fit_text("0.00 ops/s", 50.0, 28.0);
         assert_eq!((text.as_str(), size), ("0.00 o…", SMALL_FONT_SIZE));
         // Text already at the small size is never enlarged.
@@ -3734,7 +3734,7 @@ mod tests {
         assert!(name.ends_with('…'), "{name}");
         assert!(name.chars().count() as f64 * SMALL_FONT_SIZE * CHAR_ADVANCE <= width);
 
-        // Very narrow: cut short at the small size.
+        // Narrower still: cut short at the small size.
         let svg = render_svg(&app, Rect::new(0, 0, 18, 40));
         let (value, size, _) = stat_value(&svg);
         assert_eq!(size, SMALL_FONT_SIZE, "{svg}");
@@ -3773,7 +3773,7 @@ mod tests {
         );
         assert!(legend.more.is_none());
 
-        // A label wider than the legend is shortened.
+        // `layout_legend` cuts short a label that is wider than the legend.
         let legend = layout_legend(items(&[&"x".repeat(80)]), 200.0, 3);
         assert!(legend.entries[0].label.ends_with('…'));
         assert!(LEGEND_SWATCH + text_width(&legend.entries[0].label, SMALL_FONT_SIZE) <= 200.0);
@@ -3840,7 +3840,7 @@ mod tests {
         ] {
             for cells in [18, 25, 32, 50, 100] {
                 let mut app = test_app_with_panel_type(panel_type);
-                // Three hours ending 9m12s past an hour, so the last hour
+                // Three hours that end 9m12s past an hour, so the last hour
                 // tick falls near the end label.
                 app.range = std::time::Duration::from_secs(3 * 3600);
                 app.view_end_ts = 1_700_002_752;

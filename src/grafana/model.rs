@@ -101,7 +101,7 @@ pub(super) struct Panel {
     pub(super) kind: String,
     pub(super) title: String,
     pub(super) repeat: Option<Repeat>,
-    /// Conditional rendering of the auto grid item holding this panel.
+    /// The `conditionalRendering` of the auto grid item that holds this panel.
     pub(super) condition: Option<ConditionGroup>,
     pub(super) source_path: String,
     pub(super) targets: Vec<Target>,
