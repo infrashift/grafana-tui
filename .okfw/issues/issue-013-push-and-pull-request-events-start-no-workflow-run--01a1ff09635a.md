@@ -25,8 +25,17 @@ Effects:
 - A docs change on `main` does not deploy the docs site.
 - A version tag does not start `release.yml`. `release.yml` now accepts `workflow_dispatch` on a tag ref, and `RELEASE_PROCESS.md` gives the steps.
 
+## Investigation
+On 2026-11-21 an org admin token examined the settings:
+- The org allows Actions for all repositories and all actions. The default workflow token can only read. The free plan has no org rulesets.
+- The repository has Actions on, with all actions. It is public, it is not a fork or a mirror, and it has no webhooks. The three workflows are active, and `ci.yml` has `push` and `pull_request` triggers.
+- GitHub records the push events and the pull request events. All 8 runs of the repository came from `workflow_dispatch`.
+- The other infrashift repositories get runs from push and pull request events, from the same account.
+
+No setting stops the events. The fault is in this repository only. The admin set Actions and the three workflows off and then on again, with the same settings. A push to `main` then tests the result. If no run starts, GitHub Support must examine the repository.
+
 ## Acceptance Criteria
-- [ ] An org admin finds the setting that stops push and pull request events, and changes it.
+- [x] An org admin examines the settings that can stop push and pull request events. No setting stops them.
 - [ ] A push to `main` starts `ci.yml`, and a pull request starts `ci.yml`.
 - [ ] A tag push starts `release.yml`.
 - [ ] `RELEASE_PROCESS.md` drops the steps for a run by hand, or keeps them as a fallback.
