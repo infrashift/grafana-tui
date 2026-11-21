@@ -81,7 +81,7 @@ impl AnnotationState {
     }
 
     /// Takes the provider out so a refresh can run in the background. Returns
-    /// `None` when annotations are disabled or a refresh already holds it.
+    /// `None` when annotations are off or a refresh already holds it.
     pub(crate) fn take_provider(&mut self) -> Option<AnnotationProvider> {
         let taken = match self {
             Self::Active { provider, .. } => provider.take(),
@@ -104,7 +104,7 @@ impl AnnotationState {
     }
 
     /// Returns the provider taken by `take_provider` and applies its result.
-    /// Returns whether a new snapshot was loaded.
+    /// Returns whether it loaded a new snapshot.
     pub(crate) fn finish_refresh(
         &mut self,
         returned: AnnotationProvider,

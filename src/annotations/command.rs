@@ -47,8 +47,8 @@ struct ProcessTasks {
     stderr: JoinHandle<io::Result<Vec<u8>>>,
 }
 
-/// Dropping the handles would detach the pipe tasks, so they are aborted
-/// instead, including when the refresh itself is cancelled.
+/// A drop of the handles detaches the pipe tasks, so this drop aborts them
+/// instead. It also aborts them when the app cancels the refresh itself.
 impl Drop for ProcessTasks {
     fn drop(&mut self) {
         self.stdin.abort();
@@ -57,12 +57,12 @@ impl Drop for ProcessTasks {
     }
 }
 
-/// The provider's process group. The provider runs as the leader of its own
-/// group on Unix, and dropping this kills every process left in the group, so
-/// processes the provider started cannot outlive the refresh, whether it
-/// completes, fails, times out, or is cancelled.
+/// The provider's process group. On Unix, the provider runs as the leader of
+/// its own group. When this value drops, it kills every process left in the
+/// group. So the processes that the provider started cannot outlive the
+/// refresh, when it completes, fails, or times out, or when the app cancels it.
 ///
-/// On other platforms only the direct child is killed, by `kill_on_drop`.
+/// On other platforms, `kill_on_drop` kills only the direct child.
 struct ProcessGroup {
     #[cfg(unix)]
     leader: Option<nix::unistd::Pid>,
@@ -495,9 +495,9 @@ async fn collect_process(
     }))
 }
 
-/// The outcome of writing the request to a provider that exited successfully.
-/// A provider may exit without reading the request, closing the pipe before
-/// it was written; its output still stands.
+/// The outcome when the app writes the request to a provider that exited
+/// successfully. A provider can exit before it reads the request, and close
+/// the pipe before the app writes to it. Its output still stands.
 fn request_delivered(result: io::Result<()>) -> io::Result<()> {
     let delivered = match result {
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
@@ -514,7 +514,7 @@ fn request_delivered(result: io::Result<()>) -> io::Result<()> {
 }
 
 /// Kills the provider's whole process group, then the child, and reaps it.
-/// The group is signalled first, while the unreaped leader still holds the
+/// It signals the group first, while the unreaped leader still holds the
 /// group id.
 async fn kill_and_reap(child: &mut Child, group: &ProcessGroup) -> Result<(), String> {
     group.kill();
@@ -557,8 +557,8 @@ fn append_cleanup(reason: String, cleanup: Result<(), String>) -> String {
     message
 }
 
-/// Gives the pipe tasks a moment to finish; dropping `tasks` then aborts any
-/// still running.
+/// Gives the pipe tasks a moment to finish. The drop of `tasks` then aborts
+/// the tasks that still run.
 async fn join_or_abort_tasks(mut tasks: ProcessTasks) {
     // The refresh already fails on the stdout limit, so the task results add
     // nothing to the report. After a timeout, the drop of `tasks` aborts them.

@@ -174,7 +174,7 @@ enum SourceFingerprint {
     },
 }
 
-/// Largest annotation file read; larger files are rejected with a warning.
+/// The largest annotation file that the provider reads. It rejects a larger file with a warning.
 pub(crate) const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -198,9 +198,9 @@ impl JsonlFileProvider {
         provider
     }
 
-    /// Reads the file, failing once it exceeds `max_bytes`. The limit applies
-    /// to what is read, not the size seen beforehand, so a file growing in the
-    /// meantime is still bounded.
+    /// Reads the file, and fails when it gets past `max_bytes`. The limit applies
+    /// to the bytes that this function reads, not to the size seen before. So the
+    /// limit also holds for a file that grows in the meantime.
     async fn read_limited(&self) -> std::io::Result<Option<String>> {
         use tokio::io::AsyncReadExt;
 

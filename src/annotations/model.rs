@@ -28,7 +28,7 @@ pub(crate) struct AnnotationSnapshot {
     events: Vec<AnnotationEvent>,
 }
 
-/// Most events a snapshot keeps; beyond it the oldest are dropped.
+/// The most events that a snapshot keeps. Past this limit, it drops the oldest.
 pub(crate) const MAX_EVENTS: usize = 100_000;
 
 impl AnnotationSnapshot {

@@ -29,7 +29,7 @@ pub(crate) use tls::TlsFiles;
 #[cfg(test)]
 pub(crate) use tls::tests as tls_tests;
 
-/// Range query results kept for re-use, such as when panning back to a window.
+/// Range query results that the client keeps to use again, such as when the user pans back to a window.
 const CACHE_CAPACITY: usize = 64;
 /// Largest response body read from Prometheus.
 const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
@@ -72,7 +72,7 @@ fn within_limits(result: &QueryResult) -> bool {
 /// A range query's identity: expression, start, end, and step.
 type CacheKey = (String, i64, i64, Duration);
 
-/// Recent range query results, evicting the oldest beyond `CACHE_CAPACITY`.
+/// Recent range query results. Past `CACHE_CAPACITY`, the cache evicts the oldest.
 #[derive(Debug, Default)]
 struct QueryCache {
     entries: HashMap<CacheKey, QueryResult>,
@@ -112,7 +112,7 @@ impl QueryCache {
     }
 }
 
-/// Locks `mutex`, recovering the data if a panic poisoned it. The guarded maps
+/// Locks `mutex`, and recovers the data if a panic poisoned it. The guarded maps
 /// stay consistent across a panic because every update is a single insert or
 /// remove.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -122,9 +122,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// The first caller's claim on an in-flight range query, which identical
 /// concurrent queries wait on.
 ///
-/// Dropping the guard removes the claim, so a request whose future is dropped
-/// mid-flight cannot leave later identical requests waiting forever: their
-/// senders are dropped and they fail with "inflight request cancelled".
+/// When the guard drops, it removes the claim. So if the caller drops the future
+/// of a request mid-flight, later identical requests do not wait forever. Their
+/// senders drop, and they fail with "inflight request cancelled".
 struct InflightGuard {
     inflight: InflightQueries,
     key: String,
@@ -135,7 +135,7 @@ impl InflightGuard {
         lock(&self.inflight).remove(&self.key).unwrap_or_default()
     }
 
-    /// Sends the leader's result to every waiting caller and releases the claim.
+    /// Sends the leader's result to every caller that waits, and releases the claim.
     fn publish(self, result: &Result<QueryResult>) {
         debug_assert!(
             result.as_ref().ok().is_none_or(within_limits),
@@ -143,7 +143,7 @@ impl InflightGuard {
         );
         debug_assert!(!self.key.is_empty(), "the claim has a query key");
         for waiter in self.take_waiters() {
-            // The send fails only when the waiting caller has stopped and dropped
+            // The send fails only when the caller that waits has stopped and dropped
             // its receiver. No one reads the result then, so the failure does not matter.
             let _delivered: Result<(), WaiterResult> = waiter.send(match result {
                 Ok(result) => Ok(result.clone()),
@@ -160,8 +160,8 @@ impl Drop for InflightGuard {
     }
 }
 
-/// A response body over the size limit. It is not retried, since the same
-/// query would return the same oversized result.
+/// A response body over the size limit. The client does not retry it, since
+/// the same query returns the same oversized result.
 #[derive(Debug)]
 struct ResponseTooLarge(usize);
 
@@ -173,8 +173,8 @@ impl std::fmt::Display for ResponseTooLarge {
 
 impl std::error::Error for ResponseTooLarge {}
 
-/// Prometheus could not be reached, or the connection failed mid-response, as
-/// opposed to Prometheus answering with an error.
+/// The client could not reach Prometheus, or the connection failed mid-response.
+/// This is different from an error answer from Prometheus.
 #[derive(Debug)]
 struct TransportError {
     message: String,
@@ -210,13 +210,13 @@ impl std::fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
-/// Whether `error` means Prometheus could not be reached.
+/// Whether `error` means that the client could not reach Prometheus.
 pub(crate) fn is_transport_error(error: &anyhow::Error) -> bool {
     error.is::<TransportError>()
 }
 
 /// A short cause, such as `TLS: unknown issuer`, when `error` is a failed TLS
-/// handshake or the server rejecting the client certificate.
+/// handshake, or when the server rejects the client certificate.
 pub(crate) fn tls_failure_cause(error: &anyhow::Error) -> Option<&str> {
     let cause = error
         .downcast_ref::<TransportError>()
@@ -249,8 +249,8 @@ impl std::fmt::Display for StatusError {
 impl std::error::Error for StatusError {}
 
 impl StatusError {
-    /// Uses the `errorType` and `error` of a Prometheus error body, falling
-    /// back to an excerpt of the body for proxies and other servers.
+    /// Uses the `errorType` and `error` of a Prometheus error body. For proxies
+    /// and other servers, it uses an excerpt of the body.
     fn new(status: reqwest::StatusCode, body: &str) -> Self {
         #[derive(Deserialize)]
         struct ErrorBody {
@@ -277,8 +277,8 @@ impl StatusError {
     }
 }
 
-/// Whether trying again could succeed: the connection failed, or Prometheus
-/// was overloaded or unavailable. A rejected query fails the same way again,
+/// Whether another try can succeed: the connection failed, or Prometheus
+/// had too much load or was not available. A rejected query fails the same way again,
 /// as does a TLS handshake, until the certificates change.
 fn is_retryable(error: &anyhow::Error) -> bool {
     let retryable = match error.downcast_ref::<TransportError>() {
@@ -364,8 +364,8 @@ impl PromClient {
     }
 
     /// A client for `base` that uses `tls`. With TLS options set, it fails
-    /// rather than fall back to a default client, which would connect without
-    /// the configured certificates.
+    /// and does not fall back to a default client. A default client connects
+    /// without the configured certificates.
     pub(crate) fn with_tls(base: String, tls: &TlsFiles) -> Result<Self> {
         if tls.is_empty() {
             return Ok(Self::new(base));
@@ -546,8 +546,8 @@ impl PromClient {
         }))
     }
 
-    /// Values of `label` on series in `start..=end`, only those matching
-    /// `selector` when given, as Grafana's `label_values` queries.
+    /// Values of `label` on series in `start..=end`, as Grafana's `label_values`
+    /// queries. With a `selector`, only the series that match it count.
     pub(crate) async fn label_values(
         &self,
         label: &str,
@@ -941,8 +941,8 @@ mod tests {
 
     const EMPTY_MATRIX: &str = r#"{"status":"success","data":{"resultType":"matrix","result":[]}}"#;
 
-    /// A Prometheus stand-in. The first `stalled` connections are accepted and
-    /// never answered; later ones receive `response` (a full HTTP response).
+    /// A Prometheus stand-in. It accepts the first `stalled` connections and
+    /// never answers them; later ones receive `response` (a full HTTP response).
     async fn server(stalled: usize, response: String) -> (String, Arc<tokio::sync::Notify>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1029,7 +1029,7 @@ mod tests {
         assert!(lock(&client.inflight).is_empty());
     }
 
-    /// Answers every request with `response`, counting the requests.
+    /// Answers every request with `response`, and counts the requests.
     async fn counting_server(response: String) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
