@@ -10,4 +10,5 @@
 * [ADR-0004: lexiscope checks the ASD-STE100 writing rules](adr-0004-lexiscope-checks-the-asd-ste100-writing-rules--01a1fd4e4882.md) - make docs-style runs lexiscope with the ste-100 ruleset and vocabulary.cue on the docs, the wiki and the code comments.
 * [ADR-0005: Keep a modern-mode ZMakefile next to the Makefile](adr-0005-keep-a-modern-mode-zmakefile-next-to-the-makefile--01a1fd4e4886.md) - The ZMakefile has the same tasks as the Makefile in zmake modern mode, and GNU Make keeps the Makefile.
 * [ADR-0006: One bounded layout walker replaces recursion](adr-0006-one-bounded-layout-walker-replaces-recursion--01a1fd7e8997.md) - Explicit stacks with depth, node and step limits replace the 24 recursive walks of the layout tree and other chains.
+* [ADR-0007: Named limits cap each input and growable collection](adr-0007-named-limits-cap-each-input-and-growable-collection--01a1fdaaf533.md) - The table of every resource limit, where the program checks it and what the user sees at the limit.
 

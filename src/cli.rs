@@ -144,7 +144,7 @@ pub(crate) struct Args {
     #[arg(long, value_enum, value_name = "FORMAT")]
     pub(crate) export_format: Option<crate::export::ExportFormat>,
 
-    /// Maximum number of changed frames to keep in one recording; must be greater than zero.
+    /// Maximum number of changed frames to keep in one recording, from 1 to 100000.
     #[arg(long, value_name = "COUNT")]
     pub(crate) record_max_frames: Option<usize>,
 
