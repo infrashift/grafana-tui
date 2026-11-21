@@ -26,7 +26,7 @@ grafana-tui is one Rust binary. It shows Grafana dashboards in a terminal and ge
 | `src/prom.rs`, `src/prom/tls.rs` | The Prometheus HTTP client, a response cache and the TLS settings. |
 | `src/annotations/` | Annotation providers (a JSONL file or a command), the event model, filters and the details modal. |
 | `src/conditions.rs` | Grafana V2 conditional rendering: rules that show or hide rows, tabs and auto grid items. |
-| `src/ui/` | ratatui rendering: the frame (`draw.rs`), the grid layout (`layout.rs`), tabs, the theme picker and one renderer for each panel type (`panels/`). |
+| `src/ui/` | ratatui rendering: the frame (`draw.rs`), the grid layout (`layout.rs`), tabs, the theme picker and one renderer for each panel type (`panels/`). `panels/graph/view.rs` holds the graph data that the TUI and the export share. |
 | `src/export.rs` | SVG and PNG snapshots and recordings of the dashboard. |
 | `src/theme.rs`, `src/theme/` | The built-in themes and the custom themes from the config file. |
 
