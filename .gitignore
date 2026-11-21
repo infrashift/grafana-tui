@@ -5,4 +5,5 @@ docs/superpowers/
 .superpowers/
 .worktrees/
 /grafana-tui-exports
+/grafatui-exports
 /dist
