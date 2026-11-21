@@ -31,7 +31,12 @@ pub(super) fn threshold_datasets(
 }
 
 pub(super) fn threshold_marker(marker_name: &str) -> (ratatui::symbols::Marker, GraphType) {
-    match marker_name.to_lowercase().as_str() {
+    debug_assert!(
+        !marker_name.ends_with("line"),
+        "a line marker draws raw cells, not a dataset"
+    );
+    let name = marker_name.to_lowercase();
+    let marker = match name.as_str() {
         "braille" => (ratatui::symbols::Marker::Braille, GraphType::Line),
         "block" => (ratatui::symbols::Marker::Block, GraphType::Line),
         "bar" => (ratatui::symbols::Marker::Bar, GraphType::Line),
@@ -48,7 +53,12 @@ pub(super) fn threshold_marker(marker_name: &str) -> (ratatui::symbols::Marker, 
         "dashed-octant" => (ratatui::symbols::Marker::Octant, GraphType::Scatter),
         "dashed-dot" => (ratatui::symbols::Marker::Dot, GraphType::Scatter),
         _ => (ratatui::symbols::Marker::Dot, GraphType::Line),
-    }
+    };
+    debug_assert!(
+        marker.1 != GraphType::Scatter || name.starts_with("dashed"),
+        "only a dashed marker draws separate points"
+    );
+    marker
 }
 
 pub(super) fn render_raw_threshold_lines(
@@ -105,6 +115,14 @@ fn draw_threshold_cell(
     line_cell: &ratatui::buffer::Cell,
     strong_data_buf: Option<&ratatui::buffer::Buffer>,
 ) {
+    debug_assert!(
+        !is_blank_cell(line_cell),
+        "the threshold line cell is visible"
+    );
+    debug_assert!(
+        strong_data_buf.is_none_or(|mask| mask.cell(position).is_some()),
+        "the data mask covers each threshold line cell"
+    );
     let Some(cell) = buf.cell_mut(position) else {
         return;
     };
@@ -119,15 +137,21 @@ fn draw_threshold_cell(
 
 fn threshold_dataset(dashed: bool, x_bounds: [f64; 2], threshold_value: f64) -> Vec<(f64, f64)> {
     let [start, end] = x_bounds;
-    if dashed {
+    debug_assert!(start <= end, "the time range is in order");
+    let points: Vec<(f64, f64)> = if dashed {
         let points_count: i32 = 15;
         let step_x = (end - start) / f64::from(points_count);
-        return (0..=points_count)
+        (0..=points_count)
             .map(|i| (start + (f64::from(i) * step_x), threshold_value))
-            .collect();
-    }
-
-    vec![(start, threshold_value), (end, threshold_value)]
+            .collect()
+    } else {
+        vec![(start, threshold_value), (end, threshold_value)]
+    };
+    debug_assert!(
+        (dashed && points.len() == 16) || (!dashed && points.len() == 2),
+        "a dashed line has 16 points and a solid line has 2"
+    );
+    points
 }
 
 #[cfg(test)]

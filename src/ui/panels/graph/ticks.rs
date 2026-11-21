@@ -63,7 +63,20 @@ fn interior_ticks(start: f64, end: f64, step: f64, limit: usize) -> Vec<f64> {
         }
         tick = next;
     }
+    debug_assert!(
+        ticks_are_sorted(&ticks, limit),
+        "the ticks obey the limit and are in increasing order"
+    );
+    debug_assert!(
+        ticks.iter().all(|tick| *tick > start && *tick < end),
+        "each tick is strictly between the bounds"
+    );
     ticks
+}
+
+/// Tells if `ticks` has `limit` or fewer values, each in increasing order.
+fn ticks_are_sorted(ticks: &[f64], limit: usize) -> bool {
+    ticks.len() <= limit && ticks.iter().zip(ticks.iter().skip(1)).all(|(a, b)| a < b)
 }
 
 /// How `coarse_step` makes a time step coarser.
@@ -78,16 +91,31 @@ enum StepGrowth {
 impl StepGrowth {
     /// The step after `step` for this growth.
     fn next(self, step: f64) -> f64 {
-        match self {
+        debug_assert!(
+            step.is_finite() && step > 0.0,
+            "the step is finite and positive"
+        );
+        let next = match self {
             Self::TuiTimeSteps => next_time_grid_step(step),
             Self::Double => step * 2.0,
-        }
+        };
+        debug_assert!(next > step, "the next step is coarser");
+        next
     }
 }
 
 /// Returns `step`, made coarser with `growth` until `max_ticks` or fewer fit
 /// between `start` and `end`.
 fn coarse_step(start: f64, end: f64, mut step: f64, max_ticks: usize, growth: StepGrowth) -> f64 {
+    debug_assert!(
+        start.is_finite() && end.is_finite() && start < end,
+        "the range is finite and not empty"
+    );
+    debug_assert!(
+        step.is_finite() && step > 0.0,
+        "the first step is finite and positive"
+    );
+    debug_assert!(max_ticks > 0, "the tick limit is positive");
     for _ in 0..MAX_STEP_CHANGES {
         if interior_ticks(start, end, step, max_ticks + 1).len() <= max_ticks {
             break;
@@ -106,7 +134,16 @@ pub(super) fn calculate_value_grid_ticks(y_bounds: [f64; 2], chart_height: u16) 
 
     let target_lines = (usize::from(chart_height) / 6).clamp(2, 4);
     let step = nice_grid_step(max - min, target_lines);
-    interior_ticks(min, max, step, MAX_TICKS)
+    debug_assert!(
+        step > 0.0 || !(max - min).is_finite(),
+        "the grid step is positive for a finite range"
+    );
+    let ticks = interior_ticks(min, max, step, MAX_TICKS);
+    debug_assert!(
+        ticks_are_sorted(&ticks, target_lines.saturating_add(1)),
+        "the value grid has about the target number of lines, in order"
+    );
+    ticks
 }
 
 /// The time grid ticks of a TUI graph that is `chart_width` columns wide.
@@ -118,12 +155,18 @@ pub(super) fn calculate_time_grid_ticks(start: f64, end: f64, chart_width: u16) 
     let max_ticks = (usize::from(chart_width) / 20).clamp(3, 8);
     let base = base_time_grid_step(end - start);
     let step = coarse_step(start, end, base, max_ticks, StepGrowth::TuiTimeSteps);
-    interior_ticks(start, end, step, MAX_TICKS)
+    debug_assert!(step >= base, "the coarse step is not finer than the base");
+    let ticks = interior_ticks(start, end, step, MAX_TICKS);
+    debug_assert!(
+        ticks_are_sorted(&ticks, max_ticks),
+        "the time grid obeys its tick limit, in order"
+    );
+    ticks
 }
 
 /// The first time step that the TUI tries for a time range of `range` seconds.
 fn base_time_grid_step(range: f64) -> f64 {
-    if range <= 10.0 * MINUTE {
+    let step = if range <= 10.0 * MINUTE {
         MINUTE
     } else if range <= 30.0 * MINUTE {
         5.0 * MINUTE
@@ -141,7 +184,16 @@ fn base_time_grid_step(range: f64) -> f64 {
         12.0 * HOUR
     } else {
         DAY
-    }
+    };
+    debug_assert!(
+        (MINUTE..=DAY).contains(&step),
+        "the first step is one minute to one day"
+    );
+    debug_assert!(
+        step <= range.max(MINUTE),
+        "the first step is not wider than the range"
+    );
+    step
 }
 
 /// The next coarser TUI time step after `step`.
@@ -150,11 +202,14 @@ fn next_time_grid_step(step: f64) -> f64 {
         60.0, 300.0, 600.0, 1800.0, 3600.0, 7200.0, 10800.0, 21600.0, 43200.0, 86400.0,
     ];
 
-    STEPS
+    debug_assert!(step > 0.0, "the time step is positive");
+    let next = STEPS
         .iter()
         .copied()
         .find(|candidate| *candidate > step)
-        .unwrap_or(step * 2.0)
+        .unwrap_or(step * 2.0);
+    debug_assert!(next > step, "the next time step is coarser");
+    next
 }
 
 /// The value grid ticks of an exported graph.
@@ -164,7 +219,16 @@ pub(crate) fn svg_value_ticks(min: f64, max: f64) -> Vec<f64> {
     }
 
     let step = nice_grid_step(max - min, 3);
-    interior_ticks(min, max, step, MAX_TICKS)
+    debug_assert!(
+        step > 0.0 || !(max - min).is_finite(),
+        "the grid step is positive for a finite range"
+    );
+    let ticks = interior_ticks(min, max, step, MAX_TICKS);
+    debug_assert!(
+        ticks_are_sorted(&ticks, 4),
+        "the value grid has about three lines, in order"
+    );
+    ticks
 }
 
 /// The time grid ticks of an exported graph. A range with more than
@@ -187,7 +251,13 @@ pub(crate) fn svg_time_ticks(start: f64, end: f64) -> Vec<f64> {
         DAY
     };
     let step = coarse_step(start, end, base, MAX_TICKS, StepGrowth::Double);
-    interior_ticks(start, end, step, MAX_TICKS)
+    debug_assert!(step >= base, "the coarse step is not finer than the base");
+    let ticks = interior_ticks(start, end, step, MAX_TICKS);
+    debug_assert!(
+        ticks_are_sorted(&ticks, MAX_TICKS),
+        "the time grid obeys the tick limit, in order"
+    );
+    ticks
 }
 
 #[cfg(test)]

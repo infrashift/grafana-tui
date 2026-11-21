@@ -187,6 +187,11 @@ where
     let (key, value) = s
         .split_once('=')
         .ok_or_else(|| format!("invalid KEY=value: no `=` found in `{}`", s))?;
+    debug_assert!(!key.contains('='), "the key ends at the first equals sign");
+    debug_assert!(
+        key.len().saturating_add(value.len()).saturating_add(1) == s.len(),
+        "the key, the equals sign and the value make the full argument"
+    );
     let key = key.parse().map_err(|error: T::Err| error.to_string())?;
     let value = value.parse().map_err(|error: U::Err| error.to_string())?;
     Ok((key, value))

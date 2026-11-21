@@ -77,11 +77,24 @@ pub(crate) fn catalog(custom: &[Theme]) -> Vec<Theme> {
     let mut themes: Vec<Theme> = builtin::builtin_themes()
         .map(|theme| find_custom(&theme.name).cloned().unwrap_or(theme))
         .collect();
+    let builtin_count = themes.len();
+    debug_assert!(
+        builtin_count == builtin_names().count(),
+        "the catalog has each built-in theme once"
+    );
     for theme in custom {
         if !builtin_names().any(|name| name.eq_ignore_ascii_case(&theme.name)) {
             themes.push(theme.clone());
         }
     }
+    debug_assert!(
+        themes.len() <= builtin_count.saturating_add(custom.len()),
+        "the catalog adds each user theme no more than once"
+    );
+    debug_assert!(
+        themes.iter().all(|theme| !theme.palette.is_empty()),
+        "each catalog theme has a palette color"
+    );
     themes
 }
 
@@ -92,8 +105,15 @@ pub(crate) fn resolve(name: &str, catalog: &[Theme]) -> Result<Theme> {
             .iter()
             .find(|theme| theme.name.eq_ignore_ascii_case(name))
     };
+    debug_assert!(!catalog.is_empty(), "the theme catalog is not empty");
     match find(name).or_else(|| builtin::alias_target(name).and_then(find)) {
-        Some(theme) => Ok(theme.clone()),
+        Some(theme) => {
+            debug_assert!(
+                !theme.palette.is_empty(),
+                "the resolved theme has a palette color"
+            );
+            Ok(theme.clone())
+        }
         None => bail!(
             "unknown theme `{name}`; available themes: {}",
             catalog
@@ -108,17 +128,26 @@ pub(crate) fn resolve(name: &str, catalog: &[Theme]) -> Result<Theme> {
 impl Theme {
     /// Replaces a threshold step color the terminal cannot show.
     pub(crate) fn threshold_color(&self, color: Color) -> Color {
-        if color == Color::Reset {
+        let shown = if color == Color::Reset {
             self.threshold_default
         } else {
             color
-        }
+        };
+        debug_assert!(
+            shown == color || color == Color::Reset,
+            "the function replaces only the reset color"
+        );
+        debug_assert!(
+            shown != Color::Reset || self.threshold_default == Color::Reset,
+            "a reset color stays only when the theme default is reset"
+        );
+        shown
     }
 }
 
 /// The ANSI theme: follows the terminal's own palette and background.
 fn terminal() -> Theme {
-    Theme {
+    let theme = Theme {
         name: "terminal".to_string(),
         background: Color::Reset,
         surface: Color::Reset,
@@ -154,7 +183,25 @@ fn terminal() -> Theme {
             Color::LightCyan,
             Color::LightRed,
         ],
-    }
+    };
+    debug_assert!(
+        !theme.palette.is_empty(),
+        "the terminal palette has a color"
+    );
+    debug_assert!(
+        has_distinct_colors(&theme.palette),
+        "the terminal palette has no duplicate colors"
+    );
+    theme
+}
+
+/// Tells if each color in `palette` is different from all the colors before it.
+fn has_distinct_colors(palette: &[Color]) -> bool {
+    let first = |color: &Color| palette.iter().position(|other| other == color);
+    palette
+        .iter()
+        .enumerate()
+        .all(|(index, color)| first(color) == Some(index))
 }
 
 /// The handful of colors a palette-based theme is built from.
@@ -194,10 +241,15 @@ impl Theme {
             "a theme palette has at least one color"
         );
         let wrapped = index.checked_rem(self.palette.len()).unwrap_or(0);
+        debug_assert!(
+            wrapped < self.palette.len(),
+            "the wrapped index is in the palette"
+        );
         self.palette.get(wrapped).copied().unwrap_or(self.text)
     }
 
     fn from_base(name: &str, base: &Base) -> Self {
+        debug_assert!(!name.is_empty(), "a built-in theme has a name");
         let mut palette = Vec::new();
         for hex in [
             base.blue,
@@ -213,6 +265,14 @@ impl Theme {
                 palette.push(color);
             }
         }
+        debug_assert!(
+            (1..=7).contains(&palette.len()),
+            "the palette has one to seven base colors"
+        );
+        debug_assert!(
+            has_distinct_colors(&palette),
+            "the palette has no duplicate colors"
+        );
         Self {
             name: name.to_string(),
             background: rgb(base.bg),
@@ -247,9 +307,19 @@ fn hex_byte(c: &str, start: usize) -> u8 {
         .unwrap_or(0)
 }
 
+/// Converts a Grafana color, `#rrggbb` or a named color, to a terminal color.
+/// An unknown name gives `Color::Reset`.
 pub(crate) fn parse_grafana_color(c: &str) -> Color {
     if c.starts_with('#') && c.len() >= 7 {
-        return Color::Rgb(hex_byte(c, 1), hex_byte(c, 3), hex_byte(c, 5));
+        let color = Color::Rgb(hex_byte(c, 1), hex_byte(c, 3), hex_byte(c, 5));
+        debug_assert!(
+            c.get(1..7)
+                .filter(|hex| hex.chars().all(|digit| digit.is_ascii_hexdigit()))
+                .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                .is_none_or(|value| rgb(value) == color),
+            "six hex digits give the color of a direct parse"
+        );
+        return color;
     }
 
     match c.to_lowercase().as_str() {

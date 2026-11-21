@@ -47,7 +47,7 @@ pub(crate) fn calculate_y_bounds(p: &PanelState) -> [f64; 2] {
 
     // Add some padding
     let range = max - min;
-    [
+    let bounds = [
         if explicit_min.is_some() {
             min
         } else {
@@ -58,7 +58,17 @@ pub(crate) fn calculate_y_bounds(p: &PanelState) -> [f64; 2] {
         } else {
             max + range * 0.05
         },
-    ]
+    ];
+    let [lower, upper] = bounds;
+    debug_assert!(
+        lower <= upper,
+        "the lower bound is a number and not above the upper bound"
+    );
+    debug_assert!(
+        explicit_min.is_none_or(|value| value.to_bits() == lower.to_bits()),
+        "an explicit minimum stays the lower bound"
+    );
+    bounds
 }
 
 /// Widens a flat data range, applies the zero-based mode and applies the explicit limits.
@@ -104,15 +114,33 @@ fn observe_value(value: f64, min: &mut f64, max: &mut f64, has_data: &mut bool) 
     *min = min.min(value);
     *max = max.max(value);
     *has_data = true;
+    debug_assert!(
+        *min <= value && value <= *max,
+        "the observed range holds the value"
+    );
+    debug_assert!(
+        min.is_finite() && max.is_finite(),
+        "the observed range is finite"
+    );
 }
 
 fn fallback_bounds(explicit_min: Option<f64>, explicit_max: Option<f64>) -> [f64; 2] {
-    match (explicit_min, explicit_max) {
+    debug_assert!(
+        explicit_min.is_none_or(f64::is_finite) && explicit_max.is_none_or(f64::is_finite),
+        "the explicit limits are finite"
+    );
+    let bounds = match (explicit_min, explicit_max) {
         (Some(min), Some(max)) if max > min => [min, max],
         (Some(min), _) => [min, min + 1.0],
         (_, Some(max)) => [max - 1.0, max],
         _ => [0.0, 1.0],
-    }
+    };
+    let [lower, upper] = bounds;
+    debug_assert!(
+        lower.is_finite() && upper.is_finite() && lower <= upper,
+        "the fallback bounds are finite and in order"
+    );
+    bounds
 }
 
 #[cfg(test)]

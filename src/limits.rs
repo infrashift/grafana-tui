@@ -51,6 +51,11 @@ pub(crate) const MAX_RECORD_FRAMES: usize = 100_000;
 /// The check uses the length in the metadata first. The read stops after
 /// `limit + 1` bytes, so a file that grows during the read also fails.
 pub(crate) fn read_capped(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    debug_assert!(limit > 0, "the byte limit is positive");
+    debug_assert!(
+        limit < u64::MAX,
+        "the byte limit leaves room for one more byte"
+    );
     let file = std::fs::File::open(path)?;
     check_file_size(file.metadata()?.len(), limit)?;
     let mut bytes = Vec::new();
@@ -66,6 +71,7 @@ pub(crate) fn read_text_capped(path: &Path, limit: u64) -> Result<String> {
 
 /// Fails when a file of `size` bytes is larger than `limit`.
 fn check_file_size(size: u64, limit: u64) -> Result<()> {
+    debug_assert!(limit > 0, "the byte limit is positive");
     ensure!(
         size <= limit,
         "the file is larger than the limit of {limit} bytes"
@@ -75,6 +81,8 @@ fn check_file_size(size: u64, limit: u64) -> Result<()> {
 
 /// Fails when `count` items of `what` are more than `limit`.
 pub(crate) fn check_count(count: usize, limit: usize, what: &str) -> Result<()> {
+    debug_assert!(limit > 0, "the count limit is positive");
+    debug_assert!(!what.is_empty(), "the message names the items");
     ensure!(
         count <= limit,
         "{count} {what} are more than the limit of {limit}"
@@ -84,8 +92,6 @@ pub(crate) fn check_count(count: usize, limit: usize, what: &str) -> Result<()> 
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::*;
-
     /// A file in the temp directory, which the test removes.
     pub(crate) fn temp_file(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("grafana-tui-limits-{}-{name}", std::process::id()))
@@ -94,10 +100,15 @@ pub(crate) mod tests {
     /// A sparse file of `len` bytes, which uses almost no disk space.
     pub(crate) fn sparse_file(name: &str, len: u64) -> std::path::PathBuf {
         let path = temp_file(name);
-        let file = std::fs::File::create(&path).unwrap();
-        file.set_len(len).unwrap();
+        std::fs::File::create(&path).unwrap().set_len(len).unwrap();
         path
     }
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::tests::{sparse_file, temp_file};
+    use super::*;
 
     #[test]
     fn a_file_at_the_limit_reads() {

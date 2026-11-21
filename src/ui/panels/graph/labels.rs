@@ -47,6 +47,17 @@ pub(super) fn y_label_width(
     threshold_labels: &[(f64, Color)],
     display: &DisplayFormat,
 ) -> u16 {
+    debug_assert!(
+        axis_labels.len() != 1,
+        "the y axis has no labels or a label at each end"
+    );
+    debug_assert!(
+        autogrid_ticks
+            .iter()
+            .zip(autogrid_ticks.iter().skip(1))
+            .all(|(a, b)| a < b),
+        "the grid ticks are in increasing order"
+    );
     // Reserve space using the same unit formatter that will draw the labels;
     // otherwise bytes/percent suffixes can clip or push into the plot area.
     let axis_width = axis_labels
@@ -77,6 +88,15 @@ pub(super) fn render_intermediate_y_labels(
     if label_area.width == 0 {
         return;
     }
+    let [lower, upper] = labels.y_bounds;
+    debug_assert!(lower <= upper, "the y bounds are in order");
+    debug_assert!(
+        labels
+            .autogrid_ticks
+            .iter()
+            .all(|tick| *tick > lower && *tick < upper),
+        "each grid tick is inside the y bounds"
+    );
 
     for tick in labels.autogrid_ticks {
         if let Some(y) = value_to_y_label_row(*tick, labels.y_bounds, plot) {
@@ -136,8 +156,21 @@ fn value_to_plot_y(value: f64, y_bounds: [f64; 2], plot: PlotBounds) -> Option<u
 
     let height = f64::from(plot.bottom.saturating_sub(plot.top));
     let ratio = (value - y_bounds[0]) / (y_bounds[1] - y_bounds[0]);
+    debug_assert!(
+        !(ratio < 0.0 || ratio > 1.0),
+        "the ratio is not outside the unit range"
+    );
     let y_offset = num::f64_to_u16((ratio * height).round());
-    Some(plot.bottom.saturating_sub(y_offset))
+    debug_assert!(
+        f64::from(y_offset) <= height,
+        "the row offset stays in the plot height"
+    );
+    let y = plot.bottom.saturating_sub(y_offset);
+    debug_assert!(
+        plot.bottom < plot.top || y >= plot.top,
+        "the row is not above the plot"
+    );
+    Some(y)
 }
 
 fn value_to_y_label_row(value: f64, y_bounds: [f64; 2], plot: PlotBounds) -> Option<u16> {
@@ -151,10 +184,21 @@ pub(super) fn value_to_plot_x(value: f64, x_bounds: [f64; 2], plot: PlotBounds) 
 
     let width = f64::from(plot.right.saturating_sub(plot.left).saturating_sub(1));
     let ratio = (value - x_bounds[0]) / (x_bounds[1] - x_bounds[0]);
-    Some(
-        plot.left
-            .saturating_add(num::f64_to_u16((ratio * width).round())),
-    )
+    debug_assert!(
+        !(ratio < 0.0 || ratio > 1.0),
+        "the ratio is not outside the unit range"
+    );
+    let x_offset = num::f64_to_u16((ratio * width).round());
+    debug_assert!(
+        f64::from(x_offset) <= width,
+        "the column offset stays in the plot width"
+    );
+    let x = plot.left.saturating_add(x_offset);
+    debug_assert!(
+        plot.right <= plot.left || x < plot.right,
+        "the column is left of the plot right edge"
+    );
+    Some(x)
 }
 
 fn write_right_aligned_label(
@@ -165,8 +209,13 @@ fn write_right_aligned_label(
     label: &str,
     color: Color,
 ) {
+    debug_assert!(width > 0, "the label area has a width");
     let label_width = num::usize_to_u16(label.chars().count());
     let x = left.saturating_add(width.saturating_sub(label_width));
+    debug_assert!(
+        label_width > width || x.checked_add(label_width) == left.checked_add(width),
+        "a label that fits ends at the right edge of the area"
+    );
     write_label(frame, x, y, label, color, false);
 }
 
@@ -179,10 +228,12 @@ fn write_centered_label(
     label: &str,
     color: Color,
 ) {
+    debug_assert!(center >= min_x, "the label center is not left of the plot");
     let label_width = num::usize_to_u16(label.chars().count());
     let Some(start_x) = centered_label_start(center, label_width, min_x, max_x) else {
         return;
     };
+    debug_assert!(label_width > 0, "a placed label has characters");
 
     let buf = frame.buffer_mut();
     for offset in 0..label_width {
@@ -218,6 +269,14 @@ fn centered_label_start(center: u16, label_width: u16, min_x: u16, max_x: u16) -
     if start_x < min_x || end_x_exclusive > max_x {
         return None;
     }
+    debug_assert!(
+        start_x <= center,
+        "the label starts at or left of its center"
+    );
+    debug_assert!(
+        end_x_exclusive > center,
+        "the label covers its center column"
+    );
 
     Some(start_x)
 }
