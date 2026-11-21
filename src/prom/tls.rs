@@ -18,7 +18,7 @@
 //! place of the built-in roots, and a client certificate for mutual TLS.
 
 use crate::config::expand_path;
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail, ensure};
 use reqwest::{Certificate, ClientBuilder, Identity};
 use rustls::{AlertDescription, CertificateError};
 use rustls_pki_types::pem::{self, SectionKind};
@@ -46,27 +46,65 @@ impl TlsFiles {
         self.ca_cert.is_none() && self.client_cert.is_none() && self.client_key.is_none()
     }
 
+    /// For each option (`ca_cert`, `client_cert`, `client_key`), true when it is set.
+    fn set_flags(&self) -> [bool; 3] {
+        let set = [&self.ca_cert, &self.client_cert, &self.client_key];
+        set.map(Option::is_some)
+    }
+
     /// These files, taking each one that is unset from `fallback`.
     pub(crate) fn or(self, fallback: Self) -> Self {
-        Self {
+        let own = self.set_flags();
+        let other = fallback.set_flags();
+        let files = Self {
             ca_cert: self.ca_cert.or(fallback.ca_cert),
             client_cert: self.client_cert.or(fallback.client_cert),
             client_key: self.client_key.or(fallback.client_key),
-        }
+        };
+        let set = files.set_flags();
+        debug_assert!(
+            set.iter().zip(own).all(|(set, own)| *set || !own),
+            "each option of these files stays set"
+        );
+        debug_assert!(
+            set.iter()
+                .zip(own)
+                .zip(other)
+                .all(|((set, own), other)| !*set || own || other),
+            "each set option comes from these files or from the fallback"
+        );
+        files
     }
 
     /// These files, with a leading `~` of each path expanded to the home directory.
     pub(crate) fn expand_paths(self) -> Self {
-        Self {
+        let files = Self {
             ca_cert: self.ca_cert.as_deref().map(expand_path),
             client_cert: self.client_cert.as_deref().map(expand_path),
             client_key: self.client_key.as_deref().map(expand_path),
-        }
+        };
+        debug_assert!(
+            files.set_flags() == self.set_flags(),
+            "the expansion keeps the set of options"
+        );
+        debug_assert!(
+            [&self.ca_cert, &self.client_cert, &self.client_key]
+                .into_iter()
+                .zip([&files.ca_cert, &files.client_cert, &files.client_key])
+                .all(|(before, after)| {
+                    before == after
+                        || before
+                            .as_deref()
+                            .is_some_and(|path| path.to_string_lossy().starts_with('~'))
+                }),
+            "the expansion changes only a path that starts with ~"
+        );
+        files
     }
 
     /// The options that are set, for error messages.
     fn option_names(&self) -> String {
-        [
+        let names = [
             ("ca_cert", &self.ca_cert),
             ("client_cert", &self.client_cert),
             ("client_key", &self.client_key),
@@ -75,11 +113,26 @@ impl TlsFiles {
         .filter(|(_, path)| path.is_some())
         .map(|(name, _)| name)
         .collect::<Vec<_>>()
-        .join(", ")
+        .join(", ");
+        debug_assert!(
+            names.is_empty() == self.is_empty(),
+            "the list names an option when one is set"
+        );
+        debug_assert!(
+            names.is_empty()
+                || names.split(", ").count() == self.set_flags().iter().filter(|set| **set).count(),
+            "the list names each set option one time"
+        );
+        names
     }
 
     /// Describes `error`, from building a client configured with these files.
     pub(super) fn build_error(&self, error: &reqwest::Error) -> anyhow::Error {
+        debug_assert!(!self.is_empty(), "only TLS files configure TLS");
+        debug_assert!(
+            error.is_builder(),
+            "the error comes from the client builder"
+        );
         if let (Some(cert), Some(key)) = (&self.client_cert, &self.client_key)
             && matches!(
                 find_rustls_error(error),
@@ -171,6 +224,10 @@ struct PemFile<'a> {
 
 impl<'a> PemFile<'a> {
     fn read(option: &'static str, path: &'a Path) -> Result<Self> {
+        debug_assert!(
+            matches!(option, "ca_cert" | "client_cert" | "client_key"),
+            "the option is the name of a TLS option"
+        );
         let bytes = crate::limits::read_capped(path, crate::limits::MAX_PEM_BYTES)
             .map_err(|error| anyhow!("{option} {}: {error}", path.display()))?;
         let mut file = Self {
@@ -190,6 +247,14 @@ impl<'a> PemFile<'a> {
                 Err(_) => return Err(file.error("not a valid PEM file")),
             }
         }
+        debug_assert!(
+            crate::num::usize_to_u64(file.bytes.len()) <= crate::limits::MAX_PEM_BYTES,
+            "the PEM file is inside the size limit"
+        );
+        debug_assert!(
+            sections.len() <= file.bytes.len(),
+            "each PEM section uses one byte or more"
+        );
         file.sections = sections;
         Ok(file)
     }
@@ -199,14 +264,24 @@ impl<'a> PemFile<'a> {
     }
 
     fn require_certificate(&self) -> Result<()> {
-        if self.sections.contains(&SectionKind::Certificate) {
-            Ok(())
-        } else {
-            Err(self.error("no PEM certificate found (expected -----BEGIN CERTIFICATE-----)"))
-        }
+        debug_assert!(
+            matches!(self.option, "ca_cert" | "client_cert"),
+            "only a certificate option holds certificates"
+        );
+        ensure!(
+            self.sections.contains(&SectionKind::Certificate),
+            "{} {}: no PEM certificate found (expected -----BEGIN CERTIFICATE-----)",
+            self.option,
+            self.path.display()
+        );
+        Ok(())
     }
 
     fn require_private_key(&self) -> Result<()> {
+        debug_assert!(
+            self.option == "client_key",
+            "only the client_key option holds a private key"
+        );
         let keys = self
             .sections
             .iter()
@@ -219,6 +294,10 @@ impl<'a> PemFile<'a> {
                 )
             })
             .count();
+        debug_assert!(
+            keys <= self.sections.len(),
+            "each private key is one PEM section"
+        );
         match keys {
             1 => Ok(()),
             0 if contains(&self.bytes, b"-----BEGIN ENCRYPTED PRIVATE KEY-----") => Err(self
@@ -261,7 +340,7 @@ impl TlsFailure {
             cause: format!("TLS: {cause}"),
             hint,
         };
-        match error {
+        let found = match error {
             rustls::Error::InvalidCertificate(CertificateError::UnknownIssuer) => failure(
                 "unknown issuer",
                 "the server's certificate is not signed by a CA in ca_cert, \
@@ -306,7 +385,10 @@ impl TlsFailure {
                 "check the server's TLS settings",
             ),
             error => failure(&error.to_string(), "check the server's TLS settings"),
-        }
+        };
+        debug_assert!(found.cause.starts_with("TLS: "), "the cause names TLS");
+        debug_assert!(!found.hint.is_empty(), "the failure has a hint");
+        found
     }
 }
 
@@ -343,18 +425,29 @@ fn find_rustls_error<'a>(
 /// `MAX_ERROR_CHAIN` ends with `: …`.
 pub(super) fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     let mut text = error.to_string();
+    let first = text.len();
     let mut source = error.source();
+    let mut parts = 1;
     for _ in 1..MAX_ERROR_CHAIN {
         let Some(error) = source else {
-            return text;
+            break;
         };
         text.push_str(": ");
         text.push_str(&error.to_string());
         source = error.source();
+        parts += 1;
     }
     if source.is_some() {
         text.push_str(": …");
     }
+    debug_assert!(
+        parts <= MAX_ERROR_CHAIN,
+        "the text has MAX_ERROR_CHAIN errors or fewer"
+    );
+    debug_assert!(
+        text.len() >= first + 2 * (parts - 1),
+        "the text holds the first error and a separator for each source"
+    );
     text
 }
 
