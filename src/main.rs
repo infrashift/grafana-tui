@@ -103,6 +103,15 @@ async fn main() -> Result<()> {
     let prom = prom::PromClient::with_tls(settings.prometheus_url.clone(), &settings.tls)?;
     let loaded = load_dashboards(&dashboard_paths)?;
     let content = prepare_dashboards(loaded, &args, &config)?;
+    debug_assert_eq!(
+        content.set.is_some(),
+        dashboard_paths.len() > 1,
+        "a dashboard set comes from two files or more"
+    );
+    debug_assert!(
+        !dashboard_paths.is_empty() || content.template.is_none(),
+        "only a dashboard file gives a template"
+    );
 
     let themes = theme::catalog(&theme::custom_themes(&config.themes)?);
     let theme = theme::resolve(&theme_name, &themes)?;
@@ -124,6 +133,15 @@ async fn main() -> Result<()> {
 /// Runs a subcommand that prints shell completions or the man page.
 fn run_subcommand(command: cli::Commands) -> Result<()> {
     use clap::CommandFactory;
+    debug_assert_eq!(
+        Args::command().get_name(),
+        "grafana-tui",
+        "the completions use the command name"
+    );
+    debug_assert!(
+        Args::command().get_about().is_some(),
+        "the man page has a description"
+    );
     match command {
         cli::Commands::Completions { shell } => {
             clap_complete::generate(
@@ -150,7 +168,14 @@ fn resolve_dashboard_paths(args: &Args, config: &Config) -> Result<Vec<std::path
         &args.grafana_json
     };
     limits::check_count(paths.len(), limits::MAX_DASHBOARD_FILES, "dashboard files")?;
-    Ok(paths.iter().map(|path| config::expand_path(path)).collect())
+    let expanded: Vec<std::path::PathBuf> =
+        paths.iter().map(|path| config::expand_path(path)).collect();
+    debug_assert_eq!(expanded.len(), paths.len(), "each path is expanded");
+    debug_assert!(
+        expanded.len() <= limits::MAX_DASHBOARD_FILES,
+        "the dashboard files are in the limit"
+    );
+    Ok(expanded)
 }
 
 /// Fails when `--var` or the config gives more variables than `MAX_USER_VARS`.
@@ -162,10 +187,20 @@ fn check_user_vars(args: &Args, config: &Config) -> Result<()> {
 
 /// Returns the theme name from the command line, the config or the default.
 fn resolve_theme_name(args: &Args, config: &Config) -> String {
-    args.theme
+    let name = args
+        .theme
         .clone()
         .or_else(|| config.theme.clone())
-        .unwrap_or_else(|| theme::DEFAULT_THEME.to_string())
+        .unwrap_or_else(|| theme::DEFAULT_THEME.to_string());
+    debug_assert!(
+        args.theme.as_ref().is_none_or(|theme| *theme == name),
+        "the command line wins"
+    );
+    debug_assert!(
+        args.theme.is_some() || config.theme.as_ref().is_none_or(|theme| *theme == name),
+        "the config wins over the default"
+    );
+    name
 }
 
 /// Prints the list of themes and marks the current theme.
@@ -177,6 +212,10 @@ fn run_list_themes(theme_name: &str, config: &Config) -> Result<()> {
 
 /// Validates the import of each dashboard file and prints the result.
 fn run_validation(paths: &[std::path::PathBuf], args: &Args, config: &Config) -> Result<()> {
+    debug_assert!(
+        paths.len() <= limits::MAX_DASHBOARD_FILES,
+        "the dashboard files are in the limit"
+    );
     match paths {
         [] => bail!("--validate requires --grafana-json or grafana_json in config"),
         [path] => {
@@ -189,6 +228,7 @@ fn run_validation(paths: &[std::path::PathBuf], args: &Args, config: &Config) ->
                 .iter()
                 .map(|path| validate_dashboard_file(path, args, config))
                 .collect::<Result<Vec<_>>>()?;
+            debug_assert_eq!(dashboards.len(), paths.len(), "each path gives one summary");
             print_validation_summaries(
                 &MultiValidationSummary { dashboards },
                 args.format,
@@ -206,10 +246,17 @@ fn validate_dashboard_file(
 ) -> Result<FileValidationSummary> {
     let dashboard =
         grafana::load_grafana_dashboard(path).with_context(|| path.display().to_string())?;
-    Ok(FileValidationSummary {
+    let panels = dashboard.queries.len();
+    let file = FileValidationSummary {
         path: path.display().to_string(),
         summary: validate_dashboard_import(dashboard, config.vars.clone(), &args.var),
-    })
+    };
+    debug_assert_eq!(
+        file.summary.panel_count, panels,
+        "the summary counts each panel"
+    );
+    debug_assert!(!file.path.is_empty(), "the summary names the file");
+    Ok(file)
 }
 
 /// The query range, the minimum step and the scrape interval.
@@ -257,7 +304,18 @@ fn resolve_settings(args: &Args, config: &Config) -> Result<Settings> {
     .or(config.tls.clone())
     .expand_paths();
     let timing = resolve_timing(args, config)?;
-
+    debug_assert!(
+        !timing.scrape_interval.is_zero(),
+        "the scrape interval is positive"
+    );
+    debug_assert!(
+        args.prometheus_url
+            .as_ref()
+            .is_none_or(|url| *url == prometheus_url),
+        "the command line wins"
+    );
+    let transparent = args.transparent_background || config.transparent_background.unwrap_or(false);
+    debug_assert!(transparent || !args.transparent_background, "the flag wins");
     Ok(Settings {
         annotation_source,
         prometheus_url,
@@ -271,8 +329,7 @@ fn resolve_settings(args: &Args, config: &Config) -> Result<Settings> {
             .or_else(|| config.autogrid_color.clone())
             .map(|color| theme::parse_grafana_color(&color))
             .filter(|color| *color != ratatui::style::Color::Reset),
-        transparent_background: args.transparent_background
-            || config.transparent_background.unwrap_or(false),
+        transparent_background: transparent,
         marker_name: args
             .threshold_marker
             .clone()
@@ -296,6 +353,14 @@ fn resolve_timing(args: &Args, config: &Config) -> Result<Timing> {
         .or_else(|| config.step.clone())
         .unwrap_or_else(|| "5s".to_string());
     let step = app::parse_duration(&step_str).context("--step")?;
+    debug_assert!(
+        args.range.is_some() || config.time_range.is_some() || range == Duration::from_secs(300),
+        "the default range is five minutes"
+    );
+    debug_assert!(
+        args.step.is_some() || config.step.is_some() || step == Duration::from_secs(5),
+        "the default step is five seconds"
+    );
 
     let scrape_text = args
         .scrape_interval
@@ -317,7 +382,7 @@ fn resolve_timing(args: &Args, config: &Config) -> Result<Timing> {
 
 /// Resolves the export options. The caller validates them.
 fn resolve_export_options(args: &Args, config: &Config) -> export::ExportOptions {
-    export::ExportOptions {
+    let options = export::ExportOptions {
         dir: args
             .export_dir
             .clone()
@@ -332,7 +397,18 @@ fn resolve_export_options(args: &Args, config: &Config) -> export::ExportOptions
             .record_max_frames
             .or(config.record_max_frames)
             .unwrap_or(300),
-    }
+    };
+    debug_assert!(
+        args.export_format
+            .is_none_or(|format| format == options.format),
+        "the command line format wins"
+    );
+    debug_assert!(
+        args.record_max_frames
+            .is_none_or(|frames| frames == options.record_max_frames),
+        "the command line frame limit wins"
+    );
+    options
 }
 
 /// The dashboard files that load at startup.
@@ -347,11 +423,20 @@ enum LoadedDashboards {
 
 /// Loads the dashboard files. The number of paths selects the variant.
 fn load_dashboards(paths: &[std::path::PathBuf]) -> Result<LoadedDashboards> {
-    Ok(match paths {
+    debug_assert!(
+        paths.len() <= limits::MAX_DASHBOARD_FILES,
+        "the dashboard files are in the limit"
+    );
+    let loaded = match paths {
         [] => LoadedDashboards::Flat,
         [path] => LoadedDashboards::Single(Box::new(grafana::load_grafana_dashboard(path)?)),
         paths => LoadedDashboards::Multi(Box::new(grafana::load_grafana_dashboards(paths)?)),
-    })
+    };
+    debug_assert!(
+        !matches!(&loaded, LoadedDashboards::Multi(set) if set.files.len() < 2),
+        "a set holds two dashboards or more"
+    );
+    Ok(loaded)
 }
 
 /// The panels, variables and layout to show, before the app state exists.
@@ -372,13 +457,22 @@ fn prepare_dashboards(
     args: &Args,
     config: &Config,
 ) -> Result<DashboardContent> {
-    match loaded {
-        LoadedDashboards::Flat => flat_content(args, config),
-        LoadedDashboards::Single(dashboard) => {
-            Ok(single_dashboard_content(*dashboard, args, config))
-        }
-        LoadedDashboards::Multi(set) => multi_dashboard_content(*set, args, config),
-    }
+    let multi = matches!(loaded, LoadedDashboards::Multi(_));
+    let content = match loaded {
+        LoadedDashboards::Flat => flat_content(args, config)?,
+        LoadedDashboards::Single(dashboard) => single_dashboard_content(*dashboard, args, config),
+        LoadedDashboards::Multi(set) => multi_dashboard_content(*set, args, config)?,
+    };
+    debug_assert_eq!(
+        content.set.is_some(),
+        multi,
+        "only a set has a dashboard list"
+    );
+    debug_assert!(
+        content.panels.len() <= crate::dashboard::MAX_LAYOUT_NODES,
+        "the panels are in the node limit"
+    );
+    Ok(content)
 }
 
 /// Makes one panel for each `--query`, with the user variables only.
@@ -391,9 +485,22 @@ fn flat_content(args: &Args, config: &Config) -> Result<DashboardContent> {
     );
     let mut variables = VariableState::default();
     merge_user_vars(&mut variables, config.vars.clone(), &args.var);
+    let user_values = args
+        .var
+        .len()
+        .saturating_add(config.vars.as_ref().map_or(0, HashMap::len));
+    debug_assert!(
+        variables.names.len() <= user_values,
+        "each name comes from a user value"
+    );
+    let panels = app::default_queries(args.query.clone());
+    debug_assert!(
+        args.query.is_empty() || panels.len() == args.query.len(),
+        "each query gives one panel, or the defaults apply"
+    );
     Ok(DashboardContent {
         title: "grafana-tui".to_string(),
-        panels: app::default_queries(args.query.clone()),
+        panels,
         skipped_panels: 0,
         variables,
         query_vars: Vec::new(),
@@ -411,8 +518,13 @@ fn single_dashboard_content(
 ) -> DashboardContent {
     let import_context = build_import_context(&d, config.vars.clone(), &args.var);
     print_import_diagnostics(&import_context.diagnostics);
-
+    debug_assert!(
+        import_context.diagnostics.len() >= d.diagnostics.len(),
+        "the context keeps the import diagnostics"
+    );
+    let count = d.queries.len();
     let panels: Vec<_> = d.queries.into_iter().map(panel_state).collect();
+    debug_assert_eq!(panels.len(), count, "each query gives one panel");
     let template = app::DashboardTemplate::new(d.layout, d.repeats, &panels)
         .with_conditions(d.conditions)
         .with_sections(d.sections);
@@ -440,6 +552,14 @@ fn multi_dashboard_content(
         &args.var,
         args.refresh_rate,
         config.refresh_rate,
+    );
+    debug_assert!(
+        multi.set.dashboards.len() >= 2,
+        "a set holds two dashboards or more"
+    );
+    debug_assert!(
+        multi.set.dashboards.len() <= limits::MAX_DASHBOARD_FILES,
+        "the dashboard files are in the limit"
     );
     // The header shows the first dashboard, as the first tab is active.
     let first = multi
@@ -476,6 +596,11 @@ fn build_state(
     content: DashboardContent,
     look: Look,
 ) -> Result<app::AppState> {
+    debug_assert!(
+        !settings.timing.scrape_interval.is_zero(),
+        "the scrape interval is positive"
+    );
+    let theme_count = look.themes.len();
     let mut state = app::AppState::new(
         prom,
         settings.timing.range,
@@ -507,6 +632,12 @@ fn build_state(
     if let Some(set) = content.set {
         state.set_dashboards(set);
     }
+    debug_assert_eq!(
+        state.themes.len(),
+        theme_count,
+        "the state keeps the theme catalog"
+    );
+    debug_assert!(!state.themes.is_empty(), "the theme catalog is not empty");
     Ok(state)
 }
 
@@ -552,16 +683,16 @@ impl ShutdownSignals {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{SignalKind, signal};
-            Self {
-                signals: [
-                    SignalKind::interrupt(),
-                    SignalKind::terminate(),
-                    SignalKind::hangup(),
-                ]
-                .into_iter()
-                .filter_map(|kind| signal(kind).ok())
-                .collect(),
-            }
+            let signals: Vec<tokio::signal::unix::Signal> = [
+                SignalKind::interrupt(),
+                SignalKind::terminate(),
+                SignalKind::hangup(),
+            ]
+            .into_iter()
+            .filter_map(|kind| signal(kind).ok())
+            .collect();
+            debug_assert!(signals.len() <= 3, "the guard holds three signals or fewer");
+            Self { signals }
         }
         #[cfg(not(unix))]
         {
@@ -573,6 +704,10 @@ impl ShutdownSignals {
     async fn recv(&mut self) {
         #[cfg(unix)]
         {
+            debug_assert!(
+                self.signals.len() <= 3,
+                "the guard holds three signals or fewer"
+            );
             let received = self
                 .signals
                 .iter_mut()
@@ -597,6 +732,10 @@ struct TerminalGuard;
 impl TerminalGuard {
     fn enter() -> Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
+        debug_assert!(
+            crossterm::terminal::is_raw_mode_enabled().unwrap_or(true),
+            "raw mode is on"
+        );
         // From here on, dropping the guard restores the terminal.
         let guard = Self;
         execute!(
@@ -624,6 +763,10 @@ fn restore_terminal() {
         crossterm::event::DisableMouseCapture,
         crossterm::cursor::Show
     );
+    debug_assert!(
+        raw_mode.is_err() || !crossterm::terminal::is_raw_mode_enabled().unwrap_or(false),
+        "raw mode is off"
+    );
     if let Some(report) = restore_report([raw_mode, screen]) {
         eprintln!("{report}");
     }
@@ -636,6 +779,7 @@ fn restore_report(steps: [std::io::Result<()>; 2]) -> Option<String> {
         .filter_map(Result::err)
         .map(|error| error.to_string())
         .collect();
+    debug_assert!(failures.len() <= 2, "each failure is one restore step");
     (!failures.is_empty()).then(|| {
         format!(
             "warning: could not restore the terminal: {}",
@@ -659,7 +803,7 @@ fn theme_list(selected: &str, themes: &[Theme]) -> String {
     let current = theme::resolve(selected, themes)
         .ok()
         .map(|theme| theme.name);
-    themes
+    let list: String = themes
         .iter()
         .map(|theme| {
             if current.as_ref() == Some(&theme.name) {
@@ -668,7 +812,17 @@ fn theme_list(selected: &str, themes: &[Theme]) -> String {
                 format!("{}\n", theme.name)
             }
         })
-        .collect()
+        .collect();
+    debug_assert_eq!(
+        list.lines().count(),
+        themes.len(),
+        "each theme has one line"
+    );
+    debug_assert!(
+        list.matches(" (current)\n").count() <= 1,
+        "one theme or none is current"
+    );
+    list
 }
 
 fn load_startup_config(path: Option<std::path::PathBuf>) -> Result<Config> {
@@ -677,7 +831,8 @@ fn load_startup_config(path: Option<std::path::PathBuf>) -> Result<Config> {
 
 /// A panel to show for an imported Grafana panel, before any data.
 fn panel_state(q: grafana::QueryPanel) -> app::PanelState {
-    app::PanelState {
+    debug_assert_eq!(q.exprs.len(), q.expr_paths.len(), "each query has a path");
+    let state = app::PanelState {
         title: q.title,
         exprs: q.exprs,
         legends: q.legends,
@@ -702,7 +857,18 @@ fn panel_state(q: grafana::QueryPanel) -> app::PanelState {
         options: q.options,
         resolution: q.resolution,
         notices: Default::default(),
-    }
+    };
+    debug_assert_eq!(
+        state.exprs.len(),
+        state.legends.len(),
+        "each query has a legend"
+    );
+    debug_assert_eq!(
+        state.exprs.len(),
+        state.query_modes.len(),
+        "each query has a mode"
+    );
+    state
 }
 
 /// Several dashboards ready to show, one per tab.
@@ -728,25 +894,13 @@ fn build_dashboard_set(
         root,
         files,
     } = set;
-    let mut names = HashSet::new();
-    let mut dashboards = Vec::with_capacity(files.len());
-    for file in files {
-        let context = build_import_context(&file.single, config_vars.clone(), cli_vars);
-        print_import_diagnostics_for(Some(&file.path), &context.diagnostics);
-        names.extend(file.single.variable_names);
-        let refresh_rate = resolve_refresh_rate_ms(
-            cli_refresh_rate,
-            config_refresh_rate,
-            file.single.refresh_rate_ms,
-        );
-        dashboards.push(app::DashboardInfo {
-            title: file.single.title,
-            path: file.path,
-            refresh_every: Duration::from_millis(refresh_rate),
-            skipped_panels: file.single.skipped_panels,
-        });
-    }
-
+    let (dashboards, names) = dashboard_infos(
+        files,
+        config_vars.as_ref(),
+        cli_vars,
+        cli_refresh_rate,
+        config_refresh_rate,
+    );
     let mut variables = VariableState::default();
     let pinned = merge_user_vars(&mut variables, config_vars, cli_vars);
     variables.names.extend(names);
@@ -765,7 +919,13 @@ fn build_dashboard_set(
         }
     }
     let section_owner = combined.layout.section_owners(root);
+    debug_assert!(
+        section_owner.values().all(|&tab| tab < dashboards.len()),
+        "each section belongs to a dashboard tab"
+    );
+    let count = combined.queries.len();
     let panels: Vec<_> = combined.queries.into_iter().map(panel_state).collect();
+    debug_assert_eq!(panels.len(), count, "each query gives one panel");
     let template = app::DashboardTemplate::new(combined.layout, combined.repeats, &panels)
         .with_conditions(combined.conditions)
         .with_sections(combined.sections);
@@ -777,6 +937,44 @@ fn build_dashboard_set(
     }
 }
 
+/// The tab information of each dashboard file, and the variable names of every
+/// file. Prints the import diagnostics of each file.
+fn dashboard_infos(
+    files: Vec<grafana::DashboardFile>,
+    config_vars: Option<&HashMap<String, String>>,
+    cli_vars: &[(String, String)],
+    cli_refresh_rate: Option<u64>,
+    config_refresh_rate: Option<u64>,
+) -> (Vec<app::DashboardInfo>, HashSet<String>) {
+    let count = files.len();
+    let mut names = HashSet::new();
+    let mut dashboards = Vec::with_capacity(count);
+    for file in files {
+        let context = build_import_context(&file.single, config_vars.cloned(), cli_vars);
+        print_import_diagnostics_for(Some(&file.path), &context.diagnostics);
+        names.extend(file.single.variable_names);
+        let refresh_rate = resolve_refresh_rate_ms(
+            cli_refresh_rate,
+            config_refresh_rate,
+            file.single.refresh_rate_ms,
+        );
+        dashboards.push(app::DashboardInfo {
+            title: file.single.title,
+            path: file.path,
+            refresh_every: Duration::from_millis(refresh_rate),
+            skipped_panels: file.single.skipped_panels,
+        });
+    }
+    debug_assert_eq!(dashboards.len(), count, "each file gives one dashboard");
+    debug_assert!(
+        dashboards
+            .iter()
+            .all(|info| !info.path.as_os_str().is_empty()),
+        "each dashboard names its file"
+    );
+    (dashboards, names)
+}
+
 /// Pins variables of every dashboard in tab group `root` to the user's values,
 /// as `merge_user_vars` pins a single dashboard's.
 fn pin_section_variables(
@@ -785,6 +983,10 @@ fn pin_section_variables(
     pinned: &HashSet<String>,
     values: &HashMap<String, Vec<String>>,
 ) {
+    debug_assert!(
+        pinned.iter().all(|name| values.contains_key(name)),
+        "each pinned variable has values"
+    );
     for (section, variables) in sections.iter_mut() {
         if !matches!(section, crate::dashboard::SectionId::Tab(group, _) if *group == root) {
             continue;
@@ -799,6 +1001,10 @@ fn pin_section_variables(
             variable.all = false;
             variable.all_value = None;
             variable.query = None;
+            debug_assert!(
+                !variable.values.is_empty(),
+                "a pinned variable has one value or more"
+            );
         }
     }
 }
@@ -808,10 +1014,25 @@ fn resolve_refresh_rate_ms(
     config_refresh_rate: Option<u64>,
     dashboard_refresh_rate: Option<u64>,
 ) -> u64 {
-    cli_refresh_rate
+    let rate = cli_refresh_rate
         .or(config_refresh_rate)
         .or(dashboard_refresh_rate)
-        .unwrap_or(1000)
+        .unwrap_or(1000);
+    debug_assert!(
+        cli_refresh_rate.is_none_or(|cli| cli == rate),
+        "the command line wins"
+    );
+    debug_assert!(
+        cli_refresh_rate.is_some() || config_refresh_rate.is_none_or(|config| config == rate),
+        "the config wins over the dashboard"
+    );
+    debug_assert!(
+        cli_refresh_rate.is_some()
+            || config_refresh_rate.is_some()
+            || dashboard_refresh_rate.is_none_or(|dashboard| dashboard == rate),
+        "the dashboard wins over the default"
+    );
+    rate
 }
 
 #[derive(Debug, Default)]
@@ -919,6 +1140,14 @@ fn validate_dashboard_import(
     cli_vars: &[(String, String)],
 ) -> ImportValidationSummary {
     let import_context = build_import_context(&dashboard, config_vars, cli_vars);
+    debug_assert!(
+        import_context.diagnostics.len() >= dashboard.diagnostics.len(),
+        "the summary keeps the import diagnostics"
+    );
+    debug_assert!(
+        dashboard.queries.len() <= crate::dashboard::MAX_LAYOUT_NODES,
+        "the panels are in the node limit"
+    );
     ImportValidationSummary {
         title: dashboard.title,
         panel_count: dashboard.queries.len(),
@@ -940,7 +1169,7 @@ fn build_import_context(
     };
     let pinned_vars = merge_user_vars(&mut variables, config_vars, cli_vars);
 
-    let query_vars = dashboard
+    let query_vars: Vec<grafana::TemplateQueryVar> = dashboard
         .query_vars
         .iter()
         .filter(|var| !pinned_vars.contains(&var.name))
@@ -948,6 +1177,18 @@ fn build_import_context(
         .collect();
     let mut diagnostics = dashboard.diagnostics.clone();
     diagnostics.extend(grafana::variable_diagnostics(dashboard, &variables.vars));
+    debug_assert!(
+        query_vars.len() <= dashboard.query_vars.len(),
+        "a pinned variable leaves the query list"
+    );
+    debug_assert!(
+        variables.names.len() >= dashboard.variable_names.len(),
+        "user values add names and remove none"
+    );
+    debug_assert!(
+        diagnostics.len() >= dashboard.diagnostics.len(),
+        "the context keeps the import diagnostics"
+    );
 
     ImportContext {
         variables,
@@ -994,7 +1235,16 @@ fn merge_user_vars(
         );
         variables.var_values.insert(name, values);
     }
-
+    debug_assert!(
+        pinned_vars.iter().all(|name| {
+            variables.vars.contains_key(name) && variables.var_values.contains_key(name)
+        }),
+        "each pinned variable has a value"
+    );
+    debug_assert!(
+        pinned_vars.is_subset(&variables.names) && pinned_vars.is_disjoint(&variables.all_vars),
+        "each pinned variable is a known name without an all selection"
+    );
     pinned_vars
 }
 
@@ -1010,7 +1260,18 @@ fn print_import_diagnostics_for(
     if diagnostics.is_empty() {
         return;
     }
-
+    debug_assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.code.is_empty()),
+        "each diagnostic has a code"
+    );
+    debug_assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.is_empty()),
+        "each diagnostic has a message"
+    );
     let file = file.map(|path| path.display().to_string());
     match &file {
         Some(file) => eprintln!(
@@ -1041,6 +1302,10 @@ fn print_validation_summaries(
     format: cli::ValidateFormat,
     strict: bool,
 ) -> Result<()> {
+    debug_assert!(
+        summaries.dashboards.len() >= 2,
+        "a summary list holds two dashboards or more"
+    );
     match format {
         cli::ValidateFormat::Text => {
             for file in &summaries.dashboards {
