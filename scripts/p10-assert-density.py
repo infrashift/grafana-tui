@@ -27,7 +27,7 @@ FN_RE = re.compile(r"^\s*(pub(\([^)]*\))?\s+)?(const\s+)?(async\s+)?(unsafe\s+)?
 ASSERT_RE = re.compile(
     r"(?<![\w!])(?:debug_)?assert(?:_eq|_ne)?!|(?<![\w!])(?:anyhow::)?(?:ensure|bail)!"
 )
-TEST_MOD_RE = re.compile(r"^\s*mod\s+\w+")
+TEST_MOD_RE = re.compile(r"^\s*(pub(\([^)]*\))?\s+)?mod\s+\w+")
 def blank_literals(text):
     """Return `text` with comments and literals blanked. Newlines stay.
 
