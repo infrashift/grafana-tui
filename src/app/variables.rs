@@ -38,9 +38,9 @@ impl VariableLookup for &HashMap<String, String> {
 
 /// Replaces `$name` and `${name}` references whose name `lookup` resolves.
 ///
-/// Names are read greedily, as Grafana's `\$(\w+)` does, so `$job_name` never
-/// matches a variable called `job`. Unresolved references, and `${name:format}`
-/// references, are copied unchanged. Substituted values are not scanned again.
+/// The parser reads names greedily, as Grafana's `\$(\w+)` does, so `$job_name`
+/// never matches a variable called `job`. It copies unresolved references, and
+/// `${name:format}` references, unchanged. It does not scan substituted values again.
 pub(crate) fn substitute_variables<L: VariableLookup>(text: &str, mut lookup: L) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -91,10 +91,10 @@ fn is_variable_name_char(ch: char) -> bool {
 
 /// Formats selected variable values for a PromQL expression.
 ///
-/// Mirrors Grafana's Prometheus `interpolateQueryExpr` (classic escaping): a
-/// variable that is neither multi-value nor include-all is inserted verbatim;
-/// otherwise each value is regex-escaped for use inside a PromQL string, and
-/// several values become an alternation such as `(a|b)`.
+/// Mirrors Grafana's Prometheus `interpolateQueryExpr` (the classic escape
+/// rules). A variable that is neither multi-value nor include-all goes in
+/// verbatim. Otherwise this function regex-escapes each value for use inside a
+/// PromQL string, and joins several values with `|` in a group such as `(a|b)`.
 pub(crate) fn format_prometheus_values(values: &[String], regex: bool) -> String {
     let formatted = match values {
         [] => String::new(),
@@ -121,7 +121,7 @@ pub(crate) fn format_prometheus_values(values: &[String], regex: bool) -> String
 }
 
 /// Grafana's `prometheusSpecialRegexEscape`: backslashes become four backslashes
-/// and regex metacharacters gain two, so they survive PromQL string unescaping.
+/// and regex metacharacters gain two, so they survive when PromQL unescapes the string.
 fn prometheus_regex_escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -216,10 +216,10 @@ enum PrometheusVariableQuery {
     QueryResult(String),
 }
 
-/// Why query variables are being resolved, which decides which are queried.
+/// Why the app resolves query variables. The reason decides which ones it queries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VariableUpdate {
-    /// The dashboard, or a row or tab copy, is shown for the first time.
+    /// The dashboard, or a row or tab copy, shows for the first time.
     Load,
     /// The time range changed, or the user asked for a refresh.
     TimeRangeChange,

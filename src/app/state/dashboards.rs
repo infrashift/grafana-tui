@@ -1,5 +1,5 @@
 //! Several dashboards in one session. Each dashboard is a tab of one tab
-//! group pinned above the content, and only the active one queries
+//! group pinned above the content. Only the active dashboard queries
 //! Prometheus: its panels, as for any tab, and its variables, which are its
 //! tab's variables.
 
@@ -30,7 +30,7 @@ pub(crate) struct DashboardSet {
     pub(crate) dashboards: Vec<DashboardInfo>,
     /// The dashboard each row and tab section belongs to, by imported id.
     section_owner: HashMap<SectionId, usize>,
-    /// Where each dashboard was left, to return there.
+    /// Where the user left each dashboard, to return there.
     views: Vec<DashboardView>,
 }
 
@@ -69,9 +69,9 @@ impl DashboardSet {
 /// Where the selection goes when another dashboard becomes active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DashboardFocus {
-    /// The dashboard tab bar, as after clicking a tab.
+    /// The dashboard tab bar, as after a click on a tab.
     Bar,
-    /// Where the dashboard was left, or its first item.
+    /// Where the user left the dashboard, or its first item.
     Content,
 }
 
@@ -130,8 +130,8 @@ fn wrapped_index(active: usize, direction: isize, count: usize) -> Option<usize>
 }
 
 impl AppState {
-    /// Shows several dashboards, one per tab of `set.group`, starting with the
-    /// first. Call after the template is applied.
+    /// Shows several dashboards, one per tab of `set.group`, and starts with the
+    /// first. Call this function after `apply_template`.
     pub(crate) fn set_dashboards(&mut self, set: DashboardSet) {
         debug_assert_eq!(
             self.layout.tabs(set.group).map(|group| group.tabs.len()),
@@ -158,7 +158,7 @@ impl AppState {
         );
     }
 
-    /// The tab group holding one tab per dashboard, with several dashboards.
+    /// The tab group that holds one tab per dashboard, with several dashboards.
     pub(crate) fn dashboard_group(&self) -> Option<TabGroupId> {
         self.dashboards.as_ref().map(|set| set.group)
     }
@@ -178,7 +178,7 @@ impl AppState {
     }
 
     /// Shows the next dashboard, or the previous for a negative `direction`,
-    /// wrapping around.
+    /// and wraps around at the ends.
     pub(crate) fn cycle_dashboard(&mut self, direction: isize) -> Result<()> {
         let (Some(set), Some(active)) = (&self.dashboards, self.active_dashboard()) else {
             return Ok(());
@@ -198,7 +198,7 @@ impl AppState {
     }
 
     /// Shows dashboard `index`. Only it queries Prometheus from now on, and it
-    /// refreshes at once, reloading its variables as when a dashboard opens.
+    /// refreshes at once and reloads its variables, as when a dashboard opens.
     pub(crate) fn activate_dashboard(&mut self, index: usize, focus: DashboardFocus) -> Result<()> {
         let (Some(group), Some(previous)) = (self.dashboard_group(), self.active_dashboard())
         else {
@@ -217,8 +217,8 @@ impl AppState {
         debug_assert!(previous < count, "the previous dashboard is in range");
         self.save_dashboard_view(previous);
         self.layout.set_active_tab(group, index);
-        // Panels kept fetching by data conditions are found in the
-        // unfiltered layout, so it must show the same dashboard.
+        // The unfiltered layout holds the panels that data conditions keep in
+        // the fetch, so it must show the same dashboard.
         if self.template.is_some() {
             self.unfiltered_layout
                 .sync_state_from(&self.layout, &self.hidden_items);
@@ -303,8 +303,8 @@ impl AppState {
         );
     }
 
-    /// The row and tab copies whose variables are queried: all of them, except
-    /// those of dashboards that are not shown.
+    /// The row and tab copies whose variables the app queries: all of them,
+    /// except those of dashboards that do not show.
     pub(super) fn live_section_instances(&self) -> Vec<SectionInstance> {
         let Some(set) = &self.dashboards else {
             return self.section_instances.clone();
@@ -333,7 +333,7 @@ impl AppState {
         live
     }
 
-    /// Panels of the dashboard shown, with several dashboards, including those
+    /// Panels of the dashboard shown, with several dashboards, also those
     /// in its collapsed rows, inactive tabs, or hidden by conditions.
     pub(super) fn active_dashboard_panel_indices(&self) -> Option<Vec<usize>> {
         let group = self.dashboard_group()?;
@@ -351,8 +351,8 @@ pub(crate) mod test_support {
     use crate::theme::Theme;
     use std::time::Duration;
 
-    /// A V2 dashboard with one range panel querying `expr` and an `instance`
-    /// variable resolved by `instance_query`, refreshing every `auto_refresh`.
+    /// A V2 dashboard with one range panel that queries `expr`, and an `instance`
+    /// variable that `instance_query` resolves. It refreshes every `auto_refresh`.
     pub(crate) fn v2_dashboard(
         title: &str,
         auto_refresh: &str,
@@ -450,7 +450,7 @@ mod tests {
             dashboard_tab_labels(&titles(&["HashiStack / Nodes", "HashiStack / Vault"])),
             ["Nodes", "Vault"]
         );
-        // Kept when not every title shares it, or a label would be empty.
+        // Kept when not every title shares it, or when a label without it is empty.
         assert_eq!(
             dashboard_tab_labels(&titles(&["HashiStack / Nodes", "Prometheus"])),
             ["HashiStack / Nodes", "Prometheus"]

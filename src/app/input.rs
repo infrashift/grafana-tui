@@ -952,7 +952,7 @@ mod tests {
         assert_eq!(app.active_dashboard(), Some(2));
         app.mode = AppMode::Normal;
 
-        // Clicking a label in the pinned bar shows that dashboard.
+        // A click on a label in the pinned bar shows that dashboard.
         let area = Rect::new(0, 0, size().width, size().height);
         let bar = ui::visible_dashboard_rects(area, &app)[0];
         let titles: Vec<String> = app
@@ -1253,7 +1253,7 @@ mod tests {
             .unwrap();
         assert_eq!(app.theme.name, "terminal");
 
-        // q reverts instead of quitting while the picker is open.
+        // While the picker is open, q reverts the theme and does not quit.
         let action = handle_key(key(KeyCode::Char('q')), size(), &mut app)
             .await
             .unwrap();
@@ -1279,7 +1279,7 @@ mod tests {
         assert!(app.theme_picker.is_none());
         assert_eq!(app.theme.name, "catppuccin-mocha");
 
-        // Reopening starts from the kept theme, and Esc keeps it.
+        // When the picker opens again, it starts from the kept theme, and Esc keeps it.
         handle_key(shift_t(), size(), &mut app).await.unwrap();
         handle_key(key(KeyCode::Home), size(), &mut app)
             .await

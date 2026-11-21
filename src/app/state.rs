@@ -55,15 +55,15 @@ pub(crate) struct PanelState {
     pub(crate) series: Vec<SeriesView>,
     /// Last error message, if any.
     pub(crate) last_error: Option<String>,
-    /// Last query URL used (for debugging).
+    /// The last query URL that the panel used. It helps to debug the panel.
     pub(crate) last_url: Option<String>,
     /// Total number of samples in the current view.
     pub(crate) last_samples: usize,
     /// Grid layout position (if imported from Grafana).
     pub(crate) grid: Option<GridUnit>,
-    /// Y-axis scaling mode.
+    /// The scale mode of the Y axis.
     pub(crate) y_axis_mode: YAxisMode,
-    /// Visualization type.
+    /// The panel type.
     pub(crate) panel_type: PanelType,
     /// Threshold configuration.
     pub(crate) thresholds: Option<Thresholds>,
@@ -73,9 +73,9 @@ pub(crate) struct PanelState {
     pub(crate) max: Option<f64>,
     /// Whether to render automatic grid lines for this panel.
     pub(crate) autogrid: Option<bool>,
-    /// Display formatting imported from Grafana field configuration.
+    /// The display format from the Grafana field configuration.
     pub(crate) display: DisplayFormat,
-    /// Renderer-specific presentation options.
+    /// Display options that apply to one renderer only.
     pub(crate) options: PanelOptions,
     /// Grafana query options that set the range query step.
     pub(crate) resolution: QueryResolution,
@@ -108,7 +108,7 @@ pub(crate) struct QueryResolution {
     pub(crate) target_min_intervals: Vec<Option<String>>,
 }
 
-/// Visualization types supported by grafana-tui.
+/// The panel types that grafana-tui supports.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum PanelType {
     Graph,
@@ -128,7 +128,7 @@ pub(crate) enum PanelOptions {
     Graph(GraphOptions),
 }
 
-/// Graph/timeseries rendering options imported from Grafana.
+/// Grafana options that control how a graph/timeseries panel draws.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct GraphOptions {
     pub(crate) draw_style: GraphDrawStyle,
@@ -177,7 +177,7 @@ pub(crate) enum QueryMode {
     Instant,
 }
 
-/// Modes for Y-axis scaling.
+/// The scale modes of the Y axis.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum YAxisMode {
     /// Auto-scale based on min/max of data.
@@ -189,7 +189,7 @@ pub(crate) enum YAxisMode {
 /// Represents a single time-series line in a chart.
 #[derive(Debug, Clone)]
 pub(crate) struct SeriesView {
-    /// Stable name of the series (used for coloring).
+    /// The stable name of the series. The series color comes from this name.
     pub(crate) name: String,
     /// Latest value of the series (used for display).
     pub(crate) value: Option<f64>,
@@ -199,7 +199,7 @@ pub(crate) struct SeriesView {
     pub(crate) visible: bool,
 }
 
-/// Drops a panel's fetched data, keeping its configuration.
+/// Drops the fetched data of a panel. The panel keeps its configuration.
 fn clear_panel_data(panel: &mut PanelState) {
     let queries = panel.exprs.len();
     panel.series = Vec::new();
@@ -211,7 +211,7 @@ fn clear_panel_data(panel: &mut PanelState) {
     debug_assert_eq!(panel.exprs.len(), queries, "the panel keeps its queries");
 }
 
-/// Grid positioning unit (Grafana style).
+/// A grid position unit (as in Grafana).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GridUnit {
     pub(crate) x: i32,
@@ -272,7 +272,7 @@ impl PanelState {
     }
 
     /// Step and rate interval for the expression at `index`. A target's min
-    /// interval takes precedence over the panel's, and either replaces both the
+    /// interval overrides the panel's, and either replaces both the
     /// dashboard minimum step and the scrape interval, as in Grafana.
     pub(crate) fn query_intervals(
         &self,
@@ -402,13 +402,13 @@ struct StateParts {
 
 #[derive(Debug)]
 pub(crate) struct AppState {
-    /// Prometheus client for making requests.
+    /// The Prometheus client that sends the requests.
     pub(crate) prometheus: prom::PromClient,
     /// Optional external point-event state.
     pub(crate) annotations: crate::annotations::AnnotationState,
     /// Owned active annotation cluster produced by the selected panel's latest draw.
     pub(crate) rendered_annotation_cluster: Option<Vec<crate::annotations::AnnotationEvent>>,
-    /// Active annotation exploration modal, if any.
+    /// The open modal that explores annotations, if any.
     pub(crate) annotation_modal: Option<crate::annotations::AnnotationModal>,
     /// Current time range window.
     pub(crate) range: Duration,
@@ -422,7 +422,7 @@ pub(crate) struct AppState {
     pub(crate) panels: Vec<PanelState>,
     /// When the last refresh finished.
     pub(crate) last_refresh: Instant,
-    /// Refresh work running in the background.
+    /// Refresh work that runs in the background.
     refreshes: refresh::RefreshTasks,
     /// Query end timestamp used by the currently rendered data.
     pub(crate) view_end_ts: i64,
@@ -442,18 +442,18 @@ pub(crate) struct AppState {
     pub(crate) template: Option<DashboardTemplate>,
     /// Variable values bound by repeats, for panels inside repeated items.
     pub(crate) panel_scopes: HashMap<usize, Scope>,
-    /// Variables with `All` selected, for conditional rendering.
+    /// Variables with `All` selected, for the conditions.
     pub(crate) all_vars: HashSet<String>,
-    /// Names of every dashboard variable, for conditional rendering.
+    /// Names of every dashboard variable, for the conditions.
     pub(crate) variable_names: HashSet<String>,
-    /// The expanded template including items conditional rendering hides;
+    /// The expanded template, with the items that the conditions hide.
     /// `layout` is this without `hidden_items`.
     unfiltered_layout: DashboardLayout,
-    /// Conditional rendering of `unfiltered_layout`'s items.
+    /// The conditions on the items of `unfiltered_layout`.
     conditions: Vec<MaterializedCondition>,
-    /// Items conditional rendering currently hides.
+    /// Items that the conditions hide now.
     hidden_items: HashSet<ConditionTarget>,
-    /// Row and tab copies whose variables are resolved against Prometheus.
+    /// Row and tab copies whose variables Prometheus resolves.
     section_instances: Vec<SectionInstance>,
     /// What those section query variables resolved to.
     section_values: ResolvedSections,
@@ -471,7 +471,7 @@ pub(crate) struct AppState {
     pub(crate) themes: Vec<Theme>,
     /// Open theme picker, if any.
     pub(crate) theme_picker: Option<ThemePicker>,
-    /// Time offset from "now" for panning backward in time (0 = live mode).
+    /// Time offset from "now" when the user pans back in time (0 = live mode).
     pub(crate) time_offset: Duration,
     /// Current application mode.
     pub(crate) mode: AppMode,
@@ -479,22 +479,22 @@ pub(crate) struct AppState {
     pub(crate) search_query: String,
     /// Filtered dashboard items based on search query.
     pub(crate) search_results: Vec<DashboardItemId>,
-    /// Cursor X position (timestamp) for inspection.
+    /// The X position (timestamp) of the inspect cursor.
     pub(crate) cursor_x: Option<f64>,
-    /// Global marker set for rendering thresholds
+    /// The global marker set that draws thresholds
     pub(crate) threshold_marker: String,
-    /// Global runtime toggle for automatic grid rendering.
+    /// The global runtime toggle that draws the automatic grid.
     pub(crate) autogrid_enabled: bool,
     /// Configured color for automatic grid lines and labels; the theme's grid
     /// color applies when unset.
     pub(crate) autogrid_color: Option<Color>,
     /// Leaves the terminal's own background visible instead of the theme's.
     pub(crate) transparent_background: bool,
-    /// Image export and recording configuration.
+    /// The configuration of the image export and the recording.
     pub(crate) export: ExportOptions,
-    /// Active frame recording state, if recording is enabled.
+    /// The state of the active frame recording, if there is one.
     pub(crate) recording: Option<RecordingState>,
-    /// Last export or recording status message.
+    /// The last status message of the export or the recording.
     pub(crate) export_status: Option<String>,
     /// Dashboards loaded together, one per tab, when there are several.
     pub(crate) dashboards: Option<DashboardSet>,
@@ -511,7 +511,7 @@ impl AppState {
     /// * `refresh_every` - The data refresh interval.
     /// * `title` - The dashboard title.
     /// * `panels` - The list of panels to display.
-    /// * `skipped_panels` - The count of panels that were skipped during import.
+    /// * `skipped_panels` - The count of panels that the import skipped.
     /// * `theme` - The UI theme to use.
     #[allow(
         clippy::too_many_arguments,
@@ -661,7 +661,7 @@ impl AppState {
         );
     }
 
-    /// Closes the picker, keeping the previewed theme or restoring the original.
+    /// Closes the picker. It keeps the previewed theme or restores the original.
     pub(crate) fn close_theme_picker(&mut self, keep: bool) {
         debug_assert!(
             self.theme_picker_in_range(),
@@ -720,7 +720,7 @@ impl AppState {
         self.time_offset = self.time_offset.saturating_add(shift);
     }
 
-    /// Automatically scroll to ensure the selected panel is visible.
+    /// Scrolls automatically so that the selected panel is visible.
     pub(crate) fn scroll_to_selected_panel(&mut self) {
         debug_assert!(
             self.selection_in_panels(),
@@ -753,7 +753,7 @@ impl AppState {
         self.scroll_to_selected_panel();
     }
 
-    /// Shows an imported dashboard, expanding repeats for the current variables.
+    /// Shows an imported dashboard and expands repeats for the current variables.
     pub(crate) fn apply_template(&mut self, template: DashboardTemplate) {
         self.template = Some(template);
         self.materialize_layout();
@@ -815,9 +815,10 @@ impl AppState {
 
     /// Rebuilds `layout` from the template for the current variable values.
     ///
-    /// Repeat copies are appended to `panels` the first time they appear and keep
-    /// their index afterwards; rows and tab groups keep their open state, and the
-    /// selection moves to its nearest visible ancestor if it disappeared.
+    /// This function appends a repeat copy to `panels` the first time it appears,
+    /// and the copy keeps its index afterwards. Rows and tab groups keep their
+    /// open state. If the selection disappears, it moves to its nearest visible
+    /// ancestor.
     fn materialize_layout(&mut self) {
         let Some(template) = self.template.as_mut() else {
             return;
@@ -908,7 +909,7 @@ impl AppState {
         );
     }
 
-    /// Re-evaluates conditional rendering, for example after new data or a
+    /// Evaluates the conditions again, for example after new data or a
     /// time range change.
     fn apply_conditions(&mut self) {
         if self.template.is_none() || self.conditions.is_empty() {
@@ -1061,7 +1062,7 @@ impl AppState {
         self.layout.visible_panel_indices()
     }
 
-    /// Panels the dashboard currently has, including ones in collapsed rows,
+    /// Panels the dashboard has now, also the ones in collapsed rows,
     /// inactive tabs, or hidden by conditions; with several dashboards, the
     /// shown one's. `panels` may also hold free slots for repeat copies, which
     /// are not part of the dashboard.
@@ -1084,10 +1085,10 @@ impl AppState {
         indices
     }
 
-    /// Panels a layout of only panels shows. Without an imported template the
-    /// panel list is the dashboard, so panels added to it after the layout was
-    /// built are shown too; with one, the layout decides, since the list also
-    /// holds hidden panels and free repeat copy slots.
+    /// Panels a layout of only panels shows. Without an imported template, the
+    /// panel list is the dashboard. So the layout also shows panels that the
+    /// list got after the layout build. With a template, the layout decides,
+    /// because the list also holds hidden panels and free repeat copy slots.
     pub(crate) fn flat_panel_indices(&self) -> Vec<usize> {
         let indices = if self.template.is_some() {
             self.layout.visible_panel_indices()
@@ -1120,7 +1121,7 @@ impl AppState {
         indices
     }
 
-    /// The footer's panel count: `visible/total`, or just the total when all
+    /// The footer's panel count: `visible/total`, or only the total when all
     /// panels are visible.
     pub(crate) fn panel_count_label(&self) -> String {
         debug_assert!(self.is_consistent(), "the app state is consistent");
@@ -1309,12 +1310,12 @@ impl AppState {
         debug_assert!(self.is_consistent(), "the app state is consistent");
     }
 
-    /// Compatibility wrapper for panel-only fullscreen navigation.
+    /// Selects the previous panel in fullscreen (a compatibility wrapper).
     pub(crate) fn select_previous_panel(&mut self) {
         self.move_panel_selection(-1);
     }
 
-    /// Compatibility wrapper for panel-only fullscreen navigation.
+    /// Selects the next panel in fullscreen (a compatibility wrapper).
     pub(crate) fn select_next_panel(&mut self) {
         self.move_panel_selection(1);
     }
@@ -1380,7 +1381,7 @@ impl AppState {
         (end_ts - self.range.as_secs_f64(), end_ts)
     }
 
-    /// Moves the inspection cursor to the center of the displayed time window.
+    /// Moves the inspect cursor to the center of the displayed time window.
     pub(crate) fn center_cursor(&mut self) {
         let (start_ts, end_ts) = self.time_bounds();
         self.cursor_x = Some((start_ts + end_ts) / 2.0);
@@ -1667,7 +1668,7 @@ mod tests {
     }
 
     /// Serves Prometheus API requests from `respond` until the test ends,
-    /// recording each request target.
+    /// and records each request target.
     async fn mock_prometheus(
         respond: fn(&str) -> &'static str,
     ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
@@ -1904,7 +1905,7 @@ mod tests {
             DashboardTemplate::new(layout, crate::dashboard::Repeats::default(), &app.panels)
                 .with_conditions(conditions),
         );
-        // Before its data loads the condition is undecided and the panel shows.
+        // Before its data loads, the condition has no result and the panel shows.
         assert_eq!(app.visible_panel_indices(), [0, 1]);
 
         app.refresh().await.unwrap();
@@ -2025,7 +2026,7 @@ mod tests {
         }
     }
 
-    /// Rotates a repeated row's values the way a churning query variable (pods,
+    /// Rotates a repeated row's values the way a query variable that changes a lot (pods,
     /// for example) does over a long session.
     #[test]
     fn repeats_over_the_layout_limit_report_the_cut_in_the_footer() {
@@ -2107,7 +2108,7 @@ mod tests {
                     HashMap::from([("container".to_string(), vec!["c".to_string()])]),
                 );
             }
-            // Copies keep data while they are shown.
+            // Copies keep data while they show.
             for index in app.visible_panel_indices() {
                 app.panels[index].series = vec![SeriesView {
                     name: "up".to_string(),
@@ -2118,10 +2119,10 @@ mod tests {
             }
         }
 
-        // Three row copies, each showing its pod's panel, are on screen;
+        // Three row copies are on screen, each with the panel of its pod;
         // storage tracks them, not every value ever seen.
         assert_eq!(app.visible_panel_indices().len(), 3);
-        // Freed slots are reused on the next update, so storage peaks at twice
+        // The next update uses the freed slots again, so storage peaks at twice
         // the copies on screen (here the primary panel plus two copies, twice).
         assert!(
             app.panels.len() <= 5,

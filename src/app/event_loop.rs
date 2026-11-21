@@ -49,7 +49,7 @@ where
             needs_draw = false;
         }
 
-        // Refreshes run in the background, so input is handled while
+        // Refreshes run in the background, so the loop handles input while
         // Prometheus is slow or unreachable.
         let refresh_at = app.next_refresh_at();
         let slow_refresh_at = app.slow_refresh_at();
@@ -203,8 +203,8 @@ where
     Ok(())
 }
 
-/// Shows a failed export or recording step in the status line instead of
-/// ending the session, so a full disk or a read-only directory is recoverable.
+/// Shows a failed export or recording step in the status line. The session
+/// continues, so the user can recover from a full disk or a read-only directory.
 fn report_export_error<T>(app: &mut AppState, action: &str, result: Result<T>) {
     if let Err(error) = result {
         app.export_status = Some(format!("{action} failed: {error:#}"));
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn export_failures_are_reported_instead_of_ending_the_session() {
-        // A file where the export directory should be makes every write fail.
+        // A file in the place of the export directory makes every write fail.
         let blocker = test_export_dir("blocked");
         fs::write(&blocker, "not a directory").unwrap();
         let mut app = test_app(ExportOptions {
