@@ -21,7 +21,7 @@ def steps(*pairs):
 ZERO_GOOD = steps(GREEN, (1, RED))                  # a count of problems
 ZERO_GOOD_AMBER = steps(GREEN, (1, AMBER))
 ONE_GOOD = steps(RED, (1, GREEN))                   # a count that must be >= 1
-UTIL = steps(GREEN, (0.8, AMBER), (0.9, RED))       # utilisation 0..1
+UTIL = steps(GREEN, (0.8, AMBER), (0.9, RED))       # the used part, 0..1
 NEUTRAL = steps(BLUE)
 
 

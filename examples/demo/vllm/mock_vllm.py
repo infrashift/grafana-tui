@@ -2,7 +2,7 @@ import time
 import random
 from prometheus_client import start_http_server, Gauge, Counter, Histogram
 
-# Metrics definition matching vLLM grafana dashboard
+# The metrics of the vLLM Grafana dashboard
 # Latency Histograms
 E2E_LATENCY = Histogram('vllm:e2e_request_latency_seconds', 'End to end request latency', ['model_name'])
 ITL_LATENCY = Histogram('vllm:inter_token_latency_seconds', 'Inter token latency', ['model_name'])
@@ -21,7 +21,7 @@ MODEL_NAME = "llama-2-7b"
 
 def simulate_metrics():
     while True:
-        # Simulate request processing
+        # Simulate the time to process a request
         # Randomly increment tokens
         if random.random() > 0.1:
             PROMPT_TOKENS.labels(model_name=MODEL_NAME).inc(random.randint(10, 100))
@@ -41,7 +41,7 @@ def simulate_metrics():
         new_waiting = max(0, min(20, current_waiting + random.randint(-2, 2)))
         REQUESTS_WAITING.labels(model_name=MODEL_NAME).set(new_waiting)
 
-        # Simulate GPU cache usage
+        # Simulate the used part of the GPU cache
         GPU_CACHE_USAGE.labels(model_name=MODEL_NAME).set(random.uniform(0.4, 0.9))
 
         time.sleep(0.1)

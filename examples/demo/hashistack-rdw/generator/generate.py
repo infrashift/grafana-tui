@@ -345,7 +345,7 @@ nomad = dashboard(
                      desc="Memory still free for new allocations. A job asking for more than this cannot land."),
             ts("Allocations running per client", [(f'nomad_client_allocations_running{{{POOL}}}', '{{instance}}')],
                w=12, desc="Running allocations per client."),
-            # One series per core, and node_status is a label: averaging by
+            # One series per core, and node_status is a label: an average by
             # instance keeps one line per client when a client's status changes.
             ts("Client host CPU vs reserved", [
                 (f'avg by (instance) (nomad_client_host_cpu_total_percent{{{POOL}}}) / 100', '{{instance}} used'),
