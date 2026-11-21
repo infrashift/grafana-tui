@@ -169,8 +169,8 @@ struct PemFile<'a> {
 
 impl<'a> PemFile<'a> {
     fn read(option: &'static str, path: &'a Path) -> Result<Self> {
-        let bytes =
-            std::fs::read(path).map_err(|error| anyhow!("{option} {}: {error}", path.display()))?;
+        let bytes = crate::limits::read_capped(path, crate::limits::MAX_PEM_BYTES)
+            .map_err(|error| anyhow!("{option} {}: {error}", path.display()))?;
         let mut file = Self {
             option,
             path,
@@ -658,6 +658,24 @@ pub(crate) mod tests {
             config_error(url, &key_only),
             "client_key is set without client_cert; a client certificate needs both"
         );
+    }
+
+    #[test]
+    fn a_pem_file_over_its_limit_names_the_option_the_file_and_the_limit() {
+        let limit = crate::limits::MAX_PEM_BYTES;
+        let path = crate::limits::tests::sparse_file("big.pem", limit + 1);
+        let files = TlsFiles {
+            ca_cert: Some(path.clone()),
+            ..TlsFiles::default()
+        };
+        assert_eq!(
+            config_error("https://10.60.1.2:9090", &files),
+            format!(
+                "ca_cert {}: the file is larger than the limit of {limit} bytes",
+                path.display()
+            )
+        );
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

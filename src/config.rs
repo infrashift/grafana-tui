@@ -14,11 +14,10 @@
  * limitations under the License.
  */
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
-use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -58,7 +57,8 @@ impl Config {
         if let Some(path) = config_path
             && path.exists()
         {
-            let content = fs::read_to_string(path)?;
+            let content = crate::limits::read_text_capped(&path, crate::limits::MAX_CONFIG_BYTES)
+                .with_context(|| format!("reading config file: {}", path.display()))?;
             let config: Config = toml::from_str(&content)?;
             return Ok(config);
         }
@@ -123,6 +123,21 @@ pub(crate) fn expand_path(path: &std::path::Path) -> PathBuf {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn a_config_file_over_its_limit_names_the_file_and_the_limit() {
+        let limit = crate::limits::MAX_CONFIG_BYTES;
+        let path = crate::limits::tests::sparse_file("big.toml", limit + 1);
+        let error = Config::load(Some(path.clone())).unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            format!(
+                "reading config file: {}: the file is larger than the limit of {limit} bytes",
+                path.display()
+            )
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn test_config_deserializes_theme_tables() {
