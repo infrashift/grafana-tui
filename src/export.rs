@@ -77,19 +77,29 @@ pub(crate) struct ExportOptions {
 
 impl Default for ExportOptions {
     fn default() -> Self {
-        Self {
+        let options = Self {
             dir: PathBuf::from("./grafana-tui-exports"),
             format: ExportFormat::Svg,
             record_max_frames: 300,
-        }
+        };
+        debug_assert!(
+            (1..=MAX_RECORD_FRAMES).contains(&options.record_max_frames),
+            "the default frame limit is in the valid range"
+        );
+        debug_assert!(
+            !options.dir.as_os_str().is_empty(),
+            "the default export directory has a name"
+        );
+        options
     }
 }
 
 impl ExportOptions {
     pub(crate) fn validate(self) -> Result<Self> {
-        if self.record_max_frames == 0 {
-            return Err(anyhow!("record_max_frames must be greater than 0"));
-        }
+        anyhow::ensure!(
+            self.record_max_frames > 0,
+            "record_max_frames must be greater than 0"
+        );
         anyhow::ensure!(
             self.record_max_frames <= MAX_RECORD_FRAMES,
             "record_max_frames is {}, more than the limit of {MAX_RECORD_FRAMES}",
@@ -180,6 +190,11 @@ impl SvgOut {
     fn finish(self) -> String {
         self.0
     }
+
+    /// Tells if the text is empty or ends with the end of an element.
+    fn is_complete(&self) -> bool {
+        self.0.is_empty() || self.0.ends_with('>')
+    }
 }
 
 impl PlotRect {
@@ -190,28 +205,64 @@ impl PlotRect {
     fn bottom(self) -> f64 {
         self.top + self.height
     }
+
+    /// Tells if the rectangle has finite edges and no negative size.
+    fn is_valid(self) -> bool {
+        let edges = [self.left, self.top, self.width, self.height];
+        edges.iter().all(|edge| edge.is_finite()) && self.width >= 0.0 && self.height >= 0.0
+    }
+}
+
+/// Tells if `color` is an SVG color of the form `#rrggbb`.
+fn is_hex_color(color: &str) -> bool {
+    let digits = color.strip_prefix('#').unwrap_or_default();
+    color.len() == 7 && digits.chars().all(|digit| digit.is_ascii_hexdigit())
+}
+
+/// Tells if `anchor` is an SVG `text-anchor` value.
+fn is_text_anchor(anchor: &str) -> bool {
+    matches!(anchor, "start" | "middle" | "end")
 }
 
 pub(crate) fn export_current(app: &mut AppState, viewport: Rect) -> Result<Vec<PathBuf>> {
     let svg = render_svg(app, viewport);
     let stem = format!("grafana-tui-{}", timestamp_id());
     let paths = write_outputs(&svg, &app.export.dir, &stem, app.export.format)?;
+    debug_assert!(!paths.is_empty(), "the export writes a file");
+    debug_assert!(
+        paths.iter().all(|path| path.starts_with(&app.export.dir)),
+        "each export file is in the export directory"
+    );
     app.export_status = Some(format!("Exported {}", display_paths(&paths)));
     Ok(paths)
 }
 
 pub(crate) fn toggle_recording(app: &mut AppState, viewport: Rect) -> Result<()> {
-    if app.recording.is_some() {
+    let was_recording = app.recording.is_some();
+    let result = if was_recording {
         stop_recording(app, RecordingCompletionReason::Stopped)
     } else {
         start_recording(app, viewport)
-    }
+    };
+    debug_assert!(
+        !was_recording || app.recording.is_none(),
+        "a stop ends the recording, also on an error"
+    );
+    debug_assert!(
+        result.is_err() || app.recording.is_some() != was_recording,
+        "a toggle that succeeds changes the recording state"
+    );
+    result
 }
 
 pub(crate) fn capture_recording_frame(app: &mut AppState, viewport: Rect) -> Result<()> {
     let Some(recording) = app.recording.as_ref() else {
         return Ok(());
     };
+    debug_assert!(
+        recording.frame_count <= recording.max_frames,
+        "the frame count obeys the frame limit"
+    );
     if recording.frame_count >= recording.max_frames {
         app.export_status = Some(format!(
             "Recording capped at {}/{} frames in {}; press Ctrl+E or q to save",
@@ -239,6 +290,7 @@ pub(crate) fn capture_recording_frame(app: &mut AppState, viewport: Rect) -> Res
                 .map(|name| name.to_string_lossy().to_string())
         })
         .collect::<Vec<_>>();
+    debug_assert!(files.len() == paths.len(), "each frame file has a name");
 
     if let Some(recording) = app.recording.as_mut() {
         recording.frame_count = frame_index;
@@ -249,12 +301,21 @@ pub(crate) fn capture_recording_frame(app: &mut AppState, viewport: Rect) -> Res
             elapsed_ms,
             files,
         });
+        debug_assert!(
+            recording.frames.len() == recording.frame_count,
+            "the recording keeps one entry for each frame"
+        );
     }
     app.export_status = Some(format!("Recording frame {frame_index}"));
     Ok(())
 }
 
 fn start_recording(app: &mut AppState, viewport: Rect) -> Result<()> {
+    debug_assert!(app.recording.is_none(), "no recording runs");
+    debug_assert!(
+        app.export.record_max_frames > 0,
+        "the frame limit is positive"
+    );
     let started_at = timestamp_rfc3339();
     let dir = app
         .export
@@ -301,6 +362,14 @@ pub(crate) fn stop_recording(app: &mut AppState, reason: RecordingCompletionReas
         completed_reason,
         frames: recording.frames,
     };
+    debug_assert!(
+        manifest.frames.len() == manifest.frame_count,
+        "the manifest lists each frame"
+    );
+    debug_assert!(
+        manifest.frame_count <= manifest.max_frames,
+        "the frame count obeys the frame limit"
+    );
     let manifest_path = recording.dir.join("manifest.json");
     let json = serde_json::to_string_pretty(&manifest)?;
     write_atomic(&manifest_path, json.as_bytes())?;
@@ -321,6 +390,10 @@ pub(crate) fn stop_recording(app: &mut AppState, reason: RecordingCompletionReas
 pub(crate) fn render_svg(app: &AppState, viewport: Rect) -> String {
     let width = f64::from(viewport.width).max(1.0) * CELL_WIDTH;
     let height = f64::from(viewport.height).max(1.0) * CELL_HEIGHT;
+    debug_assert!(
+        width >= CELL_WIDTH && height >= CELL_HEIGHT,
+        "the SVG is at least one cell in size"
+    );
     let bg = color_hex(app.theme.background, "#111111");
     let text = color_hex(app.theme.text, "#e6e6e6");
     let border = color_hex(app.theme.border, "#555555");
@@ -343,11 +416,18 @@ pub(crate) fn render_svg(app: &AppState, viewport: Rect) -> String {
 
     render_footer(app, &mut out, width, height, &text, &border);
     out.push_str("</g></svg>");
-    out.finish()
+    let svg = out.finish();
+    debug_assert!(
+        svg.starts_with("<svg ") && svg.ends_with("</g></svg>"),
+        "the SVG text has one root element"
+    );
+    svg
 }
 
 /// Draws one panel, row header, tab bar or empty tab message of the dashboard.
 fn render_dashboard_item(app: &AppState, item: &ui::DashboardRect, text: &str, out: &mut SvgOut) {
+    debug_assert!(is_hex_color(text), "the text color is a hex color");
+    debug_assert!(out.is_complete(), "the SVG text ends with an element");
     let selected = app.selected_item == Some(item.id);
     match item.kind {
         ui::DashboardRectKind::Panel { index } => {
@@ -397,6 +477,7 @@ fn render_tab_group(
     text: &str,
     out: &mut SvgOut,
 ) {
+    debug_assert!(is_hex_color(text), "the text color is a hex color");
     let Some(group) = app.layout.tabs(group_id) else {
         return;
     };
@@ -430,9 +511,15 @@ fn render_tab_group(
             escape_xml(&segment.text)
         ));
     }
+    debug_assert!(out.is_complete(), "the tab bar ends with an element");
 }
 
 fn render_header(app: &AppState, out: &mut SvgOut, width: f64, text: &str, border: &str) {
+    debug_assert!(width > 8.0, "the header frame has a positive width");
+    debug_assert!(
+        is_hex_color(text) && is_hex_color(border),
+        "the header colors are hex colors"
+    );
     out.put(format_args!(
         r#"<rect x="4" y="4" width="{:.0}" height="44" fill="none" stroke="{border}"/>"#,
         width - 8.0
@@ -460,6 +547,7 @@ fn render_row_header(
     selected: bool,
     out: &mut SvgOut,
 ) {
+    debug_assert!(rect.is_valid(), "the row rectangle is valid");
     let Some(row) = app.layout.row(row_id) else {
         return;
     };
@@ -486,6 +574,7 @@ fn render_row_header(
             bold: selected,
         },
     );
+    debug_assert!(out.is_complete(), "the row header ends with an element");
 }
 
 fn render_footer(
@@ -496,6 +585,11 @@ fn render_footer(
     text: &str,
     border: &str,
 ) {
+    debug_assert!(width > 0.0 && height > 0.0, "the SVG has a positive size");
+    debug_assert!(
+        is_hex_color(text) && is_hex_color(border),
+        "the footer colors are hex colors"
+    );
     out.put(format_args!(
         r#"<line x1="4" y1="{:.0}" x2="{:.0}" y2="{:.0}" stroke="{border}"/>"#,
         height - 30.0,
@@ -533,6 +627,7 @@ fn render_panel(
     selected: bool,
     out: &mut SvgOut,
 ) {
+    debug_assert!(rect.is_valid(), "the panel rectangle is valid");
     render_panel_frame(app, panel, rect, selected, out);
     let inner = PlotRect {
         left: rect.left + PANEL_PADDING,
@@ -540,6 +635,7 @@ fn render_panel(
         width: (rect.width - PANEL_PADDING * 2.0).max(0.0),
         height: (rect.height - TITLE_HEIGHT - PANEL_PADDING).max(0.0),
     };
+    debug_assert!(inner.is_valid(), "the inner rectangle is valid");
 
     if let Some(err) = &panel.last_error
         && panel.series.is_empty()
@@ -558,6 +654,7 @@ fn render_panel(
         PanelType::Table => render_table_panel(app, panel, inner, out),
         PanelType::Heatmap => render_heatmap_panel(app, panel, inner, out),
     }
+    debug_assert!(out.is_complete(), "the panel ends with an element");
 }
 
 /// Draws the panel border and the panel title, with the data notice after the title.
@@ -568,6 +665,7 @@ fn render_panel_frame(
     selected: bool,
     out: &mut SvgOut,
 ) {
+    debug_assert!(rect.is_valid(), "the panel rectangle is valid");
     let theme = &app.theme;
     let border = if selected {
         color_hex(theme.border_focused, "#f0d000")
@@ -606,13 +704,16 @@ fn render_panel_frame(
         ));
     }
     out.push_str("</text>");
+    debug_assert!(out.is_complete(), "the panel title ends with an element");
 }
 
 /// Draws the query error of a panel without series, wrapped to the inner rectangle `inner`.
 fn render_panel_error(app: &AppState, err: &str, inner: PlotRect, out: &mut SvgOut) {
     let color = color_hex(app.theme.error, "#ff5555");
+    debug_assert!(inner.is_valid(), "the inner rectangle is valid");
     let max_lines = num::f64_to_usize((inner.height - 18.0).max(0.0) / ERROR_LINE_HEIGHT) + 1;
     let lines = wrap_text(err, text_columns(inner.width, FONT_SIZE), max_lines);
+    debug_assert!(lines.len() <= max_lines, "the error fits in its lines");
     for (row, line) in lines.iter().enumerate() {
         write_text(
             out,
@@ -651,6 +752,8 @@ struct SvgGraph<'a> {
 impl SvgGraph<'_> {
     /// Returns the label of the y value `value`, shortened to the label room.
     fn y_label(&self, value: f64) -> String {
+        debug_assert!(self.y_label_room.is_finite(), "the label room is finite");
+        debug_assert!(self.y_label_room >= 0.0, "the label room is not negative");
         fit_text(
             &self.panel.display.format_number(value),
             self.y_label_room,
@@ -661,6 +764,7 @@ impl SvgGraph<'_> {
 
     /// Returns the line style of the dashed grid lines.
     fn grid_style(&self) -> LineStyle<'_> {
+        debug_assert!(is_hex_color(&self.grid), "the grid color is a hex color");
         LineStyle {
             color: &self.grid,
             dash: Some("3 5"),
@@ -682,6 +786,7 @@ fn render_graph_panel(
     rect: PlotRect,
     out: &mut SvgOut,
 ) {
+    debug_assert!(rect.is_valid(), "the graph rectangle is valid");
     let view = app.graph_view(panel_index, panel);
     if !view.has_content() {
         render_no_data(app, panel, rect, out);
@@ -693,6 +798,10 @@ fn render_graph_panel(
     let y_label_room = y_label_room(panel, view.y_bounds, &view.thresholds, rect.width);
     let legend_items = view.visible_legend_labels();
     let (plot, legend) = graph_geometry(rect, y_label_room, legend_items, view.has_legend());
+    debug_assert!(
+        plot.left >= rect.left && plot.right() <= rect.right() + 1.0,
+        "the plot is in the panel columns"
+    );
     let graph = SvgGraph {
         app,
         panel,
@@ -722,6 +831,7 @@ fn render_graph_panel(
     render_series(&graph, out);
     render_cursor(&graph, out);
     render_legend_or_detail(&graph, &clusters, &legend, out);
+    debug_assert!(out.is_complete(), "the graph ends with an element");
 }
 
 /// Returns the width of the widest y label, up to 40% of the panel width.
@@ -767,13 +877,23 @@ fn graph_geometry(
         width: plot_width,
         height: (rect.height - X_LABEL_HEIGHT - legend_height - 10.0).max(1.0),
     };
+    debug_assert!(
+        plot.is_valid() && plot.width >= 1.0 && plot.height >= 1.0,
+        "the plot is valid and at least one pixel in size"
+    );
+    debug_assert!(
+        max_legend_rows >= 1 && legend.rows <= max_legend_rows,
+        "the legend obeys its row limit"
+    );
     (plot, legend)
 }
 
 /// Draws the y axis and the x axis lines.
 fn render_axes(graph: &SvgGraph<'_>, out: &mut SvgOut) {
     let plot = graph.plot;
+    debug_assert!(plot.is_valid(), "the plot is valid");
     let axis = color_hex(graph.app.theme.axis, "#777777");
+    debug_assert!(is_hex_color(&axis), "the axis color is a hex color");
     out.put(format_args!(
         r#"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{axis}"/>"#,
         plot.left,
@@ -797,6 +917,7 @@ type LabelledThreshold = ((f64, Color), bool);
 /// each threshold in range with whether its label fits.
 fn render_value_grid(graph: &SvgGraph<'_>, out: &mut SvgOut) -> (bool, Vec<LabelledThreshold>) {
     let (plot, y_bounds) = (graph.plot, graph.y_bounds);
+    debug_assert!(y_bounds[0] <= y_bounds[1], "the y bounds are in order");
     // Labels give way rather than overprint: the axis ends first, then
     // thresholds, then ticks. A label that gives way keeps its line.
     let y_extent = |y: f64| [y + 4.0 - SMALL_FONT_SIZE, y + 4.0];
@@ -831,6 +952,11 @@ fn render_value_grid(graph: &SvgGraph<'_>, out: &mut SvgOut) -> (bool, Vec<Label
             );
         }
     }
+    debug_assert!(
+        thresholds.len() <= graph.thresholds.len(),
+        "the grid keeps no more thresholds than the graph has"
+    );
+    debug_assert!(out.is_complete(), "the value grid ends with an element");
     (show_y_max, thresholds)
 }
 
@@ -838,6 +964,7 @@ fn render_value_grid(graph: &SvgGraph<'_>, out: &mut SvgOut) -> (bool, Vec<Label
 fn render_time_grid(graph: &SvgGraph<'_>, out: &mut SvgOut) -> bool {
     let plot = graph.plot;
     let [x_min, x_max] = graph.x_bounds;
+    debug_assert!(x_min <= x_max, "the x bounds are in order");
     let start_label = ui::format_time(x_min);
     let end_label = ui::format_time(x_max);
     let mut x_labels = AxisLabels::default();
@@ -869,6 +996,7 @@ fn render_time_grid(graph: &SvgGraph<'_>, out: &mut SvgOut) -> bool {
             );
         }
     }
+    debug_assert!(out.is_complete(), "the time grid ends with an element");
     show_x_max
 }
 
@@ -880,6 +1008,7 @@ fn render_axis_end_labels(
     out: &mut SvgOut,
 ) {
     let (plot, text) = (graph.plot, &graph.text);
+    debug_assert!(plot.is_valid(), "the plot is valid");
     let label_x = plot.left - 8.0;
     let y_min = graph.y_label(graph.y_bounds[0]);
     write_text(
@@ -926,11 +1055,19 @@ fn render_axis_end_labels(
             SMALL_FONT_SIZE,
         );
     }
+    debug_assert!(out.is_complete(), "the labels end with an element");
 }
 
 /// Draws each threshold line in range, with its label where the label fits.
 fn render_thresholds(graph: &SvgGraph<'_>, thresholds: &[LabelledThreshold], out: &mut SvgOut) {
     let plot = graph.plot;
+    let [lower, upper] = graph.y_bounds;
+    debug_assert!(
+        thresholds
+            .iter()
+            .all(|((value, _), _)| *value > lower && *value < upper),
+        "each threshold is inside the y bounds"
+    );
     for &((value, color), labelled) in thresholds {
         let y = map_y(value, graph.y_bounds, plot);
         let color = color_hex(color, "#ffaa00");
@@ -957,6 +1094,7 @@ fn render_thresholds(graph: &SvgGraph<'_>, thresholds: &[LabelledThreshold], out
             );
         }
     }
+    debug_assert!(out.is_complete(), "the thresholds end with an element");
 }
 
 /// Draws the area fill of each visible series of a line graph with fill opacity.
@@ -967,6 +1105,14 @@ fn render_area_fills(graph: &SvgGraph<'_>, out: &mut SvgOut) {
     let Some(opacity) = graph_area_opacity(&graph.options) else {
         return;
     };
+    debug_assert!(
+        graph.colors.len() == graph.panel.series.len(),
+        "each series has a color"
+    );
+    debug_assert!(
+        opacity > 0.0 && opacity <= 1.0,
+        "the fill opacity is a fraction"
+    );
     for (series, color) in graph.panel.series.iter().zip(&graph.colors) {
         if !series.visible {
             continue;
@@ -978,6 +1124,11 @@ fn render_area_fills(graph: &SvgGraph<'_>, out: &mut SvgOut) {
 
 /// Draws each visible series in the draw style of the graph.
 fn render_series(graph: &SvgGraph<'_>, out: &mut SvgOut) {
+    debug_assert!(
+        graph.colors.len() == graph.panel.series.len(),
+        "each series has a color"
+    );
+    debug_assert!(out.is_complete(), "the SVG text ends with an element");
     for (series, color) in graph.panel.series.iter().zip(&graph.colors) {
         if !series.visible {
             continue;
@@ -993,6 +1144,8 @@ fn render_series(graph: &SvgGraph<'_>, out: &mut SvgOut) {
 
 /// Draws one series as a line, with its points when the graph always shows points.
 fn render_graph_line(graph: &SvgGraph<'_>, series: &SeriesView, color: &str, out: &mut SvgOut) {
+    debug_assert!(is_hex_color(color), "the series color is a hex color");
+    debug_assert!(graph.plot.is_valid(), "the plot is valid");
     if let Some(path) = series_path(series, graph.x_bounds, graph.y_bounds, graph.plot) {
         out.put(format_args!(
             r#"<path data-role="graph-line" d="{path}" fill="none" stroke="{color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>"#
@@ -1013,6 +1166,14 @@ fn render_cursor(graph: &SvgGraph<'_>, out: &mut SvgOut) {
         return;
     }
     let x = map_x(cursor_x, graph.x_bounds, graph.plot);
+    debug_assert!(
+        x >= graph.plot.left && x <= graph.plot.right(),
+        "the cursor line is in the plot"
+    );
+    debug_assert!(
+        graph.plot.height >= 0.0,
+        "the cursor line has no negative length"
+    );
     draw_line(
         out,
         (x, graph.plot.top),
@@ -1033,6 +1194,17 @@ fn render_legend_or_detail(
     out: &mut SvgOut,
 ) {
     let plot = graph.plot;
+    debug_assert!(
+        legend
+            .entries
+            .iter()
+            .all(|entry| entry.index < graph.colors.len()),
+        "each legend entry is a series of the graph"
+    );
+    debug_assert!(
+        clusters.iter().all(|cluster| !cluster.events.is_empty()),
+        "each annotation cluster has an event"
+    );
     let active_annotation =
         active_export_annotation(clusters, graph.app.cursor_x, graph.x_bounds, plot);
     let legend_top = plot.bottom() + X_LABEL_HEIGHT;
@@ -1104,6 +1276,11 @@ fn render_annotation_details(
     color: &str,
     out: &mut SvgOut,
 ) {
+    debug_assert!(is_hex_color(color), "the annotation color is a hex color");
+    debug_assert!(
+        left.is_finite() && top.is_finite(),
+        "the details have a finite position"
+    );
     let character_budget = if width.is_finite() && width > 0.0 {
         num::f64_to_usize((width / SMALL_FONT_SIZE).floor())
     } else {
@@ -1120,6 +1297,7 @@ fn render_annotation_details(
 }
 
 fn render_stat_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut SvgOut) {
+    debug_assert!(rect.is_valid(), "the stat rectangle is valid");
     let Some(series) = panel.series.iter().find(|series| series.visible) else {
         render_no_data(app, panel, rect, out);
         return;
@@ -1138,6 +1316,10 @@ fn render_stat_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &m
         &panel.display.format_value(series.value),
         width,
         STAT_FONT_SIZE,
+    );
+    debug_assert!(
+        (SMALL_FONT_SIZE..=STAT_FONT_SIZE).contains(&size),
+        "the stat value size is in the font size range"
     );
     write_text(
         out,
@@ -1165,6 +1347,7 @@ fn render_stat_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &m
         width: (rect.width - 16.0).max(1.0),
         height: (rect.height - 82.0).max(1.0),
     };
+    debug_assert!(sparkline.is_valid(), "the sparkline rectangle is valid");
     render_sparkline(series, sparkline, &color, out);
 }
 
@@ -1179,6 +1362,10 @@ fn render_gauge_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &
         .max
         .unwrap_or(if value > 100.0 { value * 1.2 } else { 100.0 });
     let ratio = value_ratio(value, min, max);
+    debug_assert!(
+        !(ratio < 0.0 || ratio > 1.0),
+        "the ratio is not out of range"
+    );
     let color = value_color(app, panel, value);
     let text = color_hex(app.theme.text, "#e6e6e6");
     let track = color_hex(app.theme.gauge_track, "#444444");
@@ -1303,9 +1490,17 @@ fn render_bar_gauge_panel(app: &AppState, panel: &PanelState, rect: PlotRect, ou
         .filter_map(|(_, value)| value.is_finite().then_some(*value))
         .fold(0.0_f64, f64::max)
         .max(1.0);
+    debug_assert!(
+        max_value.is_finite() && max_value >= 1.0,
+        "the bar scale is finite and at least one"
+    );
     let row_height = 22.0;
     let max_rows = num::f64_to_usize((rect.height / row_height).floor().max(1.0));
     let shown = values.into_iter().take(max_rows).collect::<Vec<_>>();
+    debug_assert!(
+        !shown.is_empty() && shown.len() <= max_rows,
+        "the panel shows one bar or more, up to the row limit"
+    );
     // The name column is as wide as the widest name, up to half the panel,
     // and the value column as wide as the widest value, up to 30%.
     let label_width = shown
@@ -1344,6 +1539,8 @@ fn render_bar_gauge_row(
     out: &mut SvgOut,
 ) {
     let rect = layout.rect;
+    debug_assert!(layout.bar_width >= 1.0, "the bar has a width");
+    debug_assert!(layout.max_value >= 1.0, "the scale is at least one");
     let ratio = (value / layout.max_value).clamp(0.0, 1.0);
     let color = value_color(app, panel, value);
     let (name, _) = fit_text(&series.name, layout.label_width - 8.0, SMALL_FONT_SIZE);
@@ -1410,8 +1607,13 @@ fn render_table_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &
         return;
     }
 
+    debug_assert!(rect.is_valid(), "the table rectangle is valid");
     let row_height = 20.0;
     let value_x = rect.left + rect.width * 0.7;
+    debug_assert!(
+        value_x >= rect.left && value_x <= rect.right(),
+        "the value column is in the table"
+    );
     let layout = TableLayout {
         rect,
         row_height,
@@ -1421,6 +1623,7 @@ fn render_table_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &
         text: color_hex(app.theme.text, "#e6e6e6"),
     };
     let max_rows = num::f64_to_usize(((rect.height - row_height) / row_height).floor().max(1.0));
+    debug_assert!(max_rows >= 1, "the table shows one row or more");
 
     render_table_header(app, &layout, out);
     for (row, series) in values.into_iter().take(max_rows).enumerate() {
@@ -1432,6 +1635,7 @@ fn render_table_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out: &
 /// Draws the column titles of a table and the line below them.
 fn render_table_header(app: &AppState, layout: &TableLayout, out: &mut SvgOut) {
     let rect = layout.rect;
+    debug_assert!(rect.is_valid(), "the table rectangle is valid");
     let title = color_hex(app.theme.title, "#00c8ff");
     let border = color_hex(app.theme.border, "#555555");
     write_text(
@@ -1462,6 +1666,7 @@ fn render_table_header(app: &AppState, layout: &TableLayout, out: &mut SvgOut) {
             width: 0.8,
         },
     );
+    debug_assert!(out.is_complete(), "the table header ends with an element");
 }
 
 /// Draws the name and the value of one series of a table at the baseline `y`.
@@ -1473,6 +1678,8 @@ fn render_table_row(
     series: &SeriesView,
     out: &mut SvgOut,
 ) {
+    debug_assert!(is_hex_color(&layout.text), "the text color is a hex color");
+    debug_assert!(y.is_finite(), "the row baseline is finite");
     let value = series
         .value
         .map(|value| panel.display.format_number(value))
@@ -1518,6 +1725,7 @@ fn render_heatmap_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out:
         return;
     };
 
+    debug_assert!(range[0] < range[1], "the heatmap range is not empty");
     let label_width = (rect.width * 0.24).clamp(60.0, 150.0);
     let plot_left = rect.left + label_width;
     let plot_width = (rect.width - label_width - 4.0).max(1.0);
@@ -1526,6 +1734,11 @@ fn render_heatmap_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out:
         .min(num::f64_to_usize((rect.height / 18.0).floor().max(1.0)));
     let row_height = (rect.height / num::usize_to_f64(rows)).max(1.0);
     let cols = num::f64_to_usize((plot_width / 10.0).floor().max(1.0));
+    debug_assert!(
+        rows >= 1 && rows <= visible.len(),
+        "the heatmap shows one series or more, up to the row limit"
+    );
+    debug_assert!(cols >= 1, "the heatmap has a column");
     let cell_width = plot_width / num::usize_to_f64(cols);
     let text = color_hex(app.theme.text, "#e6e6e6");
 
@@ -1552,6 +1765,7 @@ fn render_heatmap_panel(app: &AppState, panel: &PanelState, rect: PlotRect, out:
 
 /// Returns the least and the greatest finite value of the series, or `None` for no range.
 fn heatmap_range(series: &[&SeriesView]) -> Option<[f64; 2]> {
+    debug_assert!(!series.is_empty(), "the heatmap has a series");
     let (mut min, mut max) = (f64::MAX, f64::MIN);
     for (_, value) in series.iter().flat_map(|series| &series.points) {
         if value.is_finite() {
@@ -1562,6 +1776,7 @@ fn heatmap_range(series: &[&SeriesView]) -> Option<[f64; 2]> {
     if !min.is_finite() || !max.is_finite() || min == max {
         return None;
     }
+    debug_assert!(min < max, "the heatmap range is in order and not empty");
     Some([min, max])
 }
 
@@ -1611,30 +1826,59 @@ fn render_heatmap_cells(
 }
 
 fn first_visible_value(panel: &PanelState) -> Option<(&SeriesView, f64)> {
-    panel
+    let first = panel
         .series
         .iter()
         .filter(|series| series.visible)
-        .find_map(|series| series.value.map(|value| (series, value)))
+        .find_map(|series| series.value.map(|value| (series, value)));
+    debug_assert!(
+        first.is_none_or(|(series, _)| series.visible),
+        "the first value is of a visible series"
+    );
+    debug_assert!(
+        first.is_none_or(|(series, value)| series
+            .value
+            .is_some_and(|own| own.to_bits() == value.to_bits())),
+        "the value is the value of its series"
+    );
+    first
 }
 
 fn value_color(app: &AppState, panel: &PanelState, value: f64) -> String {
-    color_hex(
+    debug_assert!(
+        !app.theme.palette.is_empty(),
+        "the theme palette has a color"
+    );
+    let color = color_hex(
         panel
             .get_color_for_value(value)
             .unwrap_or(app.theme.palette_color(0)),
         "#00ff88",
-    )
+    );
+    debug_assert!(is_hex_color(&color), "the value color is a hex color");
+    color
 }
 
 fn value_ratio(value: f64, min: f64, max: f64) -> f64 {
-    if !value.is_finite() || max <= min {
-        return 0.0;
-    }
-    ((value - min) / (max - min)).clamp(0.0, 1.0)
+    let ratio = if !value.is_finite() || max <= min {
+        0.0
+    } else {
+        ((value - min) / (max - min)).clamp(0.0, 1.0)
+    };
+    // A limit that is not finite can give NaN, which the SVG writes as is.
+    debug_assert!(
+        !(ratio < 0.0 || ratio > 1.0),
+        "the ratio is not outside the unit range"
+    );
+    debug_assert!(
+        value.is_finite() || ratio == 0.0,
+        "a value that is not finite gives a ratio of zero"
+    );
+    ratio
 }
 
 fn render_no_data(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut SvgOut) {
+    debug_assert!(rect.is_valid(), "the panel rectangle is valid");
     let columns = text_columns(rect.width - 8.0, FONT_SIZE);
     let text = ui::truncate_title(
         panel.display.no_data_text(),
@@ -1649,6 +1893,7 @@ fn render_no_data(app: &AppState, panel: &PanelState, rect: PlotRect, out: &mut 
         "start",
         FONT_SIZE,
     );
+    debug_assert!(out.is_complete(), "the notice ends with an element");
 }
 
 fn render_sparkline(series: &SeriesView, rect: PlotRect, color: &str, out: &mut SvgOut) {
@@ -1667,8 +1912,13 @@ fn render_sparkline(series: &SeriesView, rect: PlotRect, color: &str, out: &mut 
 
     let min = values.iter().copied().fold(f64::INFINITY, f64::min);
     let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    debug_assert!(min <= max, "the sparkline range is in order");
     let span = (max - min).max(f64::EPSILON);
     let step = rect.width / num::usize_to_f64(values.len() - 1);
+    debug_assert!(
+        step > 0.0 && step.is_finite(),
+        "the sparkline step is finite and positive"
+    );
     let mut path = SvgOut::default();
     for (index, value) in values.iter().enumerate() {
         let x = rect.left + num::usize_to_f64(index) * step;
@@ -1725,6 +1975,7 @@ fn layout_legend(items: Vec<(usize, String)>, width: f64, max_rows: usize) -> Le
         x += label_width + LEGEND_GAP;
     }
     let rows = entries.last().map_or(0, |entry| entry.row + 1);
+    debug_assert!(rows <= entries.len(), "each row has an entry");
     if rows <= max_rows {
         return LegendLayout {
             entries,
@@ -1754,6 +2005,7 @@ fn layout_legend(items: Vec<(usize, String)>, width: f64, max_rows: usize) -> Le
         }
         entries.pop();
     }
+    debug_assert!(entries.len() < total, "some entries are cut");
     LegendLayout {
         entries,
         more: Some(more),
@@ -1770,6 +2022,14 @@ fn render_legend(
     out: &mut SvgOut,
 ) {
     let app = graph.app;
+    debug_assert!(
+        legend.more.is_none() || legend.rows >= 1,
+        "a legend with more text has a row"
+    );
+    debug_assert!(
+        legend.entries.iter().all(|entry| entry.row < legend.rows),
+        "each legend entry is in a legend row"
+    );
     let text = color_hex(app.theme.text, "#e6e6e6");
     let baseline =
         |row: usize| top + LEGEND_PADDING + 2.0 + num::usize_to_f64(row) * LEGEND_ROW_HEIGHT;
@@ -1806,10 +2066,15 @@ fn render_legend(
 }
 
 fn graph_area_opacity(options: &crate::app::GraphOptions) -> Option<f64> {
-    options
+    let opacity = options
         .fill_opacity
         .filter(|value| *value > 0)
-        .map(|value| f64::from(value.min(100)) / 100.0)
+        .map(|value| f64::from(value.min(100)) / 100.0);
+    debug_assert!(
+        opacity.is_none_or(|opacity| opacity > 0.0 && opacity <= 1.0),
+        "the fill opacity is a fraction"
+    );
+    opacity
 }
 
 fn graph_point_in_range(x: f64, y: f64, x_bounds: [f64; 2]) -> bool {
@@ -1818,6 +2083,8 @@ fn graph_point_in_range(x: f64, y: f64, x_bounds: [f64; 2]) -> bool {
 
 fn render_graph_points(graph: &SvgGraph<'_>, series: &SeriesView, color: &str, out: &mut SvgOut) {
     let (rect, y_bounds, x_bounds) = (graph.plot, graph.y_bounds, graph.x_bounds);
+    debug_assert!(rect.is_valid(), "the plot is valid");
+    debug_assert!(is_hex_color(color), "the series color is a hex color");
     for (x, y) in &series.points {
         if !graph_point_in_range(*x, *y, x_bounds) {
             continue;
@@ -1842,8 +2109,16 @@ fn render_graph_bars(graph: &SvgGraph<'_>, series: &SeriesView, color: &str, out
         return;
     }
     let bar_width = (rect.width / num::usize_to_f64(visible_points.len())).max(1.0) * 0.7;
+    debug_assert!(
+        bar_width > 0.0 && bar_width.is_finite(),
+        "a bar has a finite positive width"
+    );
     let baseline = graph.baseline;
     let baseline_y = map_y(baseline, y_bounds, rect);
+    debug_assert!(
+        !(baseline_y < rect.top || baseline_y > rect.bottom()),
+        "the bar baseline is not outside the plot"
+    );
 
     for (x, y) in visible_points {
         let px = map_x(*x, x_bounds, rect) - bar_width / 2.0;
@@ -1873,8 +2148,16 @@ fn render_graph_area(
         return;
     };
 
+    debug_assert!(
+        opacity > 0.0 && opacity <= 1.0,
+        "the fill opacity is a fraction"
+    );
     let baseline = graph.baseline;
     let baseline_y = map_y(baseline, y_bounds, rect);
+    debug_assert!(
+        !(baseline_y < rect.top || baseline_y > rect.bottom()),
+        "the area baseline is not outside the plot"
+    );
     let first_x = map_x(first.0, x_bounds, rect);
     let last_x = map_x(last.0, x_bounds, rect);
 
@@ -1925,6 +2208,7 @@ fn series_path(
 }
 
 fn write_outputs(svg: &str, dir: &Path, stem: &str, format: ExportFormat) -> Result<Vec<PathBuf>> {
+    debug_assert!(!stem.is_empty(), "the file stem has a name");
     fs::create_dir_all(dir)
         .with_context(|| format!("failed to create export directory {}", dir.display()))?;
     let mut paths = Vec::new();
@@ -1941,6 +2225,10 @@ fn write_outputs(svg: &str, dir: &Path, stem: &str, format: ExportFormat) -> Res
         paths.push(path);
     }
 
+    debug_assert!(
+        (1..=2).contains(&paths.len()),
+        "each format writes one or two files"
+    );
     Ok(paths)
 }
 
@@ -1951,7 +2239,12 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
+    debug_assert!(!name.is_empty(), "the target path has a file name");
     let temporary = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    debug_assert!(
+        temporary.parent() == path.parent(),
+        "the temporary file is in the directory of the target"
+    );
     let result = fs::write(&temporary, bytes).and_then(|()| fs::rename(&temporary, path));
     if result.is_err() {
         // The write error goes to the caller. A failed cleanup leaves only a hidden
@@ -1965,14 +2258,20 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 /// recordings render a PNG for every changed frame.
 fn system_fonts() -> Arc<resvg::usvg::fontdb::Database> {
     static FONTS: OnceLock<Arc<resvg::usvg::fontdb::Database>> = OnceLock::new();
-    Arc::clone(FONTS.get_or_init(|| {
+    let fonts = Arc::clone(FONTS.get_or_init(|| {
         let mut fonts = resvg::usvg::fontdb::Database::new();
         fonts.load_system_fonts();
         Arc::new(fonts)
-    }))
+    }));
+    debug_assert!(
+        Arc::strong_count(&fonts) >= 2,
+        "the cache keeps the font database"
+    );
+    fonts
 }
 
 fn write_png(svg: &str, path: &Path) -> Result<()> {
+    debug_assert!(svg.starts_with("<svg"), "the input is SVG text");
     let options = resvg::usvg::Options {
         fontdb: system_fonts(),
         ..resvg::usvg::Options::default()
@@ -1990,12 +2289,25 @@ fn write_png(svg: &str, path: &Path) -> Result<()> {
     let png = pixmap
         .encode_png()
         .with_context(|| format!("failed to encode {}", path.display()))?;
+    debug_assert!(
+        png.starts_with(b"\x89PNG"),
+        "the encoded data has the PNG signature"
+    );
     write_atomic(path, &png)
 }
 
 fn draw_line(out: &mut SvgOut, start: (f64, f64), end: (f64, f64), style: LineStyle<'_>) {
     let (x1, y1) = start;
     let (x2, y2) = end;
+    // Infinite y bounds give NaN rows, so the check lets NaN through.
+    debug_assert!(
+        [x1, y1, x2, y2].iter().all(|value| !value.is_infinite()),
+        "the line ends are not infinite"
+    );
+    debug_assert!(
+        style.width > 0.0 && is_hex_color(style.color),
+        "the line has a width and a hex color"
+    );
     out.put(format_args!(
         r#"<line x1="{x1:.2}" y1="{y1:.2}" x2="{x2:.2}" y2="{y2:.2}" stroke="{}" stroke-width="{:.2}""#,
         style.color,
@@ -2009,11 +2321,17 @@ fn draw_line(out: &mut SvgOut, start: (f64, f64), end: (f64, f64), style: LineSt
 
 /// How many characters of `size` fit in `width` pixels.
 fn text_columns(width: f64, size: f64) -> usize {
-    if width.is_finite() && width > 0.0 {
+    debug_assert!(size > 0.0, "the font size is positive");
+    let columns = if width.is_finite() && width > 0.0 {
         num::f64_to_usize((width / (size * CHAR_ADVANCE)).floor())
     } else {
         0
-    }
+    };
+    debug_assert!(
+        columns == 0 || num::usize_to_f64(columns) * size * CHAR_ADVANCE <= width * (1.0 + 1e-9),
+        "the columns fit in the width"
+    );
+    columns
 }
 
 /// Extents of the labels placed along one axis, so that a later label can
@@ -2025,6 +2343,14 @@ impl AxisLabels {
     /// Places a label over `[start, end]`, unless it would come within
     /// `AXIS_LABEL_GAP` of a placed one. Returns whether it was placed.
     fn claim(&mut self, [start, end]: [f64; 2]) -> bool {
+        debug_assert!(
+            !start.is_infinite() && !end.is_infinite(),
+            "the label extent is not infinite"
+        );
+        debug_assert!(
+            start <= end || start.is_nan() || end.is_nan(),
+            "the label extent is in order"
+        );
         let clear = self.0.iter().all(|&[placed_start, placed_end]| {
             end + AXIS_LABEL_GAP <= placed_start || placed_end + AXIS_LABEL_GAP <= start
         });
@@ -2043,8 +2369,13 @@ fn text_width(text: &str, size: f64) -> f64 {
 /// Fits `text` in `width` pixels: at `size`, or as small as
 /// `SMALL_FONT_SIZE`, then cut short with `…`. Returns the text and its size.
 fn fit_text(text: &str, width: f64, size: f64) -> (String, f64) {
+    debug_assert!(
+        size > 0.0 && size.is_finite(),
+        "the font size is finite and positive"
+    );
     let fitted = (size * width / text_width(text, size).max(size * CHAR_ADVANCE)).min(size);
     if fitted >= SMALL_FONT_SIZE.min(size) {
+        debug_assert!(fitted <= size, "a fitted size is not larger than the size");
         return (text.to_string(), fitted);
     }
     let size = SMALL_FONT_SIZE.min(size);
@@ -2093,10 +2424,23 @@ fn wrap_text(text: &str, columns: usize, max_lines: usize) -> Vec<String> {
             last.push('…');
         }
     }
+    debug_assert!(lines.len() <= max_lines, "the text obeys the line limit");
+    debug_assert!(
+        lines.iter().all(|line| line.chars().count() <= columns),
+        "each line obeys the column limit"
+    );
     lines
 }
 
 fn write_text(out: &mut SvgOut, x: f64, y: f64, text: &str, color: &str, anchor: &str, size: f64) {
+    debug_assert!(
+        !x.is_infinite() && !y.is_infinite() && size > 0.0,
+        "the text has a position that is not infinite and a positive size"
+    );
+    debug_assert!(
+        is_hex_color(color) && is_text_anchor(anchor),
+        "the text has a hex color and a text anchor"
+    );
     out.put(format_args!(
         r#"<text x="{x:.2}" y="{y:.2}" fill="{color}" font-size="{size:.1}" text-anchor="{anchor}">{}</text>"#,
         escape_xml(text)
@@ -2119,6 +2463,14 @@ fn write_styled_text(out: &mut SvgOut, x: f64, y: f64, text: &str, style: TextSt
         size,
         bold,
     } = style;
+    debug_assert!(
+        !x.is_infinite() && !y.is_infinite() && size > 0.0,
+        "the text has a position that is not infinite and a positive size"
+    );
+    debug_assert!(
+        is_hex_color(color) && is_text_anchor(anchor),
+        "the text has a hex color and a text anchor"
+    );
     let weight = if bold { r#" font-weight="bold""# } else { "" };
     out.put(format_args!(
         r#"<text x="{x:.2}" y="{y:.2}" fill="{color}" font-size="{size:.1}" text-anchor="{anchor}"{weight}>{}</text>"#,
@@ -2127,6 +2479,17 @@ fn write_styled_text(out: &mut SvgOut, x: f64, y: f64, text: &str, style: TextSt
 }
 
 fn write_rect(out: &mut SvgOut, rect: PlotRect, fill: &str, stroke: &str, stroke_width: f64) {
+    // A NaN bar value gives a NaN width, so the check lets NaN through.
+    debug_assert!(
+        rect.left.is_finite() && rect.top.is_finite() && !(rect.width < 0.0 || rect.height < 0.0),
+        "the rectangle has a finite corner and no negative size"
+    );
+    debug_assert!(
+        [fill, stroke]
+            .iter()
+            .all(|color| *color == "none" || is_hex_color(color)),
+        "the fill and the stroke are hex colors or none"
+    );
     out.put(format_args!(
         r#"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="{fill}" stroke="{stroke}" stroke-width="{stroke_width:.2}"/>"#,
         rect.left, rect.top, rect.width, rect.height
@@ -2134,12 +2497,18 @@ fn write_rect(out: &mut SvgOut, rect: PlotRect, fill: &str, stroke: &str, stroke
 }
 
 fn scaled_rect(rect: Rect) -> PlotRect {
-    PlotRect {
+    let scaled = PlotRect {
         left: f64::from(rect.x) * CELL_WIDTH,
         top: f64::from(rect.y) * CELL_HEIGHT,
         width: f64::from(rect.width) * CELL_WIDTH,
         height: f64::from(rect.height) * CELL_HEIGHT,
-    }
+    };
+    debug_assert!(scaled.is_valid(), "the scaled rectangle is valid");
+    debug_assert!(
+        scaled.left >= 0.0 && scaled.top >= 0.0,
+        "the scaled rectangle is not left of or above the origin"
+    );
+    scaled
 }
 
 fn map_x(value: f64, bounds: [f64; 2], plot: PlotRect) -> f64 {
@@ -2153,7 +2522,7 @@ fn map_y(value: f64, bounds: [f64; 2], plot: PlotRect) -> f64 {
 }
 
 fn color_hex(color: Color, reset: &str) -> String {
-    match color {
+    let hex = match color {
         Color::Reset => reset.to_string(),
         Color::Black => "#000000".to_string(),
         Color::Red => "#cc3333".to_string(),
@@ -2173,7 +2542,12 @@ fn color_hex(color: Color, reset: &str) -> String {
         Color::White => "#f5f5f5".to_string(),
         Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
         Color::Indexed(value) => indexed_color_hex(value).to_string(),
-    }
+    };
+    debug_assert!(
+        color == Color::Reset || is_hex_color(&hex),
+        "a terminal color gives a hex color"
+    );
+    hex
 }
 
 fn indexed_color_hex(value: u8) -> &'static str {
@@ -2181,7 +2555,13 @@ fn indexed_color_hex(value: u8) -> &'static str {
         "#000000", "#cc3333", "#33cc66", "#d6c343", "#4f83ff", "#cc66cc", "#33c8cc", "#d0d0d0",
         "#666666", "#ff6666", "#66ff99", "#fff06a", "#7aa2ff", "#ff8cff", "#66ffff", "#f5f5f5",
     ];
-    ANSI.get(usize::from(value)).copied().unwrap_or("#a0a0a0")
+    let hex = ANSI.get(usize::from(value)).copied().unwrap_or("#a0a0a0");
+    debug_assert!(is_hex_color(hex), "the indexed color is a hex color");
+    debug_assert!(
+        usize::from(value) >= ANSI.len() || hex != "#a0a0a0",
+        "each basic color index has its own color"
+    );
+    hex
 }
 
 fn escape_xml(input: &str) -> String {
@@ -2197,6 +2577,14 @@ fn escape_xml(input: &str) -> String {
             _ => escaped.push(char::REPLACEMENT_CHARACTER),
         }
     }
+    debug_assert!(
+        !escaped.contains(['<', '>', '"', '\'']),
+        "the escaped text has no markup characters"
+    );
+    debug_assert!(
+        escaped.len() >= input.len(),
+        "the escaped text is not shorter than the input"
+    );
     escaped
 }
 
@@ -2221,11 +2609,20 @@ fn timestamp_rfc3339() -> String {
 }
 
 fn display_paths(paths: &[PathBuf]) -> String {
-    paths
+    let text = paths
         .iter()
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>()
-        .join(", ")
+        .join(", ");
+    debug_assert!(
+        paths.is_empty() || !text.is_empty(),
+        "a list of paths gives text"
+    );
+    debug_assert!(
+        text.matches(", ").count() >= paths.len().saturating_sub(1),
+        "the paths have a separator between each pair"
+    );
+    text
 }
 
 #[cfg(test)]
