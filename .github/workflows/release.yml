@@ -5,12 +5,19 @@ name: Release
 #
 #   git tag vX.Y.Z && git push origin vX.Y.Z
 #
+# When the tag push starts no run, start the run by hand for the tag:
+#
+#   gh workflow run release.yml --ref vX.Y.Z
+#
+# A run by hand on a branch stops in `verify`, because it has no tag.
+#
 # Each build job can only read. Only `publish` can write. It makes only the
 # GitHub release of this tag, with the archives and the checksum manifest that
 # install.sh verifies.
 on:
   push:
     tags: ['v*.*.*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,6 +38,10 @@ jobs:
           persist-credentials: false
       - name: Tag matches the Cargo.toml version
         run: |
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            echo "::error::${GITHUB_REF_NAME} is not a tag; start the run for a vX.Y.Z tag"
+            exit 1
+          fi
           version="$(make -s version)"
           if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
             echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version}"
