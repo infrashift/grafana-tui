@@ -13,6 +13,7 @@ COVER_MIN ?= 95
 CARGO     ?= cargo
 SEMSCOPE  ?= semscope
 LEXISCOPE ?= lexiscope
+PYTHON    ?= python3
 OKFW      ?= okfw
 # The documents that lexiscope checks against ASD-STE100. CHANGELOG.md is
 # generated history, so it is not in the list.
@@ -75,9 +76,10 @@ STE_SCAN  := $(LEXISCOPE) scan --ruleset ste-100 --ruleset vocabulary.cue --fail
 @tidy:
     $(CARGO) metadata --locked --format-version 1 >/dev/null
 
-## p10: check src/ against the NASA Power of 10 rules (semscope, with the .semscope.cue overlay)
+## p10: check src/ against the NASA Power of 10 rules (semscope, then the R5 assertion density)
 @p10:
     $(SEMSCOPE) scan --ruleset nasa-p10 --ruleset .semscope.cue --fail-level error src
+    $(PYTHON) -I scripts/p10-assert-density.py
 
 ## docs-style: check the docs and the code comments against ASD-STE100 (lexiscope)
 @docs-style:

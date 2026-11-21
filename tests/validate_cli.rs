@@ -516,16 +516,24 @@ fn assert_demo_set_validates_at_once(set: &str, title_prefix: &str) {
         .get("dashboards")
         .and_then(|list| list.as_array())
         .unwrap();
-    assert_eq!(dashboards.len(), paths.len());
+    assert_eq!(dashboards.len(), paths.len(), "one summary for each file");
     for (dashboard, path) in dashboards.iter().zip(&paths) {
-        assert_eq!(dashboard["path"], path.display().to_string());
+        assert_eq!(
+            dashboard["path"],
+            path.display().to_string(),
+            "the summaries keep the file order"
+        );
         assert!(
             dashboard["title"]
                 .as_str()
                 .unwrap()
-                .starts_with(title_prefix)
+                .starts_with(title_prefix),
+            "the title starts with {title_prefix}"
         );
-        assert!(dashboard["diagnostics"].as_array().unwrap().is_empty());
+        assert!(
+            dashboard["diagnostics"].as_array().unwrap().is_empty(),
+            "the dashboard has no diagnostics"
+        );
     }
 }
 

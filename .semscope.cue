@@ -15,6 +15,7 @@ rules: "NASA-P10-05": check: assert_calls: rust: [
 	"ensure!", "bail!",
 ]
 
-// The ratchet: a rule stays off until the refactor phase that clears it turns
-// it on. Remove each line when its phase closes (ISSUE-002 to ISSUE-009).
-rules: "NASA-P10-05": enabled: false // ISSUE-009 assertion density
+// R5 deviation (ADR-0002): semscope averages over every function, also the
+// one-line helpers. scripts/p10-assert-density.py checks the functions of
+// more than 5 lines, and `make p10` runs it after this scan.
+rules: "NASA-P10-05": enabled: false
