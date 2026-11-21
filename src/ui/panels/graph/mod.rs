@@ -20,16 +20,18 @@ mod bounds;
 mod labels;
 mod overlay;
 mod thresholds;
+mod ticks;
 mod view;
 
 use annotations::{active_cluster, render_annotation_clusters, terminal_clusters};
-use autogrid::{build_autogrid_datasets, calculate_time_grid_ticks, calculate_value_grid_ticks};
+use autogrid::build_autogrid_datasets;
 use labels::{
     PlotBounds, YLabelArea, YLabelContext, render_autogrid_time_labels,
     render_intermediate_y_labels, y_label_width,
 };
 use overlay::{merge_overlay_buffer, merge_overlay_buffer_preserving_data};
 use thresholds::{render_raw_threshold_lines, threshold_datasets, threshold_marker};
+use ticks::{calculate_time_grid_ticks, calculate_value_grid_ticks};
 use view::{GraphView, LegendMode, area_fill_baseline};
 
 use crate::annotations::{AnnotationCluster, format_cluster_detail_lines};
@@ -43,8 +45,8 @@ use ratatui::{
 };
 
 pub(crate) use annotations::cluster_badge;
-pub(crate) use autogrid::nice_grid_step;
 pub(crate) use bounds::calculate_y_bounds;
+pub(crate) use ticks::{svg_time_ticks, svg_value_ticks};
 
 fn graph_type_for_draw_style(draw_style: crate::app::GraphDrawStyle) -> GraphType {
     match draw_style {

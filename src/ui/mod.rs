@@ -31,7 +31,8 @@ pub(crate) use layout::{
     visible_panel_rects,
 };
 pub(crate) use panels::{
-    NoticeLevel, calculate_y_bounds, cluster_badge, data_notice, fit_panel_title, nice_grid_step,
+    NoticeLevel, calculate_y_bounds, cluster_badge, data_notice, fit_panel_title, svg_time_ticks,
+    svg_value_ticks,
 };
 pub(crate) use tabs::{render_tab_bar, tab_at, tab_bar_geometry, tab_title, truncate_title};
 pub(crate) use theme_picker::{render_theme_picker, theme_picker_page_size};
