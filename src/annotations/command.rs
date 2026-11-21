@@ -117,6 +117,30 @@ impl CommandProvider {
         context: &AnnotationRefreshContext,
     ) -> Result<AnnotationSnapshot, AnnotationProviderError> {
         let request = encode_request(context).map_err(|error| self.error(error))?;
+        let mut child = self.spawn_command()?;
+        let group = ProcessGroup::led_by(&child);
+        let (mut tasks, stdout_receiver) = start_pipe_tasks(&mut child, request);
+
+        let protocol = collect_process(&mut child, stdout_receiver, &mut tasks);
+        let reason = match tokio::time::timeout(self.config.timeout, protocol).await {
+            Ok(Ok(outcome)) => {
+                return self
+                    .settle_outcome(outcome, &mut child, &group, tasks)
+                    .await;
+            }
+            Ok(Err(reason)) => reason,
+            Err(_) => format!(
+                "timed out after {}",
+                humantime::format_duration(self.config.timeout)
+            ),
+        };
+        let cleanup = kill_and_reap(&mut child, &group).await;
+        drop(tasks);
+        Err(self.error(append_cleanup(reason, cleanup)))
+    }
+
+    /// Starts the provider command with piped standard streams.
+    fn spawn_command(&self) -> Result<Child, AnnotationProviderError> {
         let mut command = Command::new(&self.config.program);
         command
             .args(&self.config.args)
@@ -126,55 +150,22 @@ impl CommandProvider {
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
-        let mut child = command
+        command
             .spawn()
-            .map_err(|error| self.error(format!("could not start: {error}")))?;
-        let group = ProcessGroup::led_by(&child);
+            .map_err(|error| self.error(format!("could not start: {error}")))
+    }
 
-        let stdin = child
-            .stdin
-            .take()
-            .expect("command configured with piped stdin");
-        let stdout = child
-            .stdout
-            .take()
-            .expect("command configured with piped stdout");
-        let stderr = child
-            .stderr
-            .take()
-            .expect("command configured with piped stderr");
-
-        let (stdout_sender, stdout_receiver) = oneshot::channel();
-        let mut tasks = ProcessTasks {
-            stdin: tokio::spawn(write_request(stdin, request)),
-            stdout: tokio::spawn(async move {
-                let _ = stdout_sender.send(read_stdout_limited(stdout).await);
-            }),
-            stderr: tokio::spawn(read_stderr_capped(stderr)),
-        };
-
-        let protocol = collect_process(&mut child, stdout_receiver, &mut tasks);
-        let outcome = match tokio::time::timeout(self.config.timeout, protocol).await {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(reason)) => {
-                let cleanup = kill_and_reap(&mut child, &group).await;
-                drop(tasks);
-                return Err(self.error(append_cleanup(reason, cleanup)));
-            }
-            Err(_) => {
-                let cleanup = kill_and_reap(&mut child, &group).await;
-                drop(tasks);
-                let reason = format!(
-                    "timed out after {}",
-                    humantime::format_duration(self.config.timeout)
-                );
-                return Err(self.error(append_cleanup(reason, cleanup)));
-            }
-        };
-
+    /// Turns the outcome of a process that ended in time into a snapshot or an error.
+    async fn settle_outcome(
+        &self,
+        outcome: ProtocolOutcome,
+        child: &mut Child,
+        group: &ProcessGroup,
+        tasks: ProcessTasks,
+    ) -> Result<AnnotationSnapshot, AnnotationProviderError> {
         match outcome {
             ProtocolOutcome::StdoutLimitExceeded => {
-                let cleanup = kill_and_reap(&mut child, &group).await;
+                let cleanup = kill_and_reap(child, group).await;
                 join_or_abort_tasks(tasks).await;
                 Err(self.error(append_cleanup(
                     "exceeded 10 MiB stdout limit".to_string(),
@@ -182,35 +173,74 @@ impl CommandProvider {
                 )))
             }
             ProtocolOutcome::Complete(collected) if !collected.status.success() => {
-                let reason = match collected.status.code() {
-                    Some(code) => format!("exited with status {code}"),
-                    None => "terminated by signal".to_string(),
-                };
-                let reason = match collected.stderr {
-                    Ok(stderr) => append_stderr(reason, &stderr),
-                    Err(error) => format!("{reason}; could not read stderr: {error}"),
-                };
-                Err(self.error(reason))
+                Err(self.error(failure_reason(collected)))
             }
-            ProtocolOutcome::Complete(collected) => {
-                request_delivered(collected.stdin)
-                    .map_err(|error| self.error(format!("could not write request: {error}")))?;
-                let stdout = collected
-                    .stdout
-                    .map_err(|error| self.error(format!("could not read stdout: {error}")))?;
-                collected
-                    .stderr
-                    .map_err(|error| self.error(format!("could not read stderr: {error}")))?;
-                let CapturedStdout::Complete(stdout) = stdout else {
-                    unreachable!("stdout limit is handled before successful completion")
-                };
-                parse_stdout(&self.config.program, &stdout)
-            }
+            ProtocolOutcome::Complete(collected) => self.parse_collected(collected),
         }
+    }
+
+    /// Parses the stdout of a process that exited with success.
+    fn parse_collected(
+        &self,
+        collected: CollectedProcess,
+    ) -> Result<AnnotationSnapshot, AnnotationProviderError> {
+        request_delivered(collected.stdin)
+            .map_err(|error| self.error(format!("could not write request: {error}")))?;
+        let stdout = collected
+            .stdout
+            .map_err(|error| self.error(format!("could not read stdout: {error}")))?;
+        collected
+            .stderr
+            .map_err(|error| self.error(format!("could not read stderr: {error}")))?;
+        let CapturedStdout::Complete(stdout) = stdout else {
+            unreachable!("stdout limit is handled before successful completion")
+        };
+        parse_stdout(&self.config.program, &stdout)
     }
 
     fn error(&self, reason: impl std::fmt::Display) -> AnnotationProviderError {
         AnnotationProviderError::command(&self.config.program, reason)
+    }
+}
+
+/// Starts the tasks that write the request to stdin and read stdout and stderr.
+fn start_pipe_tasks(
+    child: &mut Child,
+    request: Vec<u8>,
+) -> (ProcessTasks, oneshot::Receiver<io::Result<CapturedStdout>>) {
+    let stdin = child
+        .stdin
+        .take()
+        .expect("command configured with piped stdin");
+    let stdout = child
+        .stdout
+        .take()
+        .expect("command configured with piped stdout");
+    let stderr = child
+        .stderr
+        .take()
+        .expect("command configured with piped stderr");
+
+    let (stdout_sender, stdout_receiver) = oneshot::channel();
+    let tasks = ProcessTasks {
+        stdin: tokio::spawn(write_request(stdin, request)),
+        stdout: tokio::spawn(async move {
+            let _ = stdout_sender.send(read_stdout_limited(stdout).await);
+        }),
+        stderr: tokio::spawn(read_stderr_capped(stderr)),
+    };
+    (tasks, stdout_receiver)
+}
+
+/// Why a process that exited without success failed, with its stderr.
+fn failure_reason(collected: CollectedProcess) -> String {
+    let reason = match collected.status.code() {
+        Some(code) => format!("exited with status {code}"),
+        None => "terminated by signal".to_string(),
+    };
+    match collected.stderr {
+        Ok(stderr) => append_stderr(reason, &stderr),
+        Err(error) => format!("{reason}; could not read stderr: {error}"),
     }
 }
 

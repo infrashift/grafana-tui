@@ -257,18 +257,9 @@ impl DashboardLayout {
             owners: &mut HashMap<SectionId, usize>,
         ) {
             for item in items {
-                match item {
-                    DashboardLayoutItem::Row(row) => {
-                        owners.insert(SectionId::Row(row.id), owner);
-                        collect(&row.children, owner, owners);
-                    }
-                    DashboardLayoutItem::Tabs(group) => {
-                        for (index, tab) in group.tabs.iter().enumerate() {
-                            owners.insert(SectionId::Tab(group.id, index), owner);
-                            collect(&tab.children, owner, owners);
-                        }
-                    }
-                    DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => {}
+                for (section, children) in item_sections(item) {
+                    owners.insert(section, owner);
+                    collect(children, owner, owners);
                 }
             }
         }
@@ -522,6 +513,20 @@ fn apply_state(
             }
             DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => {}
         }
+    }
+}
+
+/// The rows and tabs that `item` itself defines, each with its children.
+fn item_sections(item: &DashboardLayoutItem) -> Vec<(SectionId, &[DashboardLayoutItem])> {
+    match item {
+        DashboardLayoutItem::Row(row) => vec![(SectionId::Row(row.id), row.children.as_slice())],
+        DashboardLayoutItem::Tabs(group) => group
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| (SectionId::Tab(group.id, index), tab.children.as_slice()))
+            .collect(),
+        DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => Vec::new(),
     }
 }
 

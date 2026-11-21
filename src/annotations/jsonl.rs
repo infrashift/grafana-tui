@@ -73,79 +73,56 @@ pub(crate) fn parse_jsonl(
         }
 
         let line_number = index + 1;
-        let raw: RawAnnotationEvent = serde_json::from_str(line).map_err(|error| {
-            AnnotationLoadError::at_line(
-                source,
-                line_number,
-                format!(
-                    "invalid annotation event (time, text, tags, and panel_titles must have valid types): {error}"
-                ),
-            )
-        })?;
-        let time = DateTime::parse_from_rfc3339(&raw.time)
-            .map_err(|error| {
-                AnnotationLoadError::at_line(
-                    source,
-                    line_number,
-                    format!("time must be an RFC 3339 timestamp: {error}"),
-                )
-            })?
-            .with_timezone(&Utc);
-
-        if raw.text.trim().is_empty() {
-            return Err(AnnotationLoadError::at_line(
-                source,
-                line_number,
-                "text must not be empty",
-            ));
-        }
-        if raw.tags.iter().any(|tag| tag.trim().is_empty()) {
-            return Err(AnnotationLoadError::at_line(
-                source,
-                line_number,
-                "tags must not contain empty strings",
-            ));
-        }
-
-        let target = match raw.panel_titles {
-            RawPanelTitles::Missing => AnnotationTarget::All,
-            RawPanelTitles::Null(()) => {
-                return Err(AnnotationLoadError::at_line(
-                    source,
-                    line_number,
-                    "panel_titles must not be null",
-                ));
-            }
-            RawPanelTitles::Titles(titles) if titles.is_empty() => {
-                return Err(AnnotationLoadError::at_line(
-                    source,
-                    line_number,
-                    "panel_titles must contain at least one title",
-                ));
-            }
-            RawPanelTitles::Titles(titles)
-                if titles.iter().any(|title| title.trim().is_empty()) =>
-            {
-                return Err(AnnotationLoadError::at_line(
-                    source,
-                    line_number,
-                    "panel_titles must not contain blank strings",
-                ));
-            }
-            RawPanelTitles::Titles(titles) => {
-                AnnotationTarget::PanelTitles(titles.into_iter().collect())
-            }
-        };
-
-        events.push(AnnotationEvent {
-            time,
-            text: raw.text,
-            tags: raw.tags,
-            target,
-        });
+        let event = parse_event(line)
+            .map_err(|reason| AnnotationLoadError::at_line(source, line_number, reason))?;
+        events.push(event);
     }
 
     Ok(AnnotationSnapshot::new(events))
+}
+
+/// Parses one line of JSON into an event, or returns why the line is not valid.
+fn parse_event(line: &str) -> Result<AnnotationEvent, String> {
+    let raw: RawAnnotationEvent = serde_json::from_str(line).map_err(|error| {
+        format!(
+            "invalid annotation event (time, text, tags, and panel_titles must have valid types): {error}"
+        )
+    })?;
+    let time = DateTime::parse_from_rfc3339(&raw.time)
+        .map_err(|error| format!("time must be an RFC 3339 timestamp: {error}"))?
+        .with_timezone(&Utc);
+
+    if raw.text.trim().is_empty() {
+        return Err("text must not be empty".to_string());
+    }
+    if raw.tags.iter().any(|tag| tag.trim().is_empty()) {
+        return Err("tags must not contain empty strings".to_string());
+    }
+
+    let target = parse_target(raw.panel_titles)?;
+    Ok(AnnotationEvent {
+        time,
+        text: raw.text,
+        tags: raw.tags,
+        target,
+    })
+}
+
+/// The panels that an event applies to, or why its `panel_titles` is not valid.
+fn parse_target(panel_titles: RawPanelTitles) -> Result<AnnotationTarget, String> {
+    match panel_titles {
+        RawPanelTitles::Missing => Ok(AnnotationTarget::All),
+        RawPanelTitles::Null(()) => Err("panel_titles must not be null".to_string()),
+        RawPanelTitles::Titles(titles) if titles.is_empty() => {
+            Err("panel_titles must contain at least one title".to_string())
+        }
+        RawPanelTitles::Titles(titles) if titles.iter().any(|title| title.trim().is_empty()) => {
+            Err("panel_titles must not contain blank strings".to_string())
+        }
+        RawPanelTitles::Titles(titles) => {
+            Ok(AnnotationTarget::PanelTitles(titles.into_iter().collect()))
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

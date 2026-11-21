@@ -35,8 +35,21 @@ const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 /// Longest excerpt of a response body included in an error message.
 const ERROR_EXCERPT_CHARS: usize = 512;
 
-type QueryWaiter = tokio::sync::oneshot::Sender<Result<QueryResult, String>>;
+/// The result that the first caller of a query sends to the callers that wait.
+type WaiterResult = Result<QueryResult, String>;
+type QueryWaiter = tokio::sync::oneshot::Sender<WaiterResult>;
 type InflightQueries = Arc<Mutex<HashMap<String, Vec<QueryWaiter>>>>;
+
+/// Waits for the result of a query that another caller sends.
+async fn wait_for_inflight(
+    rx: tokio::sync::oneshot::Receiver<WaiterResult>,
+) -> Result<QueryResult> {
+    match rx.await {
+        Ok(Ok(res)) => Ok(res),
+        Ok(Err(s)) => Err(anyhow!(s)),
+        Err(_) => Err(anyhow!("inflight request cancelled")),
+    }
+}
 
 /// A range query's identity: expression, start, end, and step.
 type CacheKey = (String, i64, i64, Duration);
@@ -338,62 +351,58 @@ impl PromClient {
         }
 
         let inflight_key = format!("{}|{}|{}|{}", expr, start, end, step.as_millis());
-        let claim = {
-            let mut inflight = lock(&self.inflight);
-            if let Some(waiters) = inflight.get_mut(&inflight_key) {
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                waiters.push(tx);
-                Err(rx)
-            } else {
-                inflight.insert(inflight_key.clone(), Vec::new());
-                Ok(InflightGuard {
-                    inflight: Arc::clone(&self.inflight),
-                    key: inflight_key,
-                })
-            }
-        };
-        let claim = match claim {
+        let claim = match self.claim_inflight(inflight_key) {
             Ok(claim) => claim,
-            Err(rx) => {
-                return match rx.await {
-                    Ok(Ok(res)) => Ok(res),
-                    Ok(Err(s)) => Err(anyhow!(s)),
-                    Err(_) => Err(anyhow!("inflight request cancelled")),
-                };
-            }
+            Err(rx) => return wait_for_inflight(rx).await,
         };
 
         let url = self.build_query_range_url(expr, start, end, step);
+        let final_res = self.request_with_retries(&url).await;
+        if let Ok(result) = &final_res {
+            lock(&self.cache).insert(cache_key, result.clone());
+        }
 
+        claim.publish(&final_res);
+        final_res
+    }
+
+    /// Claims the query `key`, or returns a receiver for the result of the
+    /// caller that claimed it first.
+    fn claim_inflight(
+        &self,
+        key: String,
+    ) -> std::result::Result<InflightGuard, tokio::sync::oneshot::Receiver<WaiterResult>> {
+        let mut inflight = lock(&self.inflight);
+        if let Some(waiters) = inflight.get_mut(&key) {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            waiters.push(tx);
+            Err(rx)
+        } else {
+            inflight.insert(key.clone(), Vec::new());
+            Ok(InflightGuard {
+                inflight: Arc::clone(&self.inflight),
+                key,
+            })
+        }
+    }
+
+    /// Sends a range query to `url`, and tries again while the error is retryable.
+    async fn request_with_retries(&self, url: &str) -> Result<QueryResult> {
         let max_retries = 3;
         let mut last_err = anyhow!("unknown error");
-        let mut final_res = Err(anyhow!("unknown error"));
 
         for attempt in 0..=max_retries {
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_millis(100 * (1 << attempt))).await;
             }
 
-            match self.perform_request(&url).await {
-                Ok(result) => {
-                    lock(&self.cache).insert(cache_key, result.clone());
-                    final_res = Ok(result);
-                    break;
-                }
-                Err(e) if !is_retryable(&e) => {
-                    last_err = e;
-                    break;
-                }
+            match self.perform_request(url).await {
+                Ok(result) => return Ok(result),
+                Err(e) if !is_retryable(&e) => return Err(e),
                 Err(e) => last_err = e,
             }
         }
-
-        if final_res.is_err() {
-            final_res = Err(last_err);
-        }
-
-        claim.publish(&final_res);
-        final_res
+        Err(last_err)
     }
 
     async fn perform_request(&self, url: &str) -> Result<QueryResult> {

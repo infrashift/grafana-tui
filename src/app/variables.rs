@@ -185,68 +185,43 @@ pub(crate) struct VariableReport {
     pub(crate) errors: Vec<(String, String)>,
 }
 
+/// The Prometheus client and the time window that query variables resolve in.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct VariableQueryContext<'a> {
+    pub(crate) prometheus: &'a prom::PromClient,
+    pub(crate) range: Duration,
+    pub(crate) intervals: QueryIntervals,
+    pub(crate) end_ts: i64,
+}
+
 /// Resolves the query variables `update` calls for, in dashboard order, and
 /// any variable whose query references one that changed. A variable that
 /// fails keeps its value, and the rest still resolve.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn refresh_query_variables(
-    prometheus: &prom::PromClient,
+    context: &VariableQueryContext<'_>,
     query_vars: &[TemplateQueryVar],
     update: VariableUpdate,
-    range: Duration,
-    intervals: QueryIntervals,
-    end_ts: i64,
     vars: &mut HashMap<String, String>,
     var_values: &mut HashMap<String, Vec<String>>,
 ) -> VariableReport {
     let mut report = VariableReport::default();
     let mut changed: Vec<&str> = Vec::new();
     for query_var in query_vars {
-        let due = match update {
-            VariableUpdate::Load => true,
-            VariableUpdate::TimeRangeChange => {
-                query_var.refresh == VariableRefresh::OnTimeRangeChange
-            }
-            VariableUpdate::Tick => false,
-        };
-        if !due && !references_any(&query_var.query, &changed) {
+        if !is_due(query_var, update) && !references_any(&query_var.query, &changed) {
             continue;
         }
         report.queried.push(query_var.name.clone());
-        let values =
-            match resolve_query_variable(prometheus, query_var, range, intervals, end_ts, vars)
-                .await
-            {
-                Ok(values) => values,
-                Err(error) => {
-                    report
-                        .errors
-                        .push((query_var.name.clone(), format!("{error:#}")));
-                    continue;
-                }
-            };
-        let values = values
-            .into_iter()
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>();
-        if values.is_empty() {
-            continue;
-        }
-
-        let selected = if query_var.select_all {
-            values
-        } else {
-            // Keep a saved selection that is still offered, as Grafana does on load;
-            // otherwise select the first value.
-            match var_values.get(&query_var.name) {
-                Some(selected)
-                    if !selected.is_empty()
-                        && selected.iter().all(|value| values.contains(value)) =>
-                {
-                    selected.clone()
-                }
-                _ => values.into_iter().take(1).collect(),
+        let values = match resolve_query_variable(context, query_var, vars).await {
+            Ok(values) => values,
+            Err(error) => {
+                report
+                    .errors
+                    .push((query_var.name.clone(), format!("{error:#}")));
+                continue;
             }
+        };
+        let Some(selected) = select_values(query_var, values, var_values) else {
+            continue;
         };
         let formatted = match query_var.all_value.as_ref() {
             Some(all_value) if query_var.select_all => all_value.clone(),
@@ -259,6 +234,44 @@ pub(crate) async fn refresh_query_variables(
         var_values.insert(query_var.name.clone(), selected);
     }
     report
+}
+
+/// Whether `update` queries `query_var` for its own sake.
+fn is_due(query_var: &TemplateQueryVar, update: VariableUpdate) -> bool {
+    match update {
+        VariableUpdate::Load => true,
+        VariableUpdate::TimeRangeChange => query_var.refresh == VariableRefresh::OnTimeRangeChange,
+        VariableUpdate::Tick => false,
+    }
+}
+
+/// The selection from the non-empty `values`, or `None` when no value remains.
+fn select_values(
+    query_var: &TemplateQueryVar,
+    values: Vec<String>,
+    var_values: &HashMap<String, Vec<String>>,
+) -> Option<Vec<String>> {
+    let values = values
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return None;
+    }
+    if query_var.select_all {
+        return Some(values);
+    }
+    // Keep a saved selection that is still offered, as Grafana does on load;
+    // otherwise select the first value.
+    let selected = match var_values.get(&query_var.name) {
+        Some(selected)
+            if !selected.is_empty() && selected.iter().all(|value| values.contains(value)) =>
+        {
+            selected.clone()
+        }
+        _ => values.into_iter().take(1).collect(),
+    };
+    Some(selected)
 }
 
 /// Whether `query` references any of `names`.
@@ -274,13 +287,16 @@ fn references_any(query: &str, names: &[&str]) -> bool {
 }
 
 async fn resolve_query_variable(
-    prometheus: &prom::PromClient,
+    context: &VariableQueryContext<'_>,
     query_var: &TemplateQueryVar,
-    range: Duration,
-    intervals: QueryIntervals,
-    end_ts: i64,
     vars: &HashMap<String, String>,
 ) -> Result<Vec<String>> {
+    let VariableQueryContext {
+        prometheus,
+        range,
+        intervals,
+        end_ts,
+    } = *context;
     let expanded_query = expand_expr(&query_var.query, range, intervals, vars);
     let query = parse_prometheus_variable_query(&expanded_query)?;
     let start_ts = end_ts - range.as_secs() as i64;
