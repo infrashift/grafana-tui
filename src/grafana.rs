@@ -73,11 +73,19 @@ pub(crate) struct ImportDiagnostic {
 
 impl ImportDiagnostic {
     fn new(code: &str, path: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
+        let diagnostic = Self {
             code: code.to_string(),
             path: path.into(),
             message: message.into(),
-        }
+        };
+        debug_assert!(
+            code.bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'_'),
+            "a diagnostic code is in snake case"
+        );
+        debug_assert!(!code.is_empty(), "a diagnostic has a code");
+        debug_assert!(!diagnostic.message.is_empty(), "a diagnostic has a message");
+        diagnostic
     }
 }
 
@@ -168,12 +176,17 @@ enum DocumentFormat {
 
 impl DocumentFormat {
     fn from_path(path: &std::path::Path) -> Self {
-        match path
+        let extension = path
             .extension()
             .and_then(|extension| extension.to_str())
-            .map(str::to_ascii_lowercase)
-            .as_deref()
-        {
+            .map(str::to_ascii_lowercase);
+        debug_assert!(
+            extension
+                .as_deref()
+                .is_none_or(|extension| !extension.contains('.')),
+            "an extension holds no dot"
+        );
+        match extension.as_deref() {
             Some("json") => Self::Json,
             Some("yaml" | "yml") => Self::Yaml,
             _ => Self::Detect,
@@ -228,11 +241,22 @@ pub(crate) fn load_grafana_dashboards(paths: &[std::path::PathBuf]) -> Result<Da
             Ok((path.clone(), value))
         })
         .collect::<Result<Vec<_>>>()?;
-    import_documents(documents)
+    debug_assert_eq!(documents.len(), paths.len(), "each path gives one document");
+    let set = import_documents(documents)?;
+    debug_assert_eq!(
+        set.files.len(),
+        paths.len(),
+        "each path gives one dashboard"
+    );
+    Ok(set)
 }
 
 #[cfg(test)]
 pub(crate) fn parse_grafana_dashboards(documents: &[&str]) -> Result<DashboardSet> {
+    debug_assert!(
+        documents.iter().all(|data| !data.trim().is_empty()),
+        "each test document has text"
+    );
     let documents = documents
         .iter()
         .enumerate()
@@ -243,7 +267,10 @@ pub(crate) fn parse_grafana_dashboards(documents: &[&str]) -> Result<DashboardSe
             ))
         })
         .collect::<Result<Vec<_>>>()?;
-    import_documents(documents)
+    let count = documents.len();
+    let set = import_documents(documents)?;
+    debug_assert_eq!(count, set.files.len(), "each document gives one dashboard");
+    Ok(set)
 }
 
 fn import_documents(documents: Vec<(std::path::PathBuf, Value)>) -> Result<DashboardSet> {
@@ -256,7 +283,24 @@ fn import_documents(documents: Vec<(std::path::PathBuf, Value)>) -> Result<Dashb
         models.push(detect_and_adapt(value).with_context(context)?);
         files.push(DashboardFile { path, single });
     }
+    debug_assert_eq!(files.len(), models.len(), "each file has one model");
     let (combined, root) = import::finish_many(models)?;
+    debug_assert!(
+        combined
+            .layout
+            .tabs(root)
+            .is_some_and(|group| group.tabs.len() == files.len()),
+        "the root group has one tab for each file"
+    );
+    debug_assert!(
+        combined.queries.len()
+            >= files
+                .iter()
+                .map(|file| file.single.queries.len())
+                .max()
+                .unwrap_or(0),
+        "the set holds the panels of each file"
+    );
     Ok(DashboardSet {
         combined,
         root,
@@ -273,6 +317,10 @@ fn import_document(data: &str, format: DocumentFormat) -> Result<DashboardImport
 /// Grafana exports Classic dashboards as JSON and V2 resources as JSON or YAML.
 /// Both formats feed the same importer, so YAML is converted to `serde_json::Value`.
 fn parse_document(data: &str, format: DocumentFormat) -> Result<Value> {
+    debug_assert!(
+        crate::num::usize_to_u64(data.len()) <= crate::limits::MAX_DASHBOARD_BYTES,
+        "the document is in the size limit"
+    );
     match format {
         DocumentFormat::Json => {
             serde_json::from_str(data).context("parsing Grafana dashboard JSON")
@@ -351,6 +399,14 @@ pub(crate) fn variable_diagnostics(
         );
     }
 
+    debug_assert_eq!(diagnostics.len(), seen.len(), "each diagnostic is unique");
+    debug_assert!(
+        diagnostics.iter().all(|diagnostic| matches!(
+            diagnostic.code.as_str(),
+            "unresolved_variable" | "unsupported_variable_modifier"
+        )),
+        "each diagnostic is about a variable"
+    );
     diagnostics
 }
 
@@ -373,11 +429,14 @@ fn collect_variable_diagnostics(
         let Some((_, after)) = rest.split_once('$') else {
             break;
         };
+        let length = rest.len();
         rest = match after.strip_prefix('{') {
             Some(braced) => scan.braced_variable(braced).unwrap_or(after),
             None => scan.plain_variable(after),
         };
+        debug_assert!(rest.len() < length, "each pass reads one character or more");
     }
+    debug_assert!(!rest.contains('$'), "the scan reads each `$`");
 }
 
 /// One expression to scan for variable references, and the diagnostics it gives.
@@ -393,6 +452,11 @@ impl VariableScan<'_> {
     /// Returns the text after the `}`, or `None` when the `}` is missing.
     fn braced_variable<'t>(&mut self, braced: &'t str) -> Option<&'t str> {
         let (inner, remainder) = braced.split_once('}')?;
+        debug_assert!(
+            remainder.len() < braced.len(),
+            "the scan moves past the brace"
+        );
+        let before = self.diagnostics.len();
         let token = format!("${{{inner}}}");
         let (name, modifier) = inner.split_once(':').unwrap_or((inner, ""));
         if !modifier.is_empty() {
@@ -411,6 +475,10 @@ impl VariableScan<'_> {
                 ),
             );
         }
+        debug_assert!(
+            self.diagnostics.len() <= before.saturating_add(2),
+            "a reference gives two diagnostics or fewer"
+        );
         Some(remainder)
     }
 
@@ -421,6 +489,15 @@ impl VariableScan<'_> {
             .find(|ch: char| !is_variable_name_char(ch))
             .unwrap_or(after.len());
         let (name, remainder) = after.split_at_checked(name_len).unwrap_or((after, ""));
+        debug_assert!(
+            name.chars().all(is_variable_name_char),
+            "the name has only name characters"
+        );
+        debug_assert_eq!(
+            name.len().saturating_add(remainder.len()),
+            after.len(),
+            "the name and the rest make the text"
+        );
         if self.is_unresolved(name) {
             self.report(
                 "unresolved_variable",
@@ -441,10 +518,16 @@ impl VariableScan<'_> {
 
     /// Adds a diagnostic for this expression, once for each code and message.
     fn report(&mut self, code: &str, message: String) {
+        debug_assert!(!message.is_empty(), "a report has a message");
+        let before = self.diagnostics.len();
         push_variable_diagnostic(
             self.diagnostics,
             self.seen,
             ImportDiagnostic::new(code, self.path, message),
+        );
+        debug_assert!(
+            self.diagnostics.len() <= before.saturating_add(1),
+            "a report adds one diagnostic or less"
         );
     }
 }
@@ -454,18 +537,26 @@ fn push_variable_diagnostic(
     seen: &mut HashSet<(String, String, String)>,
     diagnostic: ImportDiagnostic,
 ) {
+    let before = diagnostics.len();
     let key = (
         diagnostic.code.clone(),
         diagnostic.path.clone(),
         diagnostic.message.clone(),
     );
-    if seen.insert(key) {
+    let new = seen.insert(key);
+    if new {
         diagnostics.push(diagnostic);
     }
+    debug_assert_eq!(
+        diagnostics.len(),
+        before.saturating_add(usize::from(new)),
+        "only a new diagnostic goes in the list"
+    );
+    debug_assert!(!seen.is_empty(), "the seen set holds the diagnostic");
 }
 
 fn is_builtin_variable(name: &str) -> bool {
-    matches!(
+    let builtin = matches!(
         name,
         "__interval"
             | "__interval_ms"
@@ -474,15 +565,30 @@ fn is_builtin_variable(name: &str) -> bool {
             | "__range_ms"
             | "__rate_interval"
             | "__rate_interval_ms"
-    )
+    );
+    debug_assert!(
+        !builtin || name.starts_with("__"),
+        "a built-in variable starts with two underscores"
+    );
+    debug_assert!(
+        !builtin || is_valid_variable_name(name),
+        "a built-in variable has a valid name"
+    );
+    builtin
 }
 
 fn is_valid_variable_name(name: &str) -> bool {
     let mut chars = name.chars();
-    chars
+    let valid = chars
         .next()
         .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
-        && chars.all(is_variable_name_char)
+        && chars.all(is_variable_name_char);
+    debug_assert!(!valid || !name.is_empty(), "a valid name is not empty");
+    debug_assert!(
+        !valid || !name.starts_with(|ch: char| ch.is_ascii_digit()),
+        "a valid name does not start with a digit"
+    );
+    valid
 }
 
 fn is_variable_name_char(ch: char) -> bool {
