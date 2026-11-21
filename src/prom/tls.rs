@@ -17,7 +17,8 @@
 //! Optional TLS settings for the Prometheus connection: a CA bundle trusted in
 //! place of the built-in roots, and a client certificate for mutual TLS.
 
-use anyhow::{Result, anyhow, bail};
+use crate::config::expand_path;
+use anyhow::{Result, anyhow, bail, ensure};
 use reqwest::{Certificate, ClientBuilder, Identity};
 use rustls::{AlertDescription, CertificateError};
 use rustls_pki_types::pem::{self, SectionKind};
@@ -27,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 /// TLS files for the Prometheus connection, and the config's `[tls]` table.
 /// Each is optional; with none set, the connection trusts the built-in roots
-/// and sends no client certificate. Unknown keys are rejected, so a misspelled
+/// and sends no client certificate. The parser rejects unknown keys, so a misspelled
 /// option cannot leave the connection without its certificates.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,26 +46,65 @@ impl TlsFiles {
         self.ca_cert.is_none() && self.client_cert.is_none() && self.client_key.is_none()
     }
 
-    /// These files, taking each one that is unset from `fallback`.
+    /// For each option (`ca_cert`, `client_cert`, `client_key`), true when it has a value.
+    fn set_flags(&self) -> [bool; 3] {
+        let set = [&self.ca_cert, &self.client_cert, &self.client_key];
+        set.map(Option::is_some)
+    }
+
+    /// These files. Each file that has no value comes from `fallback`.
     pub(crate) fn or(self, fallback: Self) -> Self {
-        Self {
+        let own = self.set_flags();
+        let other = fallback.set_flags();
+        let files = Self {
             ca_cert: self.ca_cert.or(fallback.ca_cert),
             client_cert: self.client_cert.or(fallback.client_cert),
             client_key: self.client_key.or(fallback.client_key),
-        }
+        };
+        let set = files.set_flags();
+        debug_assert!(
+            set.iter().zip(own).all(|(set, own)| *set || !own),
+            "each option of these files stays set"
+        );
+        debug_assert!(
+            set.iter()
+                .zip(own)
+                .zip(other)
+                .all(|((set, own), other)| !*set || own || other),
+            "each set option comes from these files or from the fallback"
+        );
+        files
     }
 
-    pub(crate) fn map_paths(self, f: impl Fn(&Path) -> PathBuf) -> Self {
-        Self {
-            ca_cert: self.ca_cert.as_deref().map(&f),
-            client_cert: self.client_cert.as_deref().map(&f),
-            client_key: self.client_key.as_deref().map(&f),
-        }
+    /// These files, with a `~` at the start of each path expanded to the home directory.
+    pub(crate) fn expand_paths(self) -> Self {
+        let files = Self {
+            ca_cert: self.ca_cert.as_deref().map(expand_path),
+            client_cert: self.client_cert.as_deref().map(expand_path),
+            client_key: self.client_key.as_deref().map(expand_path),
+        };
+        debug_assert!(
+            files.set_flags() == self.set_flags(),
+            "the expansion keeps the set of options"
+        );
+        debug_assert!(
+            [&self.ca_cert, &self.client_cert, &self.client_key]
+                .into_iter()
+                .zip([&files.ca_cert, &files.client_cert, &files.client_key])
+                .all(|(before, after)| {
+                    before == after
+                        || before
+                            .as_deref()
+                            .is_some_and(|path| path.to_string_lossy().starts_with('~'))
+                }),
+            "the expansion changes only a path that starts with ~"
+        );
+        files
     }
 
-    /// The options that are set, for error messages.
+    /// The options that have a value, for error messages.
     fn option_names(&self) -> String {
-        [
+        let names = [
             ("ca_cert", &self.ca_cert),
             ("client_cert", &self.client_cert),
             ("client_key", &self.client_key),
@@ -73,11 +113,26 @@ impl TlsFiles {
         .filter(|(_, path)| path.is_some())
         .map(|(name, _)| name)
         .collect::<Vec<_>>()
-        .join(", ")
+        .join(", ");
+        debug_assert!(
+            names.is_empty() == self.is_empty(),
+            "the list names an option when one is set"
+        );
+        debug_assert!(
+            names.is_empty()
+                || names.split(", ").count() == self.set_flags().iter().filter(|set| **set).count(),
+            "the list names each set option one time"
+        );
+        names
     }
 
     /// Describes `error`, from building a client configured with these files.
     pub(super) fn build_error(&self, error: &reqwest::Error) -> anyhow::Error {
+        debug_assert!(!self.is_empty(), "only TLS files configure TLS");
+        debug_assert!(
+            error.is_builder(),
+            "the error comes from the client builder"
+        );
         if let (Some(cert), Some(key)) = (&self.client_cert, &self.client_key)
             && matches!(
                 find_rustls_error(error),
@@ -97,14 +152,14 @@ impl TlsFiles {
         )
     }
 
-    /// Configures `builder` to connect to `url` with these files. Each file is
-    /// read and checked first, so an error names the file and what is wrong.
+    /// Configures `builder` to connect to `url` with these files. It reads
+    /// and checks each file first, so an error names the file and what is wrong.
     pub(super) fn configure(&self, url: &str, mut builder: ClientBuilder) -> Result<ClientBuilder> {
         if self.is_empty() {
             return Ok(builder);
         }
         if !url.trim().to_ascii_lowercase().starts_with("https://") {
-            // Only the scheme is shown, since the URL may hold credentials.
+            // The error shows only the scheme, since the URL can hold credentials.
             let scheme = url
                 .trim()
                 .split_once("://")
@@ -169,8 +224,12 @@ struct PemFile<'a> {
 
 impl<'a> PemFile<'a> {
     fn read(option: &'static str, path: &'a Path) -> Result<Self> {
-        let bytes =
-            std::fs::read(path).map_err(|error| anyhow!("{option} {}: {error}", path.display()))?;
+        debug_assert!(
+            matches!(option, "ca_cert" | "client_cert" | "client_key"),
+            "the option is the name of a TLS option"
+        );
+        let bytes = crate::limits::read_capped(path, crate::limits::MAX_PEM_BYTES)
+            .map_err(|error| anyhow!("{option} {}: {error}", path.display()))?;
         let mut file = Self {
             option,
             path,
@@ -178,14 +237,25 @@ impl<'a> PemFile<'a> {
             sections: Vec::new(),
         };
         let mut cursor = Cursor::new(&file.bytes);
-        loop {
+        let mut sections = Vec::new();
+        // Each section uses one byte or more, so the file length bounds the loop.
+        for _ in 0..=file.bytes.len() {
             match pem::from_buf(&mut cursor) {
-                Ok(Some((kind, _))) => file.sections.push(kind),
+                Ok(Some((kind, _))) => sections.push(kind),
                 Ok(None) => break,
                 // The parser's errors can quote the file, which may be a key.
                 Err(_) => return Err(file.error("not a valid PEM file")),
             }
         }
+        debug_assert!(
+            crate::num::usize_to_u64(file.bytes.len()) <= crate::limits::MAX_PEM_BYTES,
+            "the PEM file is inside the size limit"
+        );
+        debug_assert!(
+            sections.len() <= file.bytes.len(),
+            "each PEM section uses one byte or more"
+        );
+        file.sections = sections;
         Ok(file)
     }
 
@@ -194,14 +264,24 @@ impl<'a> PemFile<'a> {
     }
 
     fn require_certificate(&self) -> Result<()> {
-        if self.sections.contains(&SectionKind::Certificate) {
-            Ok(())
-        } else {
-            Err(self.error("no PEM certificate found (expected -----BEGIN CERTIFICATE-----)"))
-        }
+        debug_assert!(
+            matches!(self.option, "ca_cert" | "client_cert"),
+            "only a certificate option holds certificates"
+        );
+        ensure!(
+            self.sections.contains(&SectionKind::Certificate),
+            "{} {}: no PEM certificate found (expected -----BEGIN CERTIFICATE-----)",
+            self.option,
+            self.path.display()
+        );
+        Ok(())
     }
 
     fn require_private_key(&self) -> Result<()> {
+        debug_assert!(
+            self.option == "client_key",
+            "only the client_key option holds a private key"
+        );
         let keys = self
             .sections
             .iter()
@@ -214,6 +294,10 @@ impl<'a> PemFile<'a> {
                 )
             })
             .count();
+        debug_assert!(
+            keys <= self.sections.len(),
+            "each private key is one PEM section"
+        );
         match keys {
             1 => Ok(()),
             0 if contains(&self.bytes, b"-----BEGIN ENCRYPTED PRIVATE KEY-----") => Err(self
@@ -236,7 +320,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-/// A failed TLS handshake, or a server rejecting the client certificate.
+/// A failed TLS handshake, or a server that rejects the client certificate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TlsFailure {
     /// A few words for the title bar, such as `TLS: unknown issuer`.
@@ -256,7 +340,7 @@ impl TlsFailure {
             cause: format!("TLS: {cause}"),
             hint,
         };
-        match error {
+        let found = match error {
             rustls::Error::InvalidCertificate(CertificateError::UnknownIssuer) => failure(
                 "unknown issuer",
                 "the server's certificate is not signed by a CA in ca_cert, \
@@ -301,41 +385,69 @@ impl TlsFailure {
                 "check the server's TLS settings",
             ),
             error => failure(&error.to_string(), "check the server's TLS settings"),
-        }
+        };
+        debug_assert!(found.cause.starts_with("TLS: "), "the cause names TLS");
+        debug_assert!(!found.hint.is_empty(), "the failure has a hint");
+        found
     }
 }
 
+/// The most errors that `find_rustls_error` and `error_chain` read in a chain
+/// of sources. Real chains hold fewer than 8 errors.
+const MAX_ERROR_CHAIN: usize = 16;
+
 /// The rustls error among `error`'s sources, if any. rustls errors can arrive
 /// wrapped in one or more `io::Error`s, whose `source` skips them.
+///
+/// The walk goes into the error inside an `io::Error`. The sources of that
+/// error include the sources of the `io::Error`, so the walk misses no error.
 fn find_rustls_error<'a>(
     error: &'a (dyn std::error::Error + 'static),
 ) -> Option<&'a rustls::Error> {
     let mut next = Some(error);
-    while let Some(error) = next {
+    for _ in 0..MAX_ERROR_CHAIN {
+        let error = next?;
         if let Some(error) = error.downcast_ref::<rustls::Error>() {
             return Some(error);
         }
-        if let Some(found) = error
+        let inner = error
             .downcast_ref::<std::io::Error>()
-            .and_then(std::io::Error::get_ref)
-            .and_then(|inner| find_rustls_error(inner))
-        {
-            return Some(found);
-        }
-        next = error.source();
+            .and_then(std::io::Error::get_ref);
+        next = match inner {
+            Some(inner) => Some(inner),
+            None => error.source(),
+        };
     }
     None
 }
 
-/// `error` and its sources, joined with `: `.
+/// `error` and its sources, joined with `: `. A chain longer than
+/// `MAX_ERROR_CHAIN` ends with `: …`.
 pub(super) fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     let mut text = error.to_string();
+    let first = text.len();
     let mut source = error.source();
-    while let Some(error) = source {
+    let mut parts = 1;
+    for _ in 1..MAX_ERROR_CHAIN {
+        let Some(error) = source else {
+            break;
+        };
         text.push_str(": ");
         text.push_str(&error.to_string());
         source = error.source();
+        parts += 1;
     }
+    if source.is_some() {
+        text.push_str(": …");
+    }
+    debug_assert!(
+        parts <= MAX_ERROR_CHAIN,
+        "the text has MAX_ERROR_CHAIN errors or fewer"
+    );
+    debug_assert!(
+        text.len() >= first + 2 * (parts - 1),
+        "the text holds the first error and a separator for each source"
+    );
     text
 }
 
@@ -423,7 +535,7 @@ pub(crate) mod tests {
     }
 
     /// A Prometheus stand-in like a hardened node: TLS 1.3 only on
-    /// `https://127.0.0.1`, requiring a client certificate that `client_ca`
+    /// `https://127.0.0.1`, with a required client certificate that `client_ca`
     /// issued. Also returns the count of accepted connections.
     pub(crate) async fn mtls_prometheus(
         server: &TestCert,
@@ -494,7 +606,7 @@ pub(crate) mod tests {
         path
     }
 
-    /// The files for trusting `ca` and, when given, presenting `client`.
+    /// The files that trust `ca` and, when given, present `client`.
     pub(crate) fn tls_files(dir: &Path, ca: &str, client: Option<&TestCert>) -> TlsFiles {
         TlsFiles {
             ca_cert: Some(write(dir, "ca.pem", ca)),
@@ -558,7 +670,7 @@ pub(crate) mod tests {
             Some("TLS: client certificate required")
         );
         assert!(error.to_string().contains("client_cert and client_key"));
-        // The certificates won't change between attempts, so it isn't retried.
+        // The certificates do not change between attempts, so the client does not retry.
         assert_eq!(connections.load(Ordering::SeqCst), 1);
     }
 
@@ -641,6 +753,24 @@ pub(crate) mod tests {
             config_error(url, &key_only),
             "client_key is set without client_cert; a client certificate needs both"
         );
+    }
+
+    #[test]
+    fn a_pem_file_over_its_limit_names_the_option_the_file_and_the_limit() {
+        let limit = crate::limits::MAX_PEM_BYTES;
+        let path = crate::limits::tests::sparse_file("big.pem", limit + 1);
+        let files = TlsFiles {
+            ca_cert: Some(path.clone()),
+            ..TlsFiles::default()
+        };
+        assert_eq!(
+            config_error("https://10.60.1.2:9090", &files),
+            format!(
+                "ca_cert {}: the file is larger than the limit of {limit} bytes",
+                path.display()
+            )
+        );
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
@@ -771,7 +901,7 @@ pub(crate) mod tests {
             client_key: Some(PathBuf::from("~/client.key")),
         };
 
-        let files = cli.or(config).map_paths(crate::config::expand_path);
+        let files = cli.or(config).expand_paths();
 
         assert_eq!(files.ca_cert, Some(PathBuf::from("/etc/ca.pem")));
         assert_eq!(
@@ -780,5 +910,50 @@ pub(crate) mod tests {
         );
         assert_ne!(files.client_key, Some(PathBuf::from("~/client.key")));
         assert!(files.client_key.unwrap().ends_with("client.key"));
+    }
+
+    /// A rustls error inside `wraps` nested `io::Error`s.
+    fn wrapped_rustls_error(wraps: usize) -> std::io::Error {
+        let mut error = std::io::Error::other(rustls::Error::DecryptError);
+        for _ in 1..wraps {
+            error = std::io::Error::other(error);
+        }
+        error
+    }
+
+    #[test]
+    fn rustls_errors_are_found_inside_nested_io_errors() {
+        let error = wrapped_rustls_error(3);
+        assert_eq!(
+            find_rustls_error(&error),
+            Some(&rustls::Error::DecryptError)
+        );
+        let plain = std::io::Error::other("no TLS here");
+        assert_eq!(find_rustls_error(&plain), None);
+    }
+
+    #[test]
+    fn the_error_text_marks_a_chain_cut_at_its_limit() {
+        let mut error = anyhow!("root");
+        for level in 1..MAX_ERROR_CHAIN {
+            error = error.context(format!("level {level}"));
+        }
+        let text = error_chain(error.as_ref());
+        assert!(text.ends_with(": root"), "{text}");
+        assert!(!text.contains('…'), "{text}");
+
+        let error = error.context("one more");
+        let text = error_chain(error.as_ref());
+        assert!(text.starts_with("one more: level 15"), "{text}");
+        assert!(text.ends_with("level 1: …"), "{text}");
+    }
+
+    #[test]
+    fn the_error_chain_walk_stops_at_its_limit() {
+        // The chain holds the `io::Error`s and the rustls error.
+        let error = wrapped_rustls_error(MAX_ERROR_CHAIN - 1);
+        assert!(find_rustls_error(&error).is_some());
+        let error = wrapped_rustls_error(MAX_ERROR_CHAIN);
+        assert_eq!(find_rustls_error(&error), None);
     }
 }

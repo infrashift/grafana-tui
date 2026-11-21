@@ -22,6 +22,11 @@ pub(super) fn merge_overlay_buffer(
     overlay_buf: &ratatui::buffer::Buffer,
     plot: PlotBounds,
 ) {
+    debug_assert!(plot.top <= plot.bottom, "the plot has at least one row");
+    debug_assert!(
+        covers_plot_rows(overlay_buf, plot),
+        "the overlay buffer covers the plot rows"
+    );
     let buf = frame.buffer_mut();
     for y in plot.top..=plot.bottom {
         for x in plot.left..plot.right {
@@ -41,6 +46,14 @@ pub(super) fn merge_overlay_buffer_preserving_data(
     strong_data_buf: &ratatui::buffer::Buffer,
     plot: PlotBounds,
 ) {
+    debug_assert!(
+        covers_plot_rows(overlay_buf, plot),
+        "the overlay buffer covers the plot rows"
+    );
+    debug_assert!(
+        strong_data_buf.area == overlay_buf.area,
+        "the data mask and the overlay have the same area"
+    );
     let buf = frame.buffer_mut();
     for y in plot.top..=plot.bottom {
         for x in plot.left..plot.right {
@@ -55,6 +68,12 @@ pub(super) fn merge_overlay_buffer_preserving_data(
             }
         }
     }
+}
+
+/// Tells if `buffer` has each row of `plot` and ends at or right of the plot.
+fn covers_plot_rows(buffer: &ratatui::buffer::Buffer, plot: PlotBounds) -> bool {
+    let area = buffer.area;
+    area.top() <= plot.top && plot.bottom < area.bottom() && plot.right <= area.right()
 }
 
 pub(super) fn is_blank_cell(cell: &ratatui::buffer::Cell) -> bool {
@@ -76,18 +95,35 @@ pub(super) fn overlay_cell_if_blank_or_weak_area_fill(
         return;
     }
 
-    if is_blank_cell(dst) || (is_braille_cell(dst) && is_blank_cell(strong_data_mask)) {
+    let replace = is_blank_cell(dst) || (is_braille_cell(dst) && is_blank_cell(strong_data_mask));
+    if replace {
         copy_foreground(dst, src);
     }
+    debug_assert!(
+        !is_blank_cell(dst),
+        "a cell is not blank after the overlay of a visible cell"
+    );
+    debug_assert!(
+        !replace || dst.symbol() == src.symbol(),
+        "a replaced cell shows the overlay symbol"
+    );
 }
 
 /// Copies the symbol and foreground only. Overlay buffers start with a reset
-/// background, which would otherwise erase the theme's background fill.
+/// background. A full copy erases the theme's background fill.
 pub(super) fn copy_foreground(dst: &mut ratatui::buffer::Cell, src: &ratatui::buffer::Cell) {
     dst.set_symbol(src.symbol())
         .set_fg(src.fg)
         .modifier
         .insert(src.modifier);
+    debug_assert!(
+        dst.symbol() == src.symbol(),
+        "the cell has the copied symbol"
+    );
+    debug_assert!(
+        dst.fg == src.fg && dst.modifier.contains(src.modifier),
+        "the cell has the copied foreground and modifiers"
+    );
 }
 
 fn is_braille_cell(cell: &ratatui::buffer::Cell) -> bool {

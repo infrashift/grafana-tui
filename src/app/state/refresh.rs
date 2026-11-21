@@ -1,9 +1,9 @@
 //! Background refreshes. Prometheus queries and annotation providers run in
-//! spawned tasks while the event loop keeps handling input; their results are
-//! applied to `AppState` as each task finishes.
+//! spawned tasks while the event loop still handles input. When a task
+//! finishes, this module applies its result to `AppState`.
 //!
 //! A refresh runs in stages, because resolved variables can change the layout
-//! and therefore which panels need data:
+//! and so which panels need data:
 //!
 //! 1. Query variables, then the visible panels' data.
 //! 2. Row and tab variables, when the dashboard has any.
@@ -14,15 +14,18 @@ use crate::annotations::{AnnotationProvider, AnnotationRefreshContext, ProviderP
 use crate::app::QueryMode;
 use crate::app::data::{QueryIntervals, custom_legend, downsample, expand_expr, format_legend};
 use crate::app::template::{ResolvedSections, Scope, SectionInstance, scoped_vars};
-use crate::app::variables::{VariableReport, VariableUpdate, refresh_query_variables};
+use crate::app::variables::{
+    VariableQueryContext, VariableReport, VariableUpdate, refresh_query_variables,
+};
 use crate::grafana::TemplateQueryVar;
+use crate::limits::{MAX_PANEL_SERIES, MAX_SERIES_POINTS};
 use crate::prom;
 use futures::StreamExt;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::task::{AbortHandle, JoinError, JoinSet};
 
-/// How long a refresh runs before the title bar says it is still refreshing.
+/// How long a refresh runs before the title bar says that it is still in progress.
 const SLOW_REFRESH: Duration = Duration::from_secs(1);
 
 /// Longest wait between attempts while Prometheus is unreachable.
@@ -30,6 +33,9 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// Panels fetched at once; each runs its queries in order.
 const CONCURRENT_PANELS: usize = 4;
+
+/// Points that a series keeps after the app downsamples it for the chart.
+const SHOWN_POINTS: usize = 200;
 
 /// Whether Prometheus answered the latest refresh.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -52,22 +58,22 @@ pub(crate) enum BackendIndicator {
     Unreachable,
 }
 
-/// Background refresh tasks and the bookkeeping that orders their results.
+/// Background refresh tasks, and the records that put their results in order.
 #[derive(Debug, Default)]
 pub(crate) struct RefreshTasks {
-    /// Dropping the set aborts its tasks, which kills annotation provider
+    /// When the set drops, it aborts its tasks. This kills annotation provider
     /// processes when the app exits.
     tasks: JoinSet<RefreshMessage>,
-    /// Counts started refreshes, so results of a replaced one are ignored.
+    /// Counts started refreshes, so the app ignores the results of a replaced one.
     generation: u64,
     pipeline: Option<Pipeline>,
     /// Orders panel fetches, so an older result never replaces newer data.
     next_seq: u64,
     applied_seq: HashMap<usize, u64>,
-    /// Changes whenever the layout is rebuilt and panel indices may be reused.
+    /// Changes each time the app rebuilds the layout, because a new panel can then get an old index.
     layout_epoch: u64,
     annotations_running: bool,
-    /// The window to load annotations for once the running load finishes.
+    /// The window to load annotations for when the current load finishes.
     annotations_queued: Option<AnnotationRefreshContext>,
     status: BackendStatus,
     /// Why the latest refresh could not reach Prometheus, when it was a TLS
@@ -80,22 +86,33 @@ pub(crate) struct RefreshTasks {
     reload_requested: bool,
     /// Why each query variable last failed, by name.
     variable_errors: BTreeMap<String, String>,
+    /// Why each query variable last lost values at a limit, by name.
+    variable_notices: BTreeMap<String, String>,
     /// Panel fetches started outside a refresh, such as for an expanded row.
     loose: Vec<AbortHandle>,
-    /// Another dashboard became active: its variables reload, as on opening
-    /// it, until a refresh completes.
+    /// Another dashboard became active: its variables reload, as when it
+    /// opens, until a refresh completes.
     load_dashboard: bool,
 }
 
 impl RefreshTasks {
-    /// Another dashboard is shown: the previous one's fetches stop, its
+    /// The app shows another dashboard: the previous one's fetches stop, its
     /// variable errors no longer apply, and the next refresh loads variables.
     pub(super) fn dashboard_switched(&mut self) {
         for fetch in self.loose.drain(..) {
             fetch.abort();
         }
         self.variable_errors.clear();
+        self.variable_notices.clear();
         self.load_dashboard = true;
+        debug_assert!(
+            self.loose.is_empty(),
+            "no loose fetch of the previous dashboard runs"
+        );
+        debug_assert!(
+            self.variable_errors.is_empty() && self.variable_notices.is_empty(),
+            "no variable message of the previous dashboard stays"
+        );
     }
 
     /// Invalidates panel fetches started before the layout was rebuilt.
@@ -110,10 +127,30 @@ impl RefreshTasks {
     }
 
     fn apply_variable_report(&mut self, report: VariableReport) {
+        debug_assert!(
+            report
+                .errors
+                .iter()
+                .chain(&report.notices)
+                .all(|(name, _)| report.queried.contains(name)),
+            "only a queried variable has an error or a notice"
+        );
         for name in &report.queried {
             self.variable_errors.remove(name);
+            self.variable_notices.remove(name);
         }
         self.variable_errors.extend(report.errors);
+        self.variable_notices.extend(report.notices);
+        debug_assert!(
+            self.messages_are_disjoint(),
+            "a variable has an error or a notice, not both"
+        );
+    }
+
+    /// Whether no variable has both an error and a notice.
+    fn messages_are_disjoint(&self) -> bool {
+        let mut names = self.variable_errors.keys();
+        names.all(|name| !self.variable_notices.contains_key(name))
     }
 
     fn is_current(&self, generation: u64) -> bool {
@@ -129,7 +166,7 @@ struct Pipeline {
     generation: u64,
     started: Instant,
     slow_drawn: bool,
-    /// The running stage, aborted when a newer refresh replaces this one.
+    /// The current stage. A newer refresh that replaces this one aborts it.
     abort: AbortHandle,
     end_ts: i64,
     /// Panels the first stage fetched.
@@ -165,7 +202,7 @@ pub(crate) enum RefreshMessage {
     Panels(PanelBatch),
     /// The annotation provider, handed back with its result.
     Annotations {
-        provider: Box<dyn AnnotationProvider>,
+        provider: AnnotationProvider,
         poll: ProviderPoll,
     },
 }
@@ -193,7 +230,7 @@ struct PanelFetch {
     succeeded: bool,
 }
 
-/// Query outcomes, to tell an unreachable backend from failing queries.
+/// Query outcomes, to tell an unreachable backend from queries that fail.
 #[derive(Debug, Default, Clone)]
 struct FetchCounts {
     succeeded: usize,
@@ -204,11 +241,19 @@ struct FetchCounts {
 
 impl FetchCounts {
     fn add(&mut self, other: Self) {
+        debug_assert!(
+            other.tls_failure.is_none() || other.unreachable > 0,
+            "a TLS failure is an unreachable query"
+        );
         self.succeeded += other.succeeded;
         self.unreachable += other.unreachable;
         if self.tls_failure.is_none() {
             self.tls_failure = other.tls_failure;
         }
+        debug_assert!(
+            self.tls_failure.is_none() || self.unreachable > 0,
+            "a TLS failure is an unreachable query"
+        );
     }
 }
 
@@ -221,6 +266,27 @@ struct QueryWindow {
     end_ts: i64,
 }
 
+impl QueryWindow {
+    /// The context that query variables resolve in for this window.
+    fn variable_context(self, prometheus: &prom::PromClient) -> VariableQueryContext<'_> {
+        let intervals = QueryIntervals::new(self.range, self.min_step, self.scrape_interval, None);
+        debug_assert!(
+            intervals.step >= self.min_step,
+            "the step is not finer than the minimum step"
+        );
+        debug_assert!(
+            intervals.rate_interval >= self.scrape_interval,
+            "the rate interval is not shorter than the scrape interval"
+        );
+        VariableQueryContext {
+            prometheus,
+            range: self.range,
+            intervals,
+            end_ts: self.end_ts,
+        }
+    }
+}
+
 /// A panel's queries, copied so they can run in the background.
 #[derive(Debug)]
 struct PanelJob {
@@ -229,8 +295,59 @@ struct PanelJob {
     scope: Option<Scope>,
 }
 
+/// The first stage of a refresh, copied so it can run in the background.
+#[derive(Debug)]
+struct FirstStage {
+    generation: u64,
+    jobs: Vec<PanelJob>,
+    seq: u64,
+    epoch: u64,
+    window: QueryWindow,
+    update: VariableUpdate,
+    prometheus: prom::PromClient,
+    query_vars: Vec<TemplateQueryVar>,
+    vars: HashMap<String, String>,
+    var_values: HashMap<String, Vec<String>>,
+}
+
+impl FirstStage {
+    /// Resolves the query variables, then fetches the visible panels' data.
+    async fn resolve_and_fetch(mut self) -> RefreshMessage {
+        let context = self.window.variable_context(&self.prometheus);
+        let report = refresh_query_variables(
+            &context,
+            &self.query_vars,
+            self.update,
+            &mut self.vars,
+            &mut self.var_values,
+        )
+        .await;
+        debug_assert!(
+            report.queried.len() <= self.query_vars.len(),
+            "each variable is queried one time or less"
+        );
+        let jobs = self.jobs.len();
+        let (fetches, counts) =
+            query_panel_jobs(&self.prometheus, self.window, &self.vars, self.jobs).await;
+        debug_assert_eq!(fetches.len(), jobs, "each panel job gives one fetch");
+        RefreshMessage::Data {
+            generation: self.generation,
+            vars: self.vars,
+            var_values: self.var_values,
+            report,
+            batch: PanelBatch {
+                seq: self.seq,
+                epoch: self.epoch,
+                pipeline: None,
+                fetches,
+                counts,
+            },
+        }
+    }
+}
+
 impl AppState {
-    /// Starts a refresh of the current window, replacing one in progress.
+    /// Starts a refresh of the current window. It replaces a refresh in progress.
     pub(crate) fn start_refresh(&mut self) {
         if let Some(pipeline) = self.refreshes.pipeline.take() {
             pipeline.abort.abort();
@@ -238,49 +355,28 @@ impl AppState {
         self.refreshes.generation += 1;
         let generation = self.refreshes.generation;
         let variables_window = (self.range, self.time_offset);
-        let variable_update = match self.refreshes.variables_window {
-            None => VariableUpdate::Load,
-            Some(_) if self.refreshes.load_dashboard => VariableUpdate::Load,
-            Some(window) if window != variables_window || self.refreshes.reload_requested => {
-                VariableUpdate::TimeRangeChange
-            }
-            Some(_) => VariableUpdate::Tick,
-        };
-        let end_ts = chrono::Utc::now().timestamp() - self.time_offset.as_secs() as i64;
+        let variable_update = self.variable_update(variables_window);
+        let end_ts =
+            chrono::Utc::now().timestamp() - crate::num::u64_to_i64(self.time_offset.as_secs());
         let window = self.query_window(end_ts);
         let fetched = self.panels_to_fetch();
-        let jobs = self.panel_jobs(&fetched);
-        let seq = self.refreshes.next_seq();
-        let epoch = self.refreshes.layout_epoch;
-        let prometheus = self.prometheus.clone();
-        let query_vars = self.query_vars.clone();
-        let mut vars = self.vars.clone();
-        let mut var_values = self.var_values.clone();
-        let abort = self.refreshes.tasks.spawn(async move {
-            let report = refresh_variables(
-                &prometheus,
-                &query_vars,
-                variable_update,
-                window,
-                &mut vars,
-                &mut var_values,
-            )
-            .await;
-            let (fetches, counts) = fetch_panels(&prometheus, window, &vars, jobs).await;
-            RefreshMessage::Data {
-                generation,
-                vars,
-                var_values,
-                report,
-                batch: PanelBatch {
-                    seq,
-                    epoch,
-                    pipeline: None,
-                    fetches,
-                    counts,
-                },
-            }
-        });
+        debug_assert!(
+            fetched.iter().all(|&index| index < self.panels.len()),
+            "each panel to fetch is in the panel list"
+        );
+        let stage = FirstStage {
+            generation,
+            jobs: self.panel_jobs(&fetched),
+            seq: self.refreshes.next_seq(),
+            epoch: self.refreshes.layout_epoch,
+            window,
+            update: variable_update,
+            prometheus: self.prometheus.clone(),
+            query_vars: self.query_vars.clone(),
+            vars: self.vars.clone(),
+            var_values: self.var_values.clone(),
+        };
+        let abort = self.refreshes.tasks.spawn(stage.resolve_and_fetch());
         self.refreshes.pipeline = Some(Pipeline {
             generation,
             started: Instant::now(),
@@ -297,9 +393,34 @@ impl AppState {
         self.start_annotation_refresh(AnnotationRefreshContext::from_unix_window(
             end_ts, self.range,
         ));
+        debug_assert!(
+            self.refreshes.is_current(generation),
+            "the new refresh is the current one"
+        );
     }
 
-    /// Refreshes at the user's request, re-querying variables that refresh
+    /// Why variables resolve in a refresh of `variables_window`.
+    fn variable_update(&self, variables_window: (Duration, Duration)) -> VariableUpdate {
+        let update = match self.refreshes.variables_window {
+            None => VariableUpdate::Load,
+            Some(_) if self.refreshes.load_dashboard => VariableUpdate::Load,
+            Some(window) if window != variables_window || self.refreshes.reload_requested => {
+                VariableUpdate::TimeRangeChange
+            }
+            Some(_) => VariableUpdate::Tick,
+        };
+        debug_assert!(
+            self.refreshes.variables_window.is_some() || update == VariableUpdate::Load,
+            "the variables load before their first resolution"
+        );
+        debug_assert!(
+            !self.refreshes.load_dashboard || update == VariableUpdate::Load,
+            "a new dashboard loads its variables"
+        );
+        update
+    }
+
+    /// Refreshes when the user asks. It queries again the variables that refresh
     /// when the time range changes, as Grafana's refresh button does.
     pub(crate) fn reload(&mut self) {
         self.refreshes.reload_requested = true;
@@ -308,10 +429,26 @@ impl AppState {
 
     /// Query variables that failed when they last resolved, with the error.
     pub(crate) fn variable_errors(&self) -> impl Iterator<Item = (&str, &str)> {
+        debug_assert!(
+            self.refreshes.messages_are_disjoint(),
+            "a variable has an error or a notice, not both"
+        );
         self.refreshes
             .variable_errors
             .iter()
             .map(|(name, error)| (name.as_str(), error.as_str()))
+    }
+
+    /// Query variables that lost values at a limit when they last resolved, with the notice.
+    pub(crate) fn variable_notices(&self) -> impl Iterator<Item = (&str, &str)> {
+        debug_assert!(
+            self.refreshes.messages_are_disjoint(),
+            "a variable has an error or a notice, not both"
+        );
+        self.refreshes
+            .variable_notices
+            .iter()
+            .map(|(name, notice)| (name.as_str(), notice.as_str()))
     }
 
     /// Fetches panels that became visible, for the displayed window.
@@ -319,7 +456,7 @@ impl AppState {
         self.spawn_panel_batch(indices, None, self.view_end_ts);
     }
 
-    /// When the next periodic refresh is due; `None` while one is running.
+    /// When the next periodic refresh is due; `None` while one runs.
     /// Retries back off while Prometheus is unreachable.
     pub(crate) fn next_refresh_at(&self) -> Option<Instant> {
         if self.refreshes.pipeline.is_some() {
@@ -333,16 +470,28 @@ impl AppState {
             }
             BackendStatus::Connecting | BackendStatus::Live => self.refresh_every,
         };
+        debug_assert!(
+            interval >= self.refresh_every,
+            "a retry does not come before the refresh interval"
+        );
+        debug_assert!(
+            interval <= MAX_BACKOFF.max(self.refresh_every),
+            "the back off is in its limit"
+        );
         Some(self.last_refresh + interval)
     }
 
-    /// When a running refresh becomes slow enough to show, if not shown yet.
+    /// When a refresh in progress becomes slow enough to show, if not shown yet.
     pub(crate) fn slow_refresh_at(&self) -> Option<Instant> {
-        self.refreshes
-            .pipeline
-            .as_ref()
+        let pipeline = self.refreshes.pipeline.as_ref();
+        let at = pipeline
             .filter(|pipeline| !pipeline.slow_drawn)
-            .map(|pipeline| pipeline.started + SLOW_REFRESH)
+            .map(|pipeline| pipeline.started + SLOW_REFRESH);
+        debug_assert!(
+            at.is_none_or(|at| pipeline.is_some_and(|pipeline| at > pipeline.started)),
+            "the slow mark comes after the start of a running refresh"
+        );
+        at
     }
 
     pub(crate) fn mark_slow_refresh_drawn(&mut self) {
@@ -361,7 +510,7 @@ impl AppState {
     }
 
     pub(crate) fn backend_indicator(&self) -> Option<BackendIndicator> {
-        match self.refreshes.status {
+        let indicator = match self.refreshes.status {
             BackendStatus::Connecting => Some(BackendIndicator::Connecting),
             BackendStatus::Unreachable { .. } => Some(BackendIndicator::Unreachable),
             BackendStatus::Live => self
@@ -370,7 +519,16 @@ impl AppState {
                 .as_ref()
                 .filter(|pipeline| pipeline.started.elapsed() >= SLOW_REFRESH)
                 .map(|_| BackendIndicator::Refreshing),
-        }
+        };
+        debug_assert!(
+            indicator != Some(BackendIndicator::Refreshing) || self.refreshes.pipeline.is_some(),
+            "the refreshing mark needs a running refresh"
+        );
+        debug_assert!(
+            indicator.is_some() || self.refreshes.status == BackendStatus::Live,
+            "only a live backend can have no mark"
+        );
+        indicator
     }
 
     /// Waits for the next background task to finish; `None` when none runs.
@@ -378,7 +536,7 @@ impl AppState {
         self.refreshes.tasks.join_next().await
     }
 
-    /// Applies a finished task, starting the refresh's next stage if any.
+    /// Applies a finished task, and starts the next stage of the refresh if there is one.
     /// Returns whether anything shown changed.
     pub(crate) fn finish_refresh_task(
         &mut self,
@@ -389,7 +547,7 @@ impl AppState {
             Err(error) if error.is_cancelled() => return false,
             Err(error) => std::panic::resume_unwind(error.into_panic()),
         };
-        match message {
+        let changed = match message {
             RefreshMessage::Data {
                 generation,
                 vars,
@@ -405,6 +563,10 @@ impl AppState {
             } => self.finish_sections(generation, epoch, values, report),
             RefreshMessage::Panels(batch) => self.finish_panels(batch),
             RefreshMessage::Annotations { provider, poll } => {
+                debug_assert!(
+                    self.refreshes.annotations_running,
+                    "an annotation load was running"
+                );
                 self.refreshes.annotations_running = false;
                 let loaded = self.annotations.finish_refresh(provider, poll);
                 self.reconcile_visible_annotation_targets();
@@ -413,10 +575,19 @@ impl AppState {
                 }
                 loaded
             }
-        }
+        };
+        debug_assert!(
+            self.refreshes.annotations_queued.is_none() || self.refreshes.annotations_running,
+            "a queued annotation load waits for a running one"
+        );
+        debug_assert!(
+            self.selection_in_panels(),
+            "the selected panel is in the panel list"
+        );
+        changed
     }
 
-    /// Runs every background task to completion, including later stages.
+    /// Runs every background task until it finishes, also the later stages.
     #[cfg(test)]
     pub(crate) async fn settle_refreshes(&mut self) {
         while let Some(result) = self.join_refresh_task().await {
@@ -446,6 +617,14 @@ impl AppState {
         let Some(mut pipeline) = self.refreshes.pipeline.take() else {
             return false;
         };
+        debug_assert_eq!(
+            pipeline.generation, generation,
+            "the data belongs to the refresh"
+        );
+        debug_assert!(
+            batch.pipeline.is_none(),
+            "the first stage does not end a refresh"
+        );
         self.vars = vars;
         self.var_values = var_values;
         self.refreshes.apply_variable_report(report);
@@ -472,6 +651,10 @@ impl AppState {
             );
             self.refreshes.pipeline = Some(pipeline);
         }
+        debug_assert!(
+            self.refreshes.pipeline.is_none() || self.refreshes.is_current(generation),
+            "a running stage belongs to this refresh"
+        );
         true
     }
 
@@ -488,6 +671,10 @@ impl AppState {
         let Some(mut pipeline) = self.refreshes.pipeline.take() else {
             return false;
         };
+        debug_assert_eq!(
+            pipeline.generation, generation,
+            "the sections belong to the refresh"
+        );
         self.refreshes.apply_variable_report(report);
         if epoch == self.refreshes.layout_epoch && values != self.section_values {
             self.section_values = values;
@@ -495,11 +682,19 @@ impl AppState {
             pipeline.variables_changed = true;
         }
         self.continue_refresh(pipeline);
+        debug_assert!(
+            self.refreshes.pipeline.is_none() || self.refreshes.is_current(generation),
+            "a running stage belongs to this refresh"
+        );
         true
     }
 
     fn finish_panels(&mut self, mut batch: PanelBatch) -> bool {
         let finishes = batch.pipeline;
+        debug_assert!(
+            finishes.is_none_or(|generation| generation <= self.refreshes.generation),
+            "a batch belongs to a started refresh"
+        );
         let counts = std::mem::take(&mut batch.counts);
         self.apply_panel_batch(batch);
         self.apply_conditions();
@@ -510,12 +705,20 @@ impl AppState {
             pipeline.counts.add(counts);
             self.complete_refresh(pipeline);
         }
+        debug_assert!(
+            self.selection_in_panels(),
+            "the selected panel is in the panel list"
+        );
         true
     }
 
     /// After variables resolve: fetches every panel again when they changed
     /// the layout, otherwise only panels that conditions newly reveal.
     fn continue_refresh(&mut self, mut pipeline: Pipeline) {
+        debug_assert!(
+            self.refreshes.pipeline.is_none(),
+            "the pipeline is out of the tasks while it continues"
+        );
         let indices = if pipeline.variables_changed {
             self.panels_to_fetch()
         } else {
@@ -532,10 +735,19 @@ impl AppState {
         }
         pipeline.abort =
             self.spawn_panel_batch(&indices, Some(pipeline.generation), pipeline.end_ts);
+        let generation = pipeline.generation;
         self.refreshes.pipeline = Some(pipeline);
+        debug_assert!(
+            self.refreshes.is_current(generation),
+            "the refresh stays the current one"
+        );
     }
 
     fn complete_refresh(&mut self, pipeline: Pipeline) {
+        debug_assert!(
+            self.refreshes.pipeline.is_none(),
+            "the completed pipeline is out of the tasks"
+        );
         self.reconcile_visible_annotation_targets();
         self.last_refresh = Instant::now();
         self.refreshes.load_dashboard = false;
@@ -551,6 +763,15 @@ impl AppState {
             BackendStatus::Live
         };
         self.refreshes.unreachable_cause = counts.tls_failure.filter(|_| unreachable);
+        debug_assert!(
+            self.refreshes.status != BackendStatus::Connecting,
+            "a completed refresh knows the backend status"
+        );
+        debug_assert!(
+            self.refreshes.unreachable_cause.is_none()
+                || matches!(self.refreshes.status, BackendStatus::Unreachable { .. }),
+            "a TLS cause comes only with an unreachable backend"
+        );
     }
 
     fn start_annotation_refresh(&mut self, context: AnnotationRefreshContext) {
@@ -558,6 +779,10 @@ impl AppState {
             self.refreshes.annotations_queued = Some(context);
             return;
         }
+        debug_assert!(
+            self.refreshes.annotations_queued.is_none(),
+            "no annotation load waits while none runs"
+        );
         let Some(mut provider) = self.annotations.take_provider() else {
             return;
         };
@@ -566,6 +791,10 @@ impl AppState {
             let poll = provider.refresh(&context).await;
             RefreshMessage::Annotations { provider, poll }
         });
+        debug_assert!(
+            self.refreshes.annotations_running,
+            "the annotation load runs"
+        );
     }
 
     fn spawn_section_refresh(
@@ -575,6 +804,11 @@ impl AppState {
         update: VariableUpdate,
         instances: Vec<SectionInstance>,
     ) -> AbortHandle {
+        debug_assert!(!instances.is_empty(), "a section refresh has sections");
+        debug_assert!(
+            self.refreshes.pipeline.is_none(),
+            "the pipeline is out of the tasks while a stage starts"
+        );
         let prometheus = self.prometheus.clone();
         let vars = self.vars.clone();
         let mut values = self.section_values.clone();
@@ -598,14 +832,22 @@ impl AppState {
         pipeline: Option<u64>,
         end_ts: i64,
     ) -> AbortHandle {
+        debug_assert!(
+            indices.iter().all(|&index| index < self.panels.len()),
+            "each panel to fetch is in the panel list"
+        );
         let jobs = self.panel_jobs(indices);
+        debug_assert!(
+            jobs.len() <= indices.len(),
+            "each index gives one job or less"
+        );
         let seq = self.refreshes.next_seq();
         let epoch = self.refreshes.layout_epoch;
         let prometheus = self.prometheus.clone();
         let vars = self.vars.clone();
         let window = self.query_window(end_ts);
         let fetch = self.refreshes.tasks.spawn(async move {
-            let (fetches, counts) = fetch_panels(&prometheus, window, &vars, jobs).await;
+            let (fetches, counts) = query_panel_jobs(&prometheus, window, &vars, jobs).await;
             RefreshMessage::Panels(PanelBatch {
                 seq,
                 epoch,
@@ -622,6 +864,10 @@ impl AppState {
     }
 
     fn query_window(&self, end_ts: i64) -> QueryWindow {
+        debug_assert!(
+            !self.scrape_interval.is_zero(),
+            "the scrape interval is not zero"
+        );
         QueryWindow {
             range: self.range,
             min_step: self.min_step,
@@ -637,7 +883,7 @@ impl AppState {
             if !indices.contains(&index) {
                 continue;
             }
-            // The copy only needs the queries, so the data is left out.
+            // The copy only needs the queries, so it leaves out the data.
             let series = std::mem::take(&mut panel.series);
             let copy = panel.clone();
             panel.series = series;
@@ -647,6 +893,20 @@ impl AppState {
                 scope: self.panel_scopes.get(&index).cloned(),
             });
         }
+        debug_assert!(
+            jobs.len() <= indices.len(),
+            "each index gives one job or less"
+        );
+        debug_assert!(
+            jobs.iter().all(|job| job.panel.series.is_empty()),
+            "a job copies the queries without the data"
+        );
+        debug_assert!(
+            jobs.iter()
+                .zip(jobs.iter().skip(1))
+                .all(|(earlier, later)| earlier.index < later.index),
+            "the jobs are in panel order"
+        );
         jobs
     }
 
@@ -689,31 +949,16 @@ impl AppState {
             panel.last_error = (!fetch.errors.is_empty()).then(|| fetch.errors.join("\n"));
             panel.notices.warnings = fetch.warnings;
             panel.notices.infos = fetch.infos;
+            debug_assert!(
+                panel.series.len() <= MAX_PANEL_SERIES,
+                "the panel is in the series limit"
+            );
+            debug_assert!(
+                !panel.notices.stale || panel.last_error.is_some(),
+                "stale data comes with an error"
+            );
         }
     }
-}
-
-async fn refresh_variables(
-    prometheus: &prom::PromClient,
-    query_vars: &[TemplateQueryVar],
-    update: VariableUpdate,
-    window: QueryWindow,
-    vars: &mut HashMap<String, String>,
-    var_values: &mut HashMap<String, Vec<String>>,
-) -> VariableReport {
-    let intervals =
-        QueryIntervals::new(window.range, window.min_step, window.scrape_interval, None);
-    refresh_query_variables(
-        prometheus,
-        query_vars,
-        update,
-        window.range,
-        intervals,
-        window.end_ts,
-        vars,
-        var_values,
-    )
-    .await
 }
 
 /// Resolves the query variables of every row and tab copy that defines
@@ -728,8 +973,7 @@ async fn resolve_sections(
     window: QueryWindow,
 ) -> VariableReport {
     let mut report = VariableReport::default();
-    let intervals =
-        QueryIntervals::new(window.range, window.min_step, window.scrape_interval, None);
+    let context = window.variable_context(prometheus);
     for instance in instances {
         let key = (instance.id, instance.scope.clone());
         let mut vars = scoped_vars(vars, Some(&instance.scope)).into_owned();
@@ -738,29 +982,40 @@ async fn resolve_sections(
             None => (VariableUpdate::Load, instance.selected.clone()),
         };
         let instance_report = refresh_query_variables(
-            prometheus,
+            &context,
             &instance.queries,
             update,
-            window.range,
-            intervals,
-            window.end_ts,
             &mut vars,
             &mut selected,
         )
         .await;
         report.queried.extend(instance_report.queried);
         report.errors.extend(instance_report.errors);
+        report.notices.extend(instance_report.notices);
         values.insert(key, selected);
     }
+    debug_assert!(
+        instances
+            .iter()
+            .all(|instance| values.contains_key(&(instance.id, instance.scope.clone()))),
+        "each section has resolved values"
+    );
+    debug_assert!(
+        report.errors.len() <= report.queried.len(),
+        "only a queried variable can fail"
+    );
     report
 }
 
-async fn fetch_panels(
+/// Runs the queries of `jobs`, some at a time, and counts the results.
+async fn query_panel_jobs(
     prometheus: &prom::PromClient,
     window: QueryWindow,
     vars: &HashMap<String, String>,
     jobs: Vec<PanelJob>,
 ) -> (Vec<PanelFetch>, FetchCounts) {
+    let count = jobs.len();
+    let queries: usize = jobs.iter().map(|job| job.panel.exprs.len()).sum();
     let results = futures::stream::iter(jobs)
         .map(|job| async move {
             let vars = scoped_vars(vars, job.scope.as_ref());
@@ -776,7 +1031,12 @@ async fn fetch_panels(
             counts.add(panel_counts);
             fetch
         })
-        .collect();
+        .collect::<Vec<_>>();
+    debug_assert_eq!(fetches.len(), count, "each job gives one fetch");
+    debug_assert!(
+        counts.succeeded + counts.unreachable <= queries,
+        "each query counts one time or less"
+    );
     (fetches, counts)
 }
 
@@ -787,135 +1047,302 @@ async fn fetch_panel(
     window: QueryWindow,
     vars: &HashMap<String, String>,
 ) -> (PanelFetch, FetchCounts) {
-    let QueryWindow {
-        range,
-        min_step,
-        scrape_interval,
-        end_ts,
-    } = window;
-    let mut panel_results = Vec::new();
-    let mut last_url = None;
-    let mut errors = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-    let mut infos: Vec<String> = Vec::new();
-    let mut counts = FetchCounts::default();
-
+    let mut results = PanelResults::default();
     for (i, expr) in p.exprs.iter().enumerate() {
+        let query = PanelQuery::expand(p, i, expr, window, vars);
+        results.url = Some(query.url(prometheus));
+        match query.execute(prometheus).await {
+            Ok(result) => results.add_result(&query, result),
+            Err(e) => results.add_error(&query, &e),
+        }
+    }
+    debug_assert_eq!(
+        results.errors.len() + results.counts.succeeded,
+        p.exprs.len(),
+        "each query succeeds or fails"
+    );
+    debug_assert_eq!(
+        results.url.is_some(),
+        !p.exprs.is_empty(),
+        "a panel with queries shows the URL of a query"
+    );
+    debug_assert!(
+        results.series.len() <= MAX_PANEL_SERIES,
+        "the panel is in the series limit"
+    );
+    results.into_fetch(index)
+}
+
+/// One panel query, expanded with the variables and the window.
+struct PanelQuery<'a> {
+    expr: String,
+    legend: Option<&'a str>,
+    mode: QueryMode,
+    start_ts: i64,
+    end_ts: i64,
+    step: Duration,
+}
+
+impl<'a> PanelQuery<'a> {
+    /// Expands query `i` of panel `p`, whose expression is `expr`.
+    fn expand(
+        p: &'a PanelState,
+        i: usize,
+        expr: &str,
+        window: QueryWindow,
+        vars: &HashMap<String, String>,
+    ) -> Self {
+        let QueryWindow {
+            range,
+            min_step,
+            scrape_interval,
+            end_ts,
+        } = window;
+        debug_assert!(i < p.exprs.len(), "the query index is in range");
         let intervals = p.query_intervals(i, range, min_step, scrape_interval, vars);
-        let step = intervals.step;
-        let expr_expanded = expand_expr(expr, range, intervals, vars);
-        let legend_fmt = custom_legend(p.legends.get(i).and_then(Option::as_ref));
-        let query_mode = p.query_mode(i);
-
-        // Calculate start/end for URL display purposes
-        let start_ts = end_ts - (range.as_secs() as i64);
-
-        let url = match query_mode {
-            QueryMode::Range => {
-                prometheus.build_query_range_url(&expr_expanded, start_ts, end_ts, step)
-            }
-            QueryMode::Instant => prometheus.build_query_url(&expr_expanded, end_ts),
+        let query = Self {
+            expr: expand_expr(expr, range, intervals, vars),
+            legend: custom_legend(p.legends.get(i).and_then(Option::as_ref)),
+            mode: p.query_mode(i),
+            // Calculate start/end for URL display purposes
+            start_ts: end_ts - crate::num::u64_to_i64(range.as_secs()),
+            end_ts,
+            step: intervals.step,
         };
-        last_url = Some(url);
+        debug_assert!(
+            query.start_ts <= query.end_ts,
+            "the query window starts before it ends"
+        );
+        query
+    }
 
-        let query_result = match query_mode {
+    /// The URL of this query, which the panel shows.
+    fn url(&self, prometheus: &prom::PromClient) -> String {
+        debug_assert!(
+            self.start_ts <= self.end_ts,
+            "the query window starts before it ends"
+        );
+        debug_assert!(!self.step.is_zero(), "the query step is not zero");
+        match self.mode {
+            QueryMode::Range => {
+                prometheus.build_query_range_url(&self.expr, self.start_ts, self.end_ts, self.step)
+            }
+            QueryMode::Instant => prometheus.build_query_url(&self.expr, self.end_ts),
+        }
+    }
+
+    /// Sends this query to Prometheus.
+    async fn execute(&self, prometheus: &prom::PromClient) -> anyhow::Result<prom::QueryResult> {
+        debug_assert!(
+            self.start_ts <= self.end_ts,
+            "the query window starts before it ends"
+        );
+        debug_assert!(!self.step.is_zero(), "the query step is not zero");
+        match self.mode {
             QueryMode::Range => {
                 prometheus
-                    .query_range(&expr_expanded, start_ts, end_ts, step)
+                    .query_range(&self.expr, self.start_ts, self.end_ts, self.step)
                     .await
             }
             QueryMode::Instant => {
                 prometheus
-                    .query_instant_series(&expr_expanded, end_ts)
+                    .query_instant_series(&self.expr, self.end_ts)
                     .await
-            }
-        };
-
-        match query_result {
-            Ok(result) => {
-                counts.succeeded += 1;
-                for warning in result.warnings {
-                    if !warnings.contains(&warning) {
-                        warnings.push(warning);
-                    }
-                }
-                for info in result.infos {
-                    if !infos.contains(&info) {
-                        infos.push(info);
-                    }
-                }
-                for s in result.series {
-                    // NaN and ±Inf show as no value, as they cannot be
-                    // scaled for gauges or compared with thresholds.
-                    let latest_val = s
-                        .values
-                        .last()
-                        .and_then(|(_, v)| v.parse::<f64>().ok())
-                        .filter(|v| v.is_finite());
-                    let legend_base = if let Some(fmt) = legend_fmt {
-                        format_legend(fmt, &s.metric)
-                    } else if s.metric.is_empty() {
-                        expr_expanded.clone()
-                    } else {
-                        let mut labels: Vec<_> = s
-                            .metric
-                            .iter()
-                            .map(|(k, v)| format!("{}=\"{}\"", k, v))
-                            .collect();
-                        labels.sort();
-                        format!("{} {{{}}}", expr_expanded, labels.join(", "))
-                    };
-
-                    let mut pts = Vec::with_capacity(s.values.len());
-                    for (ts, val) in s.values {
-                        if let Ok(y) = val.parse::<f64>()
-                            && y.is_finite()
-                        {
-                            pts.push((ts, y));
-                        }
-                    }
-                    panel_results.push(SeriesView {
-                        name: legend_base,
-                        value: latest_val,
-                        points: downsample(pts, 200),
-                        visible: true,
-                    });
-                }
-            }
-            Err(e) => {
-                if prom::is_transport_error(&e) {
-                    counts.unreachable += 1;
-                    if counts.tls_failure.is_none() {
-                        counts.tls_failure = prom::tls_failure_cause(&e).map(str::to_string);
-                    }
-                }
-                let query_name = match query_mode {
-                    QueryMode::Range => "query_range",
-                    QueryMode::Instant => "query",
-                };
-                errors.push(format!(
-                    "{} failed for `{}`: {}",
-                    query_name, expr_expanded, e
-                ));
             }
         }
     }
-    let fetch = PanelFetch {
-        index,
-        series: panel_results,
-        url: last_url,
-        errors,
-        warnings,
-        infos,
-        succeeded: counts.succeeded > 0,
-    };
-    (fetch, counts)
+
+    /// The name of the Prometheus API that this query uses.
+    fn api_name(&self) -> &'static str {
+        match self.mode {
+            QueryMode::Range => "query_range",
+            QueryMode::Instant => "query",
+        }
+    }
+
+    /// Converts one result series to a view, named by the legend format.
+    fn series_view(&self, s: prom::Series) -> SeriesView {
+        debug_assert!(
+            s.values.len() <= MAX_SERIES_POINTS,
+            "the series is in the point limit"
+        );
+        // NaN and ±Inf show as no value, because the app cannot scale them
+        // for gauges or compare them with thresholds.
+        let latest_val = s
+            .values
+            .last()
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite());
+        let name = self.legend_name(&s.metric);
+        let mut pts = Vec::with_capacity(s.values.len());
+        for (ts, val) in s.values {
+            if let Ok(y) = val.parse::<f64>()
+                && y.is_finite()
+            {
+                pts.push((ts, y));
+            }
+        }
+        let view = SeriesView {
+            name,
+            value: latest_val,
+            points: downsample(pts, SHOWN_POINTS),
+            visible: true,
+        };
+        debug_assert!(
+            view.points.len() <= SHOWN_POINTS,
+            "the series is downsampled for the chart"
+        );
+        debug_assert!(
+            view.value.is_none_or(f64::is_finite),
+            "the latest value is a finite number"
+        );
+        view
+    }
+
+    /// The legend of a series with the labels `metric`.
+    fn legend_name(&self, metric: &HashMap<String, String>) -> String {
+        debug_assert!(
+            self.legend.is_none_or(|fmt| !fmt.trim().is_empty()),
+            "a custom legend is not empty"
+        );
+        let name = if let Some(fmt) = self.legend {
+            format_legend(fmt, metric)
+        } else if metric.is_empty() {
+            self.expr.clone()
+        } else {
+            let mut labels: Vec<_> = metric
+                .iter()
+                .map(|(k, v)| format!("{}=\"{}\"", k, v))
+                .collect();
+            labels.sort();
+            format!("{} {{{}}}", self.expr, labels.join(", "))
+        };
+        debug_assert!(
+            self.legend.is_some() || name.starts_with(&self.expr),
+            "an automatic name starts with the query"
+        );
+        name
+    }
+}
+
+/// The results of a panel's queries, collected in query order.
+#[derive(Debug, Default)]
+struct PanelResults {
+    series: Vec<SeriesView>,
+    url: Option<String>,
+    errors: Vec<String>,
+    warnings: Vec<String>,
+    infos: Vec<String>,
+    counts: FetchCounts,
+    /// Series that the queries returned over `MAX_PANEL_SERIES`.
+    cut_series: usize,
+}
+
+impl PanelResults {
+    /// Adds the series, warnings and infos of a successful query.
+    fn add_result(&mut self, query: &PanelQuery<'_>, result: prom::QueryResult) {
+        debug_assert!(
+            result.series.len() <= MAX_PANEL_SERIES,
+            "the result is in the series limit"
+        );
+        self.counts.succeeded += 1;
+        push_new_messages(&mut self.warnings, result.warnings);
+        push_new_messages(&mut self.infos, result.infos);
+        let room = MAX_PANEL_SERIES.saturating_sub(self.series.len());
+        let cut = result.series.len().saturating_sub(room);
+        self.series.extend(
+            result
+                .series
+                .into_iter()
+                .take(room)
+                .map(|s| query.series_view(s)),
+        );
+        self.cut_series += cut;
+        debug_assert!(
+            self.series.len() <= MAX_PANEL_SERIES,
+            "the panel is in the series limit"
+        );
+    }
+
+    /// Adds the error of a failed query, and counts an unreachable backend.
+    fn add_error(&mut self, query: &PanelQuery<'_>, e: &anyhow::Error) {
+        if prom::is_transport_error(e) {
+            self.counts.unreachable += 1;
+            if self.counts.tls_failure.is_none() {
+                self.counts.tls_failure = prom::tls_failure_cause(e).map(str::to_string);
+            }
+        }
+        self.errors.push(format!(
+            "{} failed for `{}`: {}",
+            query.api_name(),
+            query.expr,
+            e
+        ));
+        debug_assert!(
+            self.counts.tls_failure.is_none() || self.counts.unreachable > 0,
+            "a TLS failure is an unreachable query"
+        );
+        debug_assert!(
+            self.errors
+                .last()
+                .is_some_and(|error| error.starts_with(query.api_name())),
+            "the last error names the API of the query"
+        );
+    }
+
+    /// The fetch of panel `index`, with the query counts.
+    fn into_fetch(mut self, index: usize) -> (PanelFetch, FetchCounts) {
+        let cut = self.cut_series > 0;
+        if cut {
+            self.warnings.push(format!(
+                "{} more series are not shown (the panel limit is {MAX_PANEL_SERIES} series)",
+                self.cut_series
+            ));
+        }
+        let fetch = PanelFetch {
+            index,
+            series: self.series,
+            url: self.url,
+            errors: self.errors,
+            warnings: self.warnings,
+            infos: self.infos,
+            succeeded: self.counts.succeeded > 0,
+        };
+        debug_assert!(
+            !cut || !fetch.warnings.is_empty(),
+            "a cut of series gives a warning"
+        );
+        debug_assert!(
+            fetch.series.len() <= MAX_PANEL_SERIES,
+            "the fetch is in the series limit"
+        );
+        (fetch, self.counts)
+    }
+}
+
+/// Appends each message of `messages` that `target` does not contain yet.
+fn push_new_messages(target: &mut Vec<String>, messages: Vec<String>) {
+    let limit = target.len() + messages.len();
+    for message in messages {
+        if !target.contains(&message) {
+            target.push(message);
+        }
+    }
+    debug_assert!(
+        target.len() <= limit,
+        "each message is added one time or less"
+    );
+    debug_assert!(
+        target.iter().enumerate().all(|(index, message)| target
+            .get(..index)
+            .is_some_and(|earlier| !earlier.contains(message))),
+        "the messages have no duplicates"
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::annotations::ProviderFuture;
     use crate::app::{PanelOptions, PanelType, YAxisMode};
     use crate::export::ExportOptions;
     use crate::grafana::VariableRefresh;
@@ -980,7 +1407,7 @@ mod tests {
         format!("http://{address}")
     }
 
-    /// An address nothing listens on, so connections are refused.
+    /// An address that nothing listens on, so the system refuses connections.
     fn refused_prometheus() -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         format!("http://{}", listener.local_addr().unwrap())
@@ -1103,6 +1530,38 @@ mod tests {
         assert!(panel.last_error.is_some());
     }
 
+    #[test]
+    fn panel_series_over_the_limit_are_cut_with_a_warning() {
+        let query = PanelQuery {
+            expr: "up".to_string(),
+            legend: None,
+            mode: QueryMode::Range,
+            start_ts: 0,
+            end_ts: 60,
+            step: Duration::from_secs(15),
+        };
+        let result = |count: usize| prom::QueryResult {
+            series: vec![
+                prom::Series {
+                    metric: HashMap::new(),
+                    values: vec![(0.0, "1".to_string())],
+                };
+                count
+            ],
+            ..prom::QueryResult::default()
+        };
+        let mut results = PanelResults::default();
+        results.add_result(&query, result(MAX_PANEL_SERIES - 2));
+        results.add_result(&query, result(5));
+
+        let (fetch, _) = results.into_fetch(0);
+        assert_eq!(fetch.series.len(), MAX_PANEL_SERIES);
+        assert_eq!(
+            fetch.warnings,
+            ["3 more series are not shown (the panel limit is 2000 series)"]
+        );
+    }
+
     #[tokio::test]
     async fn warnings_are_kept_until_a_fetch_without_them() {
         let url = prometheus_answering(
@@ -1147,7 +1606,7 @@ mod tests {
         assert!(panel.last_error.is_none());
     }
 
-    /// Answers with `respond(path)`'s status and body, recording each path.
+    /// Answers with `respond(path)`'s status and body, and records each path.
     async fn recording_prometheus(
         respond: fn(&str) -> (&'static str, &'static str),
     ) -> (String, Arc<Mutex<Vec<String>>>) {
@@ -1290,7 +1749,7 @@ mod tests {
         assert_eq!(app.active_dashboard(), Some(1));
         assert_eq!(app.title, "Ops / Consul (imported)");
 
-        // Coming back opens the dashboard again: its variables reload.
+        // A return to the dashboard opens it again: its variables reload.
         let start = requests.lock().unwrap().len();
         app.cycle_dashboard(1).unwrap();
         app.settle_refreshes().await;
@@ -1337,7 +1796,7 @@ mod tests {
 
     #[tokio::test]
     async fn panels_kept_by_data_conditions_follow_the_dashboard_shown() {
-        // Nodes' panel shows only with data, so it is fetched while hidden.
+        // Nodes' panel shows only with data, so the refresh fetches it while it does not show.
         let mut nodes: serde_json::Value = serde_json::from_str(&nodes_and_consul()[0]).unwrap();
         nodes["spec"]["layout"] = serde_json::json!({
             "kind": "AutoGridLayout",
@@ -1406,7 +1865,7 @@ mod tests {
         let [nodes, consul] = nodes_and_consul();
         let mut app = dashboards_app(&hung_prometheus().await, &[&nodes, &consul]);
         app.start_refresh();
-        // A fetch outside the refresh, as for a row that was just expanded.
+        // A fetch outside the refresh, as for a row that the user expanded a moment ago.
         app.fetch_panels(&[0]);
         assert_eq!(app.refreshes.loose.len(), 1);
 
@@ -1556,6 +2015,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn variable_values_over_the_limit_are_cut_with_a_notice() {
+        static BODY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+            let values: Vec<String> = (0..=crate::limits::MAX_VARIABLE_VALUES)
+                .map(|index| format!("host-{index}"))
+                .collect();
+            serde_json::json!({"status": "success", "data": values}).to_string()
+        });
+        fn many(path: &str) -> (&'static str, &'static str) {
+            if path.starts_with("/api/v1/label/host/") {
+                ("200 OK", BODY.as_str())
+            } else {
+                ("200 OK", EMPTY_VECTOR)
+            }
+        }
+        let (url, _) = recording_prometheus(many).await;
+        let mut app = app_with_panels(&url, 1);
+        let mut host = query_var("host", "label_values(host)", VariableRefresh::OnLoad);
+        host.select_all = true;
+        app.query_vars = vec![host];
+
+        app.refresh().await.unwrap();
+
+        assert_eq!(
+            app.var_values["host"].len(),
+            crate::limits::MAX_VARIABLE_VALUES
+        );
+        let notices: Vec<_> = app.variable_notices().collect();
+        assert_eq!(
+            notices,
+            [(
+                "host",
+                "kept the first 10000 of 10001 values (the value limit)"
+            )]
+        );
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 30)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw_ui(frame, &mut app))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Variable host: kept the first 10000 of 10001"));
+
+        app.refreshes.dashboard_switched();
+        assert_eq!(app.variable_notices().count(), 0);
+    }
+
+    #[tokio::test]
     async fn input_is_handled_while_prometheus_hangs() {
         let mut app = app_with_panels(&hung_prometheus().await, 1);
         app.start_refresh();
@@ -1572,7 +2084,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(app.range, range * 2);
-        // The zoom replaced the hung refresh instead of queueing behind it.
+        // The zoom replaced the hung refresh. It did not wait in a queue behind it.
         assert_eq!(app.refreshes.generation, 2);
         let replaced = tokio::time::timeout(Duration::from_secs(1), app.join_refresh_task())
             .await
@@ -1711,26 +2223,14 @@ mod tests {
         assert_eq!(app.slow_refresh_at(), None);
     }
 
-    #[derive(Debug)]
-    struct WindowRecorder {
-        windows: Arc<Mutex<Vec<AnnotationRefreshContext>>>,
-    }
-
-    impl AnnotationProvider for WindowRecorder {
-        fn refresh<'a>(&'a mut self, context: &'a AnnotationRefreshContext) -> ProviderFuture<'a> {
-            self.windows.lock().unwrap().push(context.clone());
-            Box::pin(async { ProviderPoll::Unchanged })
-        }
-    }
-
     #[tokio::test]
     async fn annotation_loads_queue_behind_a_running_one() {
         let windows = Arc::new(Mutex::new(Vec::new()));
         let mut app = app_with_panels("http://127.0.0.1:9", 0);
         app.annotations =
-            crate::annotations::AnnotationState::from_provider(Some(Box::new(WindowRecorder {
-                windows: Arc::clone(&windows),
-            })));
+            crate::annotations::AnnotationState::from_provider(Some(AnnotationProvider::Test(
+                crate::annotations::TestProvider::WindowRecorder(Arc::clone(&windows)),
+            )));
 
         app.start_refresh();
         app.zoom_out();

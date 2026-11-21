@@ -29,9 +29,9 @@ jobs:
         uses: withastro/action@v5
         with:
           path: ./docs
-          # Pinned: the action otherwise auto-detects the package manager from
-          # whichever lockfile it finds, and docs/ commits a bun.lock. The
-          # version matches the one CI's docs job builds with.
+          # The pin is necessary. Without it, the action uses the package
+          # manager of the first lockfile that it finds, and docs/ has a
+          # bun.lock. The version is the same as in the docs job of CI.
           package-manager: bun@1.3.9
 
   deploy:

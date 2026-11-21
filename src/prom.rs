@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-use anyhow::{Result, anyhow};
+use crate::limits::{MAX_PANEL_SERIES, MAX_QUERY_BYTES, MAX_QUERY_MESSAGES, MAX_SERIES_POINTS};
+use anyhow::{Result, anyhow, ensure};
 use reqwest::Client;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -28,20 +29,50 @@ pub(crate) use tls::TlsFiles;
 #[cfg(test)]
 pub(crate) use tls::tests as tls_tests;
 
-/// Range query results kept for re-use, such as when panning back to a window.
+/// Range query results that the client keeps to use again, such as when the user pans back to a window.
 const CACHE_CAPACITY: usize = 64;
 /// Largest response body read from Prometheus.
 const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 /// Longest excerpt of a response body included in an error message.
 const ERROR_EXCERPT_CHARS: usize = 512;
+/// Largest size of the note after a cut excerpt, such as `… (123 bytes)`.
+const EXCERPT_NOTE_BYTES: usize = 32;
 
-type QueryWaiter = tokio::sync::oneshot::Sender<Result<QueryResult, String>>;
+/// The result that the first caller of a query sends to the callers that wait.
+type WaiterResult = Result<QueryResult, String>;
+type QueryWaiter = tokio::sync::oneshot::Sender<WaiterResult>;
 type InflightQueries = Arc<Mutex<HashMap<String, Vec<QueryWaiter>>>>;
+
+/// Waits for the result of a query that another caller sends.
+async fn wait_for_inflight(
+    rx: tokio::sync::oneshot::Receiver<WaiterResult>,
+) -> Result<QueryResult> {
+    match rx.await {
+        Ok(Ok(res)) => {
+            debug_assert!(
+                within_limits(&res),
+                "the leader sends a result inside the series and point limits"
+            );
+            Ok(res)
+        }
+        Ok(Err(s)) => {
+            debug_assert!(!s.is_empty(), "the leader sends an error message with text");
+            Err(anyhow!(s))
+        }
+        Err(_) => Err(anyhow!("inflight request cancelled")),
+    }
+}
+
+/// Returns true when `result` is inside the series, point and message limits.
+fn within_limits(result: &QueryResult) -> bool {
+    let short = |series: &Series| series.values.len() <= MAX_SERIES_POINTS;
+    result.series.len() <= MAX_PANEL_SERIES && result.series.iter().all(short)
+}
 
 /// A range query's identity: expression, start, end, and step.
 type CacheKey = (String, i64, i64, Duration);
 
-/// Recent range query results, evicting the oldest beyond `CACHE_CAPACITY`.
+/// Recent range query results. Past `CACHE_CAPACITY`, the cache evicts the oldest.
 #[derive(Debug, Default)]
 struct QueryCache {
     entries: HashMap<CacheKey, QueryResult>,
@@ -54,14 +85,25 @@ impl QueryCache {
     }
 
     fn insert(&mut self, key: CacheKey, result: QueryResult) {
+        debug_assert!(
+            self.entries.len() == self.order.len(),
+            "the eviction order holds each cached key one time"
+        );
         if self.entries.insert(key.clone(), result).is_none() {
             self.order.push_back(key);
         }
-        while self.order.len() > CACHE_CAPACITY {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
-            }
+        let excess = self.order.len().saturating_sub(CACHE_CAPACITY);
+        for oldest in self.order.drain(..excess) {
+            self.entries.remove(&oldest);
         }
+        debug_assert!(
+            self.entries.len() <= CACHE_CAPACITY,
+            "the cache holds CACHE_CAPACITY windows or fewer"
+        );
+        debug_assert!(
+            self.entries.len() == self.order.len(),
+            "the eviction order holds each cached key one time"
+        );
     }
 
     #[cfg(test)]
@@ -70,7 +112,7 @@ impl QueryCache {
     }
 }
 
-/// Locks `mutex`, recovering the data if a panic poisoned it. The guarded maps
+/// Locks `mutex`, and recovers the data if a panic poisoned it. The guarded maps
 /// stay consistent across a panic because every update is a single insert or
 /// remove.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -80,9 +122,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// The first caller's claim on an in-flight range query, which identical
 /// concurrent queries wait on.
 ///
-/// Dropping the guard removes the claim, so a request whose future is dropped
-/// mid-flight cannot leave later identical requests waiting forever: their
-/// senders are dropped and they fail with "inflight request cancelled".
+/// When the guard drops, it removes the claim. So if the caller drops the future
+/// of a request mid-flight, later identical requests do not wait forever. Their
+/// senders drop, and they fail with "inflight request cancelled".
 struct InflightGuard {
     inflight: InflightQueries,
     key: String,
@@ -93,10 +135,17 @@ impl InflightGuard {
         lock(&self.inflight).remove(&self.key).unwrap_or_default()
     }
 
-    /// Sends the leader's result to every waiting caller and releases the claim.
+    /// Sends the leader's result to every caller that waits, and releases the claim.
     fn publish(self, result: &Result<QueryResult>) {
+        debug_assert!(
+            result.as_ref().ok().is_none_or(within_limits),
+            "the leader publishes a result inside the limits"
+        );
+        debug_assert!(!self.key.is_empty(), "the claim has a query key");
         for waiter in self.take_waiters() {
-            let _ = waiter.send(match result {
+            // The send fails only when the caller that waits has stopped and dropped
+            // its receiver. No one reads the result then, so the failure does not matter.
+            let _delivered: Result<(), WaiterResult> = waiter.send(match result {
                 Ok(result) => Ok(result.clone()),
                 Err(error) => Err(error.to_string()),
             });
@@ -106,12 +155,13 @@ impl InflightGuard {
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        drop(self.take_waiters());
+        // The waiters go out of scope here, so each caller sees a closed channel.
+        let _waiters = self.take_waiters();
     }
 }
 
-/// A response body over the size limit. It is not retried, since the same
-/// query would return the same oversized result.
+/// A response body over the size limit. The client does not retry it, since
+/// the same query returns the same oversized result.
 #[derive(Debug)]
 struct ResponseTooLarge(usize);
 
@@ -123,8 +173,8 @@ impl std::fmt::Display for ResponseTooLarge {
 
 impl std::error::Error for ResponseTooLarge {}
 
-/// Prometheus could not be reached, or the connection failed mid-response, as
-/// opposed to Prometheus answering with an error.
+/// The client could not reach Prometheus, or the connection failed mid-response.
+/// This is different from an error answer from Prometheus.
 #[derive(Debug)]
 struct TransportError {
     message: String,
@@ -139,6 +189,15 @@ impl TransportError {
             Some(tls) => format!("{context}: {} ({}): {chain}", tls.cause, tls.hint),
             None => format!("{context}: {chain}"),
         };
+        debug_assert!(!context.is_empty(), "the transport error has a context");
+        debug_assert!(
+            tls.as_ref().is_none_or(|tls| message.contains(&tls.cause)),
+            "the message names the TLS cause"
+        );
+        debug_assert!(
+            message.starts_with(context),
+            "the message starts with its context"
+        );
         Self { message, tls }
     }
 }
@@ -151,18 +210,27 @@ impl std::fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
-/// Whether `error` means Prometheus could not be reached.
+/// Whether `error` means that the client could not reach Prometheus.
 pub(crate) fn is_transport_error(error: &anyhow::Error) -> bool {
     error.is::<TransportError>()
 }
 
 /// A short cause, such as `TLS: unknown issuer`, when `error` is a failed TLS
-/// handshake or the server rejecting the client certificate.
+/// handshake, or when the server rejects the client certificate.
 pub(crate) fn tls_failure_cause(error: &anyhow::Error) -> Option<&str> {
-    error
+    let cause = error
         .downcast_ref::<TransportError>()
         .and_then(|error| error.tls.as_ref())
-        .map(|tls| tls.cause.as_str())
+        .map(|tls| tls.cause.as_str());
+    debug_assert!(
+        cause.is_none() || is_transport_error(error),
+        "only a transport error has a TLS cause"
+    );
+    debug_assert!(
+        cause.is_none_or(|cause| !cause.is_empty()),
+        "a TLS cause has text"
+    );
+    cause
 }
 
 /// Prometheus answered with an error status.
@@ -181,8 +249,8 @@ impl std::fmt::Display for StatusError {
 impl std::error::Error for StatusError {}
 
 impl StatusError {
-    /// Uses the `errorType` and `error` of a Prometheus error body, falling
-    /// back to an excerpt of the body for proxies and other servers.
+    /// Uses the `errorType` and `error` of a Prometheus error body. For proxies
+    /// and other servers, it uses an excerpt of the body.
     fn new(status: reqwest::StatusCode, body: &str) -> Self {
         #[derive(Deserialize)]
         struct ErrorBody {
@@ -200,20 +268,34 @@ impl StatusError {
             },
             _ => excerpt(body),
         };
+        debug_assert!(!status.is_success(), "a status error has an error status");
+        debug_assert!(
+            message.len() <= body.len() + EXCERPT_NOTE_BYTES,
+            "the message is not longer than the body and the excerpt note"
+        );
         Self { status, message }
     }
 }
 
-/// Whether trying again could succeed: the connection failed, or Prometheus
-/// was overloaded or unavailable. A rejected query fails the same way again,
+/// Whether another try can succeed: the connection failed, or Prometheus
+/// had too much load or was not available. A rejected query fails the same way again,
 /// as does a TLS handshake, until the certificates change.
 fn is_retryable(error: &anyhow::Error) -> bool {
-    if let Some(error) = error.downcast_ref::<TransportError>() {
-        return error.tls.is_none();
-    }
-    error.downcast_ref::<StatusError>().is_some_and(|error| {
-        error.status.is_server_error() || error.status == reqwest::StatusCode::TOO_MANY_REQUESTS
-    })
+    let retryable = match error.downcast_ref::<TransportError>() {
+        Some(error) => error.tls.is_none(),
+        None => error.downcast_ref::<StatusError>().is_some_and(|error| {
+            error.status.is_server_error() || error.status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        }),
+    };
+    debug_assert!(
+        !retryable || !error.is::<ResponseTooLarge>(),
+        "a response over the size limit is not retried"
+    );
+    debug_assert!(
+        !retryable || tls_failure_cause(error).is_none(),
+        "a TLS failure is not retried"
+    );
+    retryable
 }
 
 /// A query's series, with the warnings Prometheus returned alongside them.
@@ -229,10 +311,23 @@ pub(crate) struct QueryResult {
 
 /// The start of a response body, for error messages.
 fn excerpt(text: &str) -> String {
-    match text.char_indices().nth(ERROR_EXCERPT_CHARS) {
-        Some((end, _)) => format!("{}… ({} bytes)", &text[..end], text.len()),
+    let shown = match text.char_indices().nth(ERROR_EXCERPT_CHARS) {
+        Some((end, _)) => format!(
+            "{}… ({} bytes)",
+            text.get(..end).unwrap_or(text),
+            text.len()
+        ),
         None => text.to_string(),
-    }
+    };
+    debug_assert!(
+        shown.len() <= text.len() + EXCERPT_NOTE_BYTES,
+        "the excerpt is not longer than the text and the excerpt note"
+    );
+    debug_assert!(
+        shown.chars().count() <= ERROR_EXCERPT_CHARS + EXCERPT_NOTE_BYTES,
+        "the excerpt has ERROR_EXCERPT_CHARS characters and a short note or fewer"
+    );
+    shown
 }
 
 /// A simple Prometheus HTTP client.
@@ -260,12 +355,17 @@ impl PromClient {
             eprintln!("         Falling back to default client (requests may hang).");
             Client::new()
         });
-        Self::with_client(base, http)
+        let client = Self::with_client(base, http);
+        debug_assert!(
+            client.max_response_bytes == MAX_RESPONSE_BYTES,
+            "a new client uses the default response size limit"
+        );
+        client
     }
 
     /// A client for `base` that uses `tls`. With TLS options set, it fails
-    /// rather than fall back to a default client, which would connect without
-    /// the configured certificates.
+    /// and does not fall back to a default client. A default client connects
+    /// without the configured certificates.
     pub(crate) fn with_tls(base: String, tls: &TlsFiles) -> Result<Self> {
         if tls.is_empty() {
             return Ok(Self::new(base));
@@ -284,13 +384,22 @@ impl PromClient {
     }
 
     fn with_client(base: String, client: Client) -> Self {
-        Self {
+        let client = Self {
             base,
             client,
             cache: Arc::new(Mutex::new(QueryCache::default())),
             inflight: Arc::new(Mutex::new(HashMap::new())),
             max_response_bytes: MAX_RESPONSE_BYTES,
-        }
+        };
+        debug_assert!(
+            lock(&client.cache).entries.is_empty(),
+            "a new client starts with an empty cache"
+        );
+        debug_assert!(
+            lock(&client.inflight).is_empty(),
+            "a new client starts with no query in flight"
+        );
+        client
     }
 
     pub(crate) fn build_query_range_url(
@@ -300,6 +409,8 @@ impl PromClient {
         end: i64,
         step: Duration,
     ) -> String {
+        debug_assert!(start <= end, "the query window starts before it ends");
+        debug_assert!(!step.is_zero(), "the query step is not zero");
         // Whole seconds keep URLs readable; Prometheus also accepts `ms` steps.
         let step_param = if step.subsec_millis() == 0 {
             format!("{}s", step.as_secs().max(1))
@@ -317,12 +428,17 @@ impl PromClient {
     }
 
     pub(crate) fn build_query_url(&self, expr: &str, time: i64) -> String {
-        format!(
-            "{}/api/v1/query?query={}&time={}",
-            self.base.trim_end_matches('/'),
-            urlencoding::encode(expr),
-            time
-        )
+        let base = self.base.trim_end_matches('/');
+        let url = format!(
+            "{base}/api/v1/query?query={}&time={time}",
+            urlencoding::encode(expr)
+        );
+        debug_assert!(url.starts_with(base), "the URL starts with the base URL");
+        debug_assert!(
+            url.len() >= base.len() + expr.len(),
+            "the encoded query is not shorter than the query"
+        );
+        url
     }
 
     pub(crate) async fn query_range(
@@ -332,68 +448,81 @@ impl PromClient {
         end: i64,
         step: Duration,
     ) -> Result<QueryResult> {
+        debug_assert!(start <= end, "the query window starts before it ends");
+        debug_assert!(!step.is_zero(), "the query step is not zero");
+        check_query_len(expr)?;
         let cache_key = (expr.to_string(), start, end, step);
         if let Some(result) = lock(&self.cache).get(&cache_key) {
             return Ok(result);
         }
 
         let inflight_key = format!("{}|{}|{}|{}", expr, start, end, step.as_millis());
-        let claim = {
-            let mut inflight = lock(&self.inflight);
-            if let Some(waiters) = inflight.get_mut(&inflight_key) {
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                waiters.push(tx);
-                Err(rx)
-            } else {
-                inflight.insert(inflight_key.clone(), Vec::new());
-                Ok(InflightGuard {
-                    inflight: Arc::clone(&self.inflight),
-                    key: inflight_key,
-                })
-            }
-        };
-        let claim = match claim {
+        let claim = match self.claim_inflight(inflight_key) {
             Ok(claim) => claim,
-            Err(rx) => {
-                return match rx.await {
-                    Ok(Ok(res)) => Ok(res),
-                    Ok(Err(s)) => Err(anyhow!(s)),
-                    Err(_) => Err(anyhow!("inflight request cancelled")),
-                };
-            }
+            Err(rx) => return wait_for_inflight(rx).await,
         };
 
         let url = self.build_query_range_url(expr, start, end, step);
+        let final_res = self.request_with_retries(&url).await;
+        if let Ok(result) = &final_res {
+            lock(&self.cache).insert(cache_key, result.clone());
+        }
 
+        debug_assert!(
+            final_res.as_ref().ok().is_none_or(within_limits),
+            "the range query result is inside the series and point limits"
+        );
+        claim.publish(&final_res);
+        final_res
+    }
+
+    /// Claims the query `key`, or returns a receiver for the result of the
+    /// caller that claimed it first.
+    fn claim_inflight(
+        &self,
+        key: String,
+    ) -> std::result::Result<InflightGuard, tokio::sync::oneshot::Receiver<WaiterResult>> {
+        let mut inflight = lock(&self.inflight);
+        if let Some(waiters) = inflight.get_mut(&key) {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            waiters.push(tx);
+            debug_assert!(!waiters.is_empty(), "the claim lists the new waiter");
+            Err(rx)
+        } else {
+            let earlier = inflight.insert(key.clone(), Vec::new());
+            debug_assert!(earlier.is_none(), "no other caller holds the claim");
+            Ok(InflightGuard {
+                inflight: Arc::clone(&self.inflight),
+                key,
+            })
+        }
+    }
+
+    /// Sends a range query to `url`, and tries again while the error is retryable.
+    async fn request_with_retries(&self, url: &str) -> Result<QueryResult> {
         let max_retries = 3;
         let mut last_err = anyhow!("unknown error");
-        let mut final_res = Err(anyhow!("unknown error"));
 
         for attempt in 0..=max_retries {
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_millis(100 * (1 << attempt))).await;
             }
 
-            match self.perform_request(&url).await {
-                Ok(result) => {
-                    lock(&self.cache).insert(cache_key, result.clone());
-                    final_res = Ok(result);
-                    break;
-                }
-                Err(e) if !is_retryable(&e) => {
-                    last_err = e;
-                    break;
-                }
+            match self.perform_request(url).await {
+                Ok(result) => return Ok(result),
+                Err(e) if !is_retryable(&e) => return Err(e),
                 Err(e) => last_err = e,
             }
         }
-
-        if final_res.is_err() {
-            final_res = Err(last_err);
-        }
-
-        claim.publish(&final_res);
-        final_res
+        debug_assert!(
+            is_retryable(&last_err),
+            "only a retryable error uses all the attempts"
+        );
+        debug_assert!(
+            !last_err.is::<ResponseTooLarge>(),
+            "a response over the size limit is not retried"
+        );
+        Err(last_err)
     }
 
     async fn perform_request(&self, url: &str) -> Result<QueryResult> {
@@ -401,24 +530,24 @@ impl PromClient {
 
         let body: PromResponse<QueryRangeData> = serde_json::from_str(&text)
             .map_err(|e| anyhow!("parsing json: {} (body: {})", e, excerpt(&text)))?;
+        debug_assert!(!text.is_empty(), "a JSON body has text");
 
-        if body.status != "success" {
-            return Err(anyhow!(
-                "prometheus error status: {} — body: {}",
-                body.status,
-                excerpt(&text)
-            ));
-        }
+        ensure!(
+            body.status == "success",
+            "prometheus error status: {} — body: {}",
+            body.status,
+            excerpt(&text)
+        );
 
-        Ok(QueryResult {
+        Ok(limit_result(QueryResult {
             series: body.data.result,
             warnings: body.warnings,
             infos: body.infos,
-        })
+        }))
     }
 
-    /// Values of `label` on series in `start..=end`, only those matching
-    /// `selector` when given, as Grafana's `label_values` queries.
+    /// Values of `label` on series in `start..=end`, as Grafana's `label_values`
+    /// queries. With a `selector`, only the series that match it count.
     pub(crate) async fn label_values(
         &self,
         label: &str,
@@ -426,6 +555,9 @@ impl PromClient {
         start: i64,
         end: i64,
     ) -> Result<Vec<String>> {
+        debug_assert!(start <= end, "the time window starts before it ends");
+        check_query_len(label)?;
+        check_query_len(selector.unwrap_or_default())?;
         let mut url = format!(
             "{}/api/v1/label/{}/values?start={}&end={}",
             self.base.trim_end_matches('/'),
@@ -437,8 +569,16 @@ impl PromClient {
             url.push_str("&match[]=");
             url.push_str(&urlencoding::encode(selector));
         }
+        debug_assert!(
+            url.starts_with(self.base.trim_end_matches('/')),
+            "the URL starts with the base URL"
+        );
         let body: PromResponse<Vec<String>> = self.get_json(&url).await?;
-        ensure_success(&body.status)?;
+        ensure!(
+            body.status == "success",
+            "prometheus error status: {}",
+            body.status
+        );
         Ok(body.data)
     }
 
@@ -447,21 +587,36 @@ impl PromClient {
         expr: &str,
         time: i64,
     ) -> Result<Vec<String>> {
+        check_query_len(expr)?;
         let url = self.build_query_url(expr, time);
         let body: PromResponse<QueryInstantData> = self.get_json(&url).await?;
-        ensure_success(&body.status)?;
+        ensure!(
+            body.status == "success",
+            "prometheus error status: {}",
+            body.status
+        );
         Ok(body.data.result_strings())
     }
 
     pub(crate) async fn query_instant_series(&self, expr: &str, time: i64) -> Result<QueryResult> {
+        check_query_len(expr)?;
         let url = self.build_query_url(expr, time);
         let body: PromResponse<QueryInstantData> = self.get_json(&url).await?;
-        ensure_success(&body.status)?;
-        Ok(QueryResult {
+        ensure!(
+            body.status == "success",
+            "prometheus error status: {}",
+            body.status
+        );
+        let result = limit_result(QueryResult {
             series: body.data.into_series(time),
             warnings: body.warnings,
             infos: body.infos,
-        })
+        });
+        debug_assert!(
+            result.series.iter().all(|series| series.values.len() == 1),
+            "each instant series keeps its one point"
+        );
+        Ok(result)
     }
 
     async fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
@@ -481,24 +636,16 @@ impl PromClient {
             .map_err(|e| TransportError::new("request failed", &e))?;
         let status = resp.status();
         let limit = self.max_response_bytes;
+        debug_assert!(limit > 0, "the response size limit is not zero");
         let too_large = || anyhow::Error::new(ResponseTooLarge(limit));
         if resp
             .content_length()
-            .is_some_and(|length| length > limit as u64)
+            .is_some_and(|length| length > crate::num::usize_to_u64(limit))
         {
             return Err(too_large());
         }
-        let mut body = Vec::new();
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|e| TransportError::new("reading text", &e))?
-        {
-            if body.len() + chunk.len() > limit {
-                return Err(too_large());
-            }
-            body.extend_from_slice(&chunk);
-        }
+        let body = read_body(&mut resp, limit).await?;
+        debug_assert!(body.len() <= limit, "the body is inside the size limit");
         let text = String::from_utf8(body)
             .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
 
@@ -506,16 +653,105 @@ impl PromClient {
             return Err(StatusError::new(status, &text).into());
         }
 
+        // A lossy conversion adds 2 bytes for each bad byte. Valid UTF-8 adds no bytes.
+        debug_assert!(
+            text.len() <= limit.saturating_mul(3),
+            "the text is inside the size limit after a lossy conversion"
+        );
         Ok(text)
     }
 }
 
-fn ensure_success(status: &str) -> Result<()> {
-    if status == "success" {
-        Ok(())
-    } else {
-        Err(anyhow!("prometheus error status: {}", status))
+/// Reads the body of `resp` to its end. A body over `limit` bytes is an error.
+async fn read_body(resp: &mut reqwest::Response, limit: usize) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    // A chunk holds one byte or more, so `limit + 1` reads reach the end or pass the limit.
+    for _ in 0..=limit {
+        let chunk = resp
+            .chunk()
+            .await
+            .map_err(|e| TransportError::new("reading text", &e))?;
+        let Some(chunk) = chunk else {
+            return Ok(body);
+        };
+        if body.len() + chunk.len() > limit {
+            break;
+        }
+        body.extend_from_slice(&chunk);
+        debug_assert!(body.len() <= limit, "the body is inside the size limit");
     }
+    debug_assert!(
+        body.len() <= limit,
+        "the body stops before it passes the size limit"
+    );
+    Err(anyhow::Error::new(ResponseTooLarge(limit)))
+}
+
+/// Fails when `query` has more than `MAX_QUERY_BYTES` bytes.
+fn check_query_len(query: &str) -> Result<()> {
+    ensure!(
+        query.len() <= MAX_QUERY_BYTES,
+        "the query has {} bytes, more than the limit of {MAX_QUERY_BYTES} bytes",
+        query.len()
+    );
+    Ok(())
+}
+
+/// Cuts `result` to the series, point and message limits. Each cut adds a
+/// warning, so the panel shows it.
+fn limit_result(mut result: QueryResult) -> QueryResult {
+    let mut cuts = Vec::new();
+    let series = result.series.len();
+    if series > MAX_PANEL_SERIES {
+        result.series.truncate(MAX_PANEL_SERIES);
+        cuts.push(format!(
+            "{series} series: the panel keeps the first {MAX_PANEL_SERIES} (the series limit)"
+        ));
+    }
+    let mut long_series = 0;
+    for series in &mut result.series {
+        let excess = series.values.len().saturating_sub(MAX_SERIES_POINTS);
+        if excess > 0 {
+            series.values.drain(..excess);
+            long_series += 1;
+        }
+    }
+    if long_series > 0 {
+        cuts.push(format!(
+            "{long_series} series have more than {MAX_SERIES_POINTS} points: the panel keeps \
+             the newest (the point limit)"
+        ));
+    }
+    cuts.extend(cut_messages(&mut result.warnings, "warnings"));
+    cuts.extend(cut_messages(&mut result.infos, "infos"));
+    debug_assert!(
+        cuts.len() <= 4,
+        "each of the four limits adds one warning or none"
+    );
+    result.warnings.extend(cuts);
+    debug_assert!(
+        within_limits(&result),
+        "the result is inside the series and point limits"
+    );
+    debug_assert!(
+        result.warnings.len() <= MAX_QUERY_MESSAGES + 4 && result.infos.len() <= MAX_QUERY_MESSAGES,
+        "the messages are inside the message limit"
+    );
+    result
+}
+
+/// Cuts `messages` to `MAX_QUERY_MESSAGES`, and gives a warning when it cuts.
+fn cut_messages(messages: &mut Vec<String>, kind: &str) -> Option<String> {
+    debug_assert!(!kind.is_empty(), "the message kind has a name");
+    let excess = messages.len().saturating_sub(MAX_QUERY_MESSAGES);
+    messages.truncate(MAX_QUERY_MESSAGES);
+    debug_assert!(
+        messages.len() <= MAX_QUERY_MESSAGES,
+        "the messages are inside the message limit"
+    );
+    (excess > 0).then(|| {
+        format!("{excess} more Prometheus {kind} are not shown (the limit is {MAX_QUERY_MESSAGES})")
+    })
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -530,9 +766,6 @@ struct PromResponse<T> {
 
 #[derive(Debug, Deserialize, Clone)]
 pub(crate) struct QueryRangeData {
-    #[serde(rename = "resultType")]
-    #[allow(dead_code)]
-    pub(crate) result_type: String,
     pub(crate) result: Vec<Series>,
 }
 
@@ -551,26 +784,50 @@ struct QueryInstantData {
 
 impl QueryInstantData {
     fn result_strings(self) -> Vec<String> {
-        match self.result_type.as_str() {
+        let strings = match self.result_type.as_str() {
             "vector" => vector_result_strings(&self.result),
             "scalar" | "string" => scalar_result_string(&self.result).into_iter().collect(),
             _ => Vec::new(),
-        }
+        };
+        debug_assert!(
+            strings.len() <= sample_count(&self.result),
+            "each sample gives one string or none"
+        );
+        debug_assert!(
+            strings.is_empty() || self.result.is_array(),
+            "only an array result gives strings"
+        );
+        strings
     }
 
     fn into_series(self, time: i64) -> Vec<Series> {
-        match self.result_type.as_str() {
+        let series = match self.result_type.as_str() {
             "vector" => vector_result_series(&self.result, time),
             "scalar" => scalar_result_series(&self.result, time)
                 .into_iter()
                 .collect(),
             _ => Vec::new(),
-        }
+        };
+        debug_assert!(
+            series.len() <= sample_count(&self.result),
+            "each sample gives one series or none"
+        );
+        debug_assert!(
+            series.iter().all(|series| series.values.len() == 1),
+            "each instant series has one point"
+        );
+        series
     }
 }
 
+/// The number of samples in an instant query result: the length of a vector,
+/// or 1 for a scalar or a string.
+fn sample_count(result: &serde_json::Value) -> usize {
+    result.as_array().map_or(0, Vec::len).max(1)
+}
+
 fn vector_result_series(result: &serde_json::Value, time: i64) -> Vec<Series> {
-    result
+    let series: Vec<Series> = result
         .as_array()
         .into_iter()
         .flatten()
@@ -591,10 +848,19 @@ fn vector_result_series(result: &serde_json::Value, time: i64) -> Vec<Series> {
                             .map(|value| (label.clone(), value.to_string()))
                     })
                     .collect(),
-                values: vec![(time as f64, value.to_string())],
+                values: vec![(crate::num::i64_to_f64(time), value.to_string())],
             })
         })
-        .collect()
+        .collect();
+    debug_assert!(
+        series.len() <= sample_count(result),
+        "each sample gives one series or none"
+    );
+    debug_assert!(
+        series.iter().all(|series| series.values.len() == 1),
+        "each instant series has one point"
+    );
+    series
 }
 
 fn scalar_result_series(result: &serde_json::Value, time: i64) -> Option<Series> {
@@ -602,15 +868,18 @@ fn scalar_result_series(result: &serde_json::Value, time: i64) -> Option<Series>
         .as_array()
         .and_then(|value| value.get(1))
         .and_then(|value| value.as_str())?;
+    debug_assert!(result.is_array(), "a scalar result is an array");
 
-    Some(Series {
+    let series = Series {
         metric: HashMap::new(),
-        values: vec![(time as f64, value.to_string())],
-    })
+        values: vec![(crate::num::i64_to_f64(time), value.to_string())],
+    };
+    debug_assert!(series.values.len() == 1, "a scalar series has one point");
+    Some(series)
 }
 
 fn vector_result_strings(result: &serde_json::Value) -> Vec<String> {
-    result
+    let strings: Vec<String> = result
         .as_array()
         .into_iter()
         .flatten()
@@ -639,15 +908,29 @@ fn vector_result_strings(result: &serde_json::Value) -> Vec<String> {
                 Some(format!("{{{}}} {}", labels, value))
             }
         })
-        .collect()
+        .collect();
+    debug_assert!(
+        strings.len() <= sample_count(result),
+        "each sample gives one string or none"
+    );
+    debug_assert!(
+        strings.is_empty() || result.is_array(),
+        "only an array result gives strings"
+    );
+    strings
 }
 
 fn scalar_result_string(result: &serde_json::Value) -> Option<String> {
-    result
+    let value = result
         .as_array()
         .and_then(|value| value.get(1))
         .and_then(|value| value.as_str())
-        .map(ToString::to_string)
+        .map(ToString::to_string);
+    debug_assert!(
+        value.is_none() || result.is_array(),
+        "only an array result gives a value"
+    );
+    value
 }
 
 #[cfg(test)]
@@ -658,8 +941,8 @@ mod tests {
 
     const EMPTY_MATRIX: &str = r#"{"status":"success","data":{"resultType":"matrix","result":[]}}"#;
 
-    /// A Prometheus stand-in. The first `stalled` connections are accepted and
-    /// never answered; later ones receive `response` (a full HTTP response).
+    /// A Prometheus stand-in. It accepts the first `stalled` connections and
+    /// never answers them; later ones receive `response` (a full HTTP response).
     async fn server(stalled: usize, response: String) -> (String, Arc<tokio::sync::Notify>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -746,7 +1029,7 @@ mod tests {
         assert!(lock(&client.inflight).is_empty());
     }
 
-    /// Answers every request with `response`, counting the requests.
+    /// Answers every request with `response`, and counts the requests.
     async fn counting_server(response: String) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -834,6 +1117,101 @@ mod tests {
             error.to_string(),
             "prometheus 502 Bad Gateway: <html>bad gateway</html>"
         );
+    }
+
+    /// A series with `points` points at the times 0, 1, 2 and on.
+    fn series_with_points(points: usize) -> Series {
+        Series {
+            metric: HashMap::new(),
+            values: std::iter::successors(Some(0.0), |time| Some(time + 1.0))
+                .take(points)
+                .map(|time| (time, "1".to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn results_in_the_limits_stay_the_same() {
+        let result = limit_result(QueryResult {
+            series: vec![series_with_points(MAX_SERIES_POINTS)],
+            warnings: vec!["partial".to_string(); MAX_QUERY_MESSAGES],
+            infos: Vec::new(),
+        });
+        assert_eq!(result.series[0].values.len(), MAX_SERIES_POINTS);
+        assert_eq!(result.warnings.len(), MAX_QUERY_MESSAGES);
+    }
+
+    #[test]
+    fn series_over_the_limit_are_cut_with_a_warning() {
+        let result = limit_result(QueryResult {
+            series: vec![series_with_points(1); MAX_PANEL_SERIES + 5],
+            ..QueryResult::default()
+        });
+        assert_eq!(result.series.len(), MAX_PANEL_SERIES);
+        assert_eq!(
+            result.warnings,
+            ["2005 series: the panel keeps the first 2000 (the series limit)"]
+        );
+    }
+
+    #[test]
+    fn points_over_the_limit_are_cut_to_the_newest_with_a_warning() {
+        let result = limit_result(QueryResult {
+            series: vec![
+                series_with_points(MAX_SERIES_POINTS + 3),
+                series_with_points(2),
+            ],
+            ..QueryResult::default()
+        });
+        assert_eq!(result.series[0].values.len(), MAX_SERIES_POINTS);
+        assert_eq!(result.series[0].values[0].0, 3.0);
+        assert_eq!(result.series[1].values.len(), 2);
+        assert_eq!(
+            result.warnings,
+            ["1 series have more than 22000 points: the panel keeps the newest (the point limit)"]
+        );
+    }
+
+    #[test]
+    fn messages_over_the_limit_are_cut_with_a_warning() {
+        let result = limit_result(QueryResult {
+            series: Vec::new(),
+            warnings: vec!["w".to_string(); MAX_QUERY_MESSAGES + 2],
+            infos: vec!["i".to_string(); MAX_QUERY_MESSAGES + 1],
+        });
+        assert_eq!(result.infos.len(), MAX_QUERY_MESSAGES);
+        assert_eq!(result.warnings.len(), MAX_QUERY_MESSAGES + 2);
+        assert_eq!(
+            result.warnings[MAX_QUERY_MESSAGES..],
+            [
+                "2 more Prometheus warnings are not shown (the limit is 32)",
+                "1 more Prometheus infos are not shown (the limit is 32)",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn queries_over_the_length_limit_are_not_sent() {
+        let client = PromClient::new("http://127.0.0.1:9".to_string());
+        let long = "a".repeat(MAX_QUERY_BYTES + 1);
+        let expected = format!("the query has {} bytes, more than the limit of", long.len());
+        let step = Duration::from_secs(15);
+        let errors = [
+            client.query_range(&long, 0, 60, step).await.unwrap_err(),
+            client.query_instant_series(&long, 0).await.unwrap_err(),
+            client
+                .query_instant_result_strings(&long, 0)
+                .await
+                .unwrap_err(),
+            client.label_values(&long, None, 0, 60).await.unwrap_err(),
+            client
+                .label_values("job", Some(&long), 0, 60)
+                .await
+                .unwrap_err(),
+        ];
+        for error in errors {
+            assert!(error.to_string().starts_with(&expected), "{error}");
+        }
     }
 
     #[test]
@@ -943,7 +1321,6 @@ mod tests {
 
         let resp: PromResponse<QueryRangeData> = serde_json::from_str(json).unwrap();
         assert_eq!(resp.status, "success");
-        assert_eq!(resp.data.result_type, "matrix");
         assert_eq!(resp.data.result.len(), 1);
         assert_eq!(resp.data.result[0].metric.get("job").unwrap(), "prometheus");
         assert_eq!(resp.data.result[0].values.len(), 2);

@@ -24,7 +24,7 @@ mod import;
 mod model;
 mod v2;
 
-/// Result of importing a Grafana dashboard.
+/// Result of a Grafana dashboard import.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DashboardImport {
     /// Dashboard title.
@@ -33,10 +33,10 @@ pub(crate) struct DashboardImport {
     pub(crate) queries: Vec<QueryPanel>,
     /// Recursive layout of panels and rows.
     pub(crate) layout: crate::dashboard::DashboardLayout,
-    /// Variables extracted from `templating.list`, formatted for interpolation.
+    /// Variables from `templating.list`, in the format that queries interpolate.
     pub(crate) vars: HashMap<String, String>,
-    /// Raw selected values per variable, before formatting into `vars`; `All`
-    /// selects every known option. Repeats iterate these and titles show them.
+    /// Raw selected values per variable, before the import formats them into `vars`.
+    /// `All` selects every known option. Repeats iterate these and titles show them.
     pub(crate) var_values: HashMap<String, Vec<String>>,
     /// Multi-value and include-all variables, whose values are regex-escaped.
     pub(crate) regex_vars: HashSet<String>,
@@ -44,7 +44,7 @@ pub(crate) struct DashboardImport {
     pub(crate) all_vars: HashSet<String>,
     /// Names of every variable the dashboard defines.
     pub(crate) variable_names: HashSet<String>,
-    /// Conditional rendering of rows, tabs, and auto grid items in `layout`.
+    /// The `conditionalRendering` of rows, tabs, and auto grid items in `layout`.
     pub(crate) conditions: crate::conditions::Conditions,
     /// Variables that rows and tabs in `layout` define for their contents.
     pub(crate) sections: HashMap<crate::dashboard::SectionId, Vec<SectionVariable>>,
@@ -52,15 +52,15 @@ pub(crate) struct DashboardImport {
     pub(crate) repeats: crate::dashboard::Repeats,
     /// Dynamic query variables extracted from `templating.list`.
     pub(crate) query_vars: Vec<TemplateQueryVar>,
-    /// Number of panels that were skipped (unsupported types).
+    /// Number of panels that the import skipped (unsupported types).
     pub(crate) skipped_panels: usize,
     /// Dashboard-level refresh interval in milliseconds, if provided.
     pub(crate) refresh_rate_ms: Option<u64>,
-    /// Warnings produced while importing the dashboard.
+    /// Warnings that the dashboard import produced.
     pub(crate) diagnostics: Vec<ImportDiagnostic>,
 }
 
-/// A warning produced while importing a Grafana dashboard.
+/// A warning that a Grafana dashboard import produces.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ImportDiagnostic {
     /// Stable diagnostic code.
@@ -73,11 +73,19 @@ pub(crate) struct ImportDiagnostic {
 
 impl ImportDiagnostic {
     fn new(code: &str, path: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
+        let diagnostic = Self {
             code: code.to_string(),
             path: path.into(),
             message: message.into(),
-        }
+        };
+        debug_assert!(
+            code.bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'_'),
+            "a diagnostic code is in snake case"
+        );
+        debug_assert!(!code.is_empty(), "a diagnostic has a code");
+        debug_assert!(!diagnostic.message.is_empty(), "a diagnostic has a message");
+        diagnostic
     }
 }
 
@@ -92,9 +100,9 @@ pub(crate) struct TemplateQueryVar {
     pub(crate) regex: Option<String>,
     /// JSON-ish source path for the variable query.
     pub(crate) query_path: String,
-    /// Whether `All` is selected, so every resolved value is used.
+    /// Whether the variable selects `All`, so that queries use every resolved value.
     pub(crate) select_all: bool,
-    /// Replaces the resolved values when `All` is selected, if set.
+    /// Replaces the resolved values when the variable selects `All`, if set.
     pub(crate) all_value: Option<String>,
     /// Whether values are regex-escaped, as for multi-value or include-all variables.
     pub(crate) regex_values: bool,
@@ -112,8 +120,8 @@ pub(crate) enum VariableRefresh {
     OnTimeRangeChange,
 }
 
-/// A variable that a V2 row or tab defines for itself and its contents,
-/// shadowing a dashboard variable of the same name.
+/// A variable that a V2 row or tab defines for itself and its contents. It
+/// hides a dashboard variable of the same name.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SectionVariable {
     pub(crate) name: String,
@@ -121,9 +129,9 @@ pub(crate) struct SectionVariable {
     pub(crate) values: Vec<String>,
     /// Whether values are regex-escaped, as for multi-value or include-all variables.
     pub(crate) regex: bool,
-    /// Whether `All` is selected.
+    /// Whether the variable selects `All`.
     pub(crate) all: bool,
-    /// Replaces the values in queries while `All` is selected, if set.
+    /// Replaces the values in queries while the variable selects `All`, if set.
     pub(crate) all_value: Option<String>,
     /// Prometheus query that resolves the values, for query variables.
     pub(crate) query: Option<TemplateQueryVar>,
@@ -157,7 +165,7 @@ pub(crate) struct GridPos {
     pub(crate) h: i32,
 }
 
-/// Serialization of a dashboard file, chosen from its extension.
+/// The file format of a dashboard file, chosen from its extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DocumentFormat {
     Json,
@@ -168,12 +176,17 @@ enum DocumentFormat {
 
 impl DocumentFormat {
     fn from_path(path: &std::path::Path) -> Self {
-        match path
+        let extension = path
             .extension()
             .and_then(|extension| extension.to_str())
-            .map(str::to_ascii_lowercase)
-            .as_deref()
-        {
+            .map(str::to_ascii_lowercase);
+        debug_assert!(
+            extension
+                .as_deref()
+                .is_none_or(|extension| !extension.contains('.')),
+            "an extension holds no dot"
+        );
+        match extension.as_deref() {
             Some("json") => Self::Json,
             Some("yaml" | "yml") => Self::Yaml,
             _ => Self::Detect,
@@ -181,9 +194,14 @@ impl DocumentFormat {
     }
 }
 
+/// Reads a dashboard file of at most `MAX_DASHBOARD_BYTES`.
+fn read_dashboard_file(path: &std::path::Path) -> Result<String> {
+    crate::limits::read_text_capped(path, crate::limits::MAX_DASHBOARD_BYTES)
+        .with_context(|| format!("reading grafana dashboard: {}", path.display()))
+}
+
 pub(crate) fn load_grafana_dashboard(path: &std::path::Path) -> Result<DashboardImport> {
-    let data = std::fs::read_to_string(path)
-        .with_context(|| format!("reading grafana dashboard: {}", path.display()))?;
+    let data = read_dashboard_file(path)?;
     import_document(&data, DocumentFormat::from_path(path))
 }
 
@@ -198,7 +216,7 @@ pub(crate) struct DashboardSet {
     /// Every dashboard's panels and variables, under one tab group whose tabs
     /// are the dashboards, in order. Dashboard variables are the tabs' variables.
     pub(crate) combined: DashboardImport,
-    /// The tab group holding one tab per dashboard.
+    /// The tab group that has one tab per dashboard.
     pub(crate) root: crate::dashboard::TabGroupId,
     /// Each dashboard imported alone, in order: its title, refresh rate,
     /// variables and diagnostics, exactly as a single dashboard.
@@ -217,18 +235,28 @@ pub(crate) fn load_grafana_dashboards(paths: &[std::path::PathBuf]) -> Result<Da
     let documents = paths
         .iter()
         .map(|path| {
-            let data = std::fs::read_to_string(path)
-                .with_context(|| format!("reading grafana dashboard: {}", path.display()))?;
+            let data = read_dashboard_file(path)?;
             let value = parse_document(&data, DocumentFormat::from_path(path))
                 .with_context(|| path.display().to_string())?;
             Ok((path.clone(), value))
         })
         .collect::<Result<Vec<_>>>()?;
-    import_documents(documents)
+    debug_assert_eq!(documents.len(), paths.len(), "each path gives one document");
+    let set = import_documents(documents)?;
+    debug_assert_eq!(
+        set.files.len(),
+        paths.len(),
+        "each path gives one dashboard"
+    );
+    Ok(set)
 }
 
 #[cfg(test)]
 pub(crate) fn parse_grafana_dashboards(documents: &[&str]) -> Result<DashboardSet> {
+    debug_assert!(
+        documents.iter().all(|data| !data.trim().is_empty()),
+        "each test document has text"
+    );
     let documents = documents
         .iter()
         .enumerate()
@@ -239,7 +267,10 @@ pub(crate) fn parse_grafana_dashboards(documents: &[&str]) -> Result<DashboardSe
             ))
         })
         .collect::<Result<Vec<_>>>()?;
-    import_documents(documents)
+    let count = documents.len();
+    let set = import_documents(documents)?;
+    debug_assert_eq!(count, set.files.len(), "each document gives one dashboard");
+    Ok(set)
 }
 
 fn import_documents(documents: Vec<(std::path::PathBuf, Value)>) -> Result<DashboardSet> {
@@ -252,7 +283,24 @@ fn import_documents(documents: Vec<(std::path::PathBuf, Value)>) -> Result<Dashb
         models.push(detect_and_adapt(value).with_context(context)?);
         files.push(DashboardFile { path, single });
     }
+    debug_assert_eq!(files.len(), models.len(), "each file has one model");
     let (combined, root) = import::finish_many(models)?;
+    debug_assert!(
+        combined
+            .layout
+            .tabs(root)
+            .is_some_and(|group| group.tabs.len() == files.len()),
+        "the root group has one tab for each file"
+    );
+    debug_assert!(
+        combined.queries.len()
+            >= files
+                .iter()
+                .map(|file| file.single.queries.len())
+                .max()
+                .unwrap_or(0),
+        "the set holds the panels of each file"
+    );
     Ok(DashboardSet {
         combined,
         root,
@@ -267,8 +315,12 @@ fn import_document(data: &str, format: DocumentFormat) -> Result<DashboardImport
 /// Parses a dashboard document into JSON values.
 ///
 /// Grafana exports Classic dashboards as JSON and V2 resources as JSON or YAML.
-/// Both formats feed the same importer, so YAML is converted to `serde_json::Value`.
+/// Both formats feed the same importer, so this function converts YAML to `serde_json::Value`.
 fn parse_document(data: &str, format: DocumentFormat) -> Result<Value> {
+    debug_assert!(
+        crate::num::usize_to_u64(data.len()) <= crate::limits::MAX_DASHBOARD_BYTES,
+        "the document is in the size limit"
+    );
     match format {
         DocumentFormat::Json => {
             serde_json::from_str(data).context("parsing Grafana dashboard JSON")
@@ -347,6 +399,14 @@ pub(crate) fn variable_diagnostics(
         );
     }
 
+    debug_assert_eq!(diagnostics.len(), seen.len(), "each diagnostic is unique");
+    debug_assert!(
+        diagnostics.iter().all(|diagnostic| matches!(
+            diagnostic.code.as_str(),
+            "unresolved_variable" | "unsupported_variable_modifier"
+        )),
+        "each diagnostic is about a variable"
+    );
     diagnostics
 }
 
@@ -357,100 +417,118 @@ fn collect_variable_diagnostics(
     diagnostics: &mut Vec<ImportDiagnostic>,
     seen: &mut HashSet<(String, String, String)>,
 ) {
-    let chars: Vec<(usize, char)> = expr.char_indices().collect();
-    let mut idx = 0;
-    while idx < chars.len() {
-        if chars[idx].1 != '$' {
-            idx += 1;
-            continue;
-        }
+    let mut scan = VariableScan {
+        path,
+        known_vars,
+        diagnostics,
+        seen,
+    };
+    let mut rest = expr;
+    // Each pass reads one `$` or more, so the expression length bounds the loop.
+    for _ in 0..expr.len() {
+        let Some((_, after)) = rest.split_once('$') else {
+            break;
+        };
+        let length = rest.len();
+        rest = match after.strip_prefix('{') {
+            Some(braced) => scan.braced_variable(braced).unwrap_or(after),
+            None => scan.plain_variable(after),
+        };
+        debug_assert!(rest.len() < length, "each pass reads one character or more");
+    }
+    debug_assert!(!rest.contains('$'), "the scan reads each `$`");
+}
 
-        if idx + 1 >= chars.len() {
-            idx += 1;
-            continue;
-        }
+/// One expression to scan for variable references, and the diagnostics it gives.
+struct VariableScan<'a> {
+    path: &'a str,
+    known_vars: &'a HashSet<String>,
+    diagnostics: &'a mut Vec<ImportDiagnostic>,
+    seen: &'a mut HashSet<(String, String, String)>,
+}
 
-        if chars[idx + 1].1 == '{' {
-            let start = chars[idx].0;
-            let inner_start = chars[idx + 1].0 + 1;
-            let mut end_idx = idx + 2;
-            while end_idx < chars.len() && chars[end_idx].1 != '}' {
-                end_idx += 1;
-            }
-            if end_idx >= chars.len() {
-                idx += 1;
-                continue;
-            }
-
-            let end = chars[end_idx].0;
-            let token_end = end + 1;
-            let inner = &expr[inner_start..end];
-            let token = &expr[start..token_end];
-            let (name, modifier) = inner.split_once(':').unwrap_or((inner, ""));
-            if !modifier.is_empty() {
-                push_variable_diagnostic(
-                    diagnostics,
-                    seen,
-                    ImportDiagnostic::new(
-                        "unsupported_variable_modifier",
-                        path,
-                        format!(
-                            "unsupported Grafana variable modifier `{token}`; grafana-tui expands only unmodified variables"
-                        ),
-                    ),
-                );
-            }
-            if is_valid_variable_name(name)
-                && !is_builtin_variable(name)
-                && !known_vars.contains(name)
-            {
-                push_variable_diagnostic(
-                    diagnostics,
-                    seen,
-                    ImportDiagnostic::new(
-                        "unresolved_variable",
-                        path,
-                        format!(
-                            "unresolved variable `{token}`; provide it with --var or dashboard templating"
-                        ),
-                    ),
-                );
-            }
-            idx = end_idx + 1;
-            continue;
-        }
-
-        let name_start = chars[idx + 1].0;
-        let mut end_idx = idx + 1;
-        while end_idx < chars.len() && is_variable_name_char(chars[end_idx].1) {
-            end_idx += 1;
-        }
-        if end_idx == idx + 1 {
-            idx += 1;
-            continue;
-        }
-
-        let name_end = chars
-            .get(end_idx)
-            .map(|(byte_idx, _)| *byte_idx)
-            .unwrap_or(expr.len());
-        let name = &expr[name_start..name_end];
-        if is_valid_variable_name(name) && !is_builtin_variable(name) && !known_vars.contains(name)
-        {
-            let token = &expr[chars[idx].0..name_end];
-            push_variable_diagnostic(
-                diagnostics,
-                seen,
-                ImportDiagnostic::new(
-                    "unresolved_variable",
-                    path,
-                    format!(
-                        "unresolved variable `{token}`; provide it with --var or dashboard templating"
-                    ),
+impl VariableScan<'_> {
+    /// Checks the `${name}` reference that `braced` starts after its `{`.
+    /// Returns the text after the `}`, or `None` when there is no `}`.
+    fn braced_variable<'t>(&mut self, braced: &'t str) -> Option<&'t str> {
+        let (inner, remainder) = braced.split_once('}')?;
+        debug_assert!(
+            remainder.len() < braced.len(),
+            "the scan moves past the brace"
+        );
+        let before = self.diagnostics.len();
+        let token = format!("${{{inner}}}");
+        let (name, modifier) = inner.split_once(':').unwrap_or((inner, ""));
+        if !modifier.is_empty() {
+            self.report(
+                "unsupported_variable_modifier",
+                format!(
+                    "unsupported Grafana variable modifier `{token}`; grafana-tui expands only unmodified variables"
                 ),
             );
         }
-        idx = end_idx;
+        if self.is_unresolved(name) {
+            self.report(
+                "unresolved_variable",
+                format!(
+                    "unresolved variable `{token}`; provide it with --var or dashboard templating"
+                ),
+            );
+        }
+        debug_assert!(
+            self.diagnostics.len() <= before.saturating_add(2),
+            "a reference gives two diagnostics or fewer"
+        );
+        Some(remainder)
+    }
+
+    /// Checks the `$name` reference that `after` starts after its `$`.
+    /// Returns the text after the name.
+    fn plain_variable<'t>(&mut self, after: &'t str) -> &'t str {
+        let name_len = after
+            .find(|ch: char| !is_variable_name_char(ch))
+            .unwrap_or(after.len());
+        let (name, remainder) = after.split_at_checked(name_len).unwrap_or((after, ""));
+        debug_assert!(
+            name.chars().all(is_variable_name_char),
+            "the name has only name characters"
+        );
+        debug_assert_eq!(
+            name.len().saturating_add(remainder.len()),
+            after.len(),
+            "the name and the rest make the text"
+        );
+        if self.is_unresolved(name) {
+            self.report(
+                "unresolved_variable",
+                format!(
+                    "unresolved variable `${name}`; provide it with --var or dashboard templating"
+                ),
+            );
+        }
+        remainder
+    }
+
+    /// Tells if `name` is a valid variable name that nothing defines.
+    fn is_unresolved(&self, name: &str) -> bool {
+        is_valid_variable_name(name)
+            && !is_builtin_variable(name)
+            && !self.known_vars.contains(name)
+    }
+
+    /// Adds a diagnostic for this expression, once for each code and message.
+    fn report(&mut self, code: &str, message: String) {
+        debug_assert!(!message.is_empty(), "a report has a message");
+        let before = self.diagnostics.len();
+        push_variable_diagnostic(
+            self.diagnostics,
+            self.seen,
+            ImportDiagnostic::new(code, self.path, message),
+        );
+        debug_assert!(
+            self.diagnostics.len() <= before.saturating_add(1),
+            "a report adds one diagnostic or less"
+        );
     }
 }
 
@@ -459,18 +537,26 @@ fn push_variable_diagnostic(
     seen: &mut HashSet<(String, String, String)>,
     diagnostic: ImportDiagnostic,
 ) {
+    let before = diagnostics.len();
     let key = (
         diagnostic.code.clone(),
         diagnostic.path.clone(),
         diagnostic.message.clone(),
     );
-    if seen.insert(key) {
+    let new = seen.insert(key);
+    if new {
         diagnostics.push(diagnostic);
     }
+    debug_assert_eq!(
+        diagnostics.len(),
+        before.saturating_add(usize::from(new)),
+        "only a new diagnostic goes in the list"
+    );
+    debug_assert!(!seen.is_empty(), "the seen set holds the diagnostic");
 }
 
 fn is_builtin_variable(name: &str) -> bool {
-    matches!(
+    let builtin = matches!(
         name,
         "__interval"
             | "__interval_ms"
@@ -479,15 +565,30 @@ fn is_builtin_variable(name: &str) -> bool {
             | "__range_ms"
             | "__rate_interval"
             | "__rate_interval_ms"
-    )
+    );
+    debug_assert!(
+        !builtin || name.starts_with("__"),
+        "a built-in variable starts with two underscores"
+    );
+    debug_assert!(
+        !builtin || is_valid_variable_name(name),
+        "a built-in variable has a valid name"
+    );
+    builtin
 }
 
 fn is_valid_variable_name(name: &str) -> bool {
     let mut chars = name.chars();
-    chars
+    let valid = chars
         .next()
         .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
-        && chars.all(is_variable_name_char)
+        && chars.all(is_variable_name_char);
+    debug_assert!(!valid || !name.is_empty(), "a valid name is not empty");
+    debug_assert!(
+        !valid || !name.starts_with(|ch: char| ch.is_ascii_digit()),
+        "a valid name does not start with a digit"
+    );
+    valid
 }
 
 fn is_variable_name_char(ch: char) -> bool {
@@ -756,8 +857,8 @@ mod tests {
         }
     }
 
-    /// `v2_grafana13_autogrid.json` was authored through Grafana 13.2.3's V2 API: two
-    /// rows, each holding an auto grid, one with named and one with custom sizes.
+    /// `v2_grafana13_autogrid.json` comes from Grafana 13.2.3's V2 API: two
+    /// rows, each with an auto grid, one with named and one with custom sizes.
     #[test]
     fn v2_grafana13_auto_grids_import_sizes_in_terminal_units() {
         let dashboard = parse_grafana_dashboard(include_str!(
@@ -913,8 +1014,8 @@ mod tests {
         }
     }
 
-    /// A V2 dashboard with one panel querying `expr`, refreshing every
-    /// `auto_refresh`, and an `instance` variable resolved by `instance_query`.
+    /// A V2 dashboard with one panel that queries `expr` and refreshes every
+    /// `auto_refresh`, and an `instance` variable that `instance_query` resolves.
     fn v2_dashboard(title: &str, auto_refresh: &str, expr: &str, instance_query: &str) -> String {
         let mut json = valid_v2_resource();
         make_v2_panel_importable(&mut json);
@@ -956,7 +1057,7 @@ mod tests {
         assert_eq!(group.active, Some(0));
         let titles: Vec<&str> = group.tabs.iter().map(|tab| tab.title.as_str()).collect();
         assert_eq!(titles, ["Nodes", "Consul"]);
-        // Panels are numbered across dashboards, so their indices do not collide.
+        // The import numbers panels across dashboards, so their indices do not collide.
         let exprs: Vec<&str> = set
             .combined
             .queries
@@ -979,7 +1080,7 @@ mod tests {
         assert_eq!(instance_query(0), "label_values(node_uname_info, instance)");
         assert_eq!(instance_query(1), "label_values(consul_up, instance)");
 
-        // Each file also imports alone, as a single dashboard would.
+        // Each file also imports alone, with the same result as a single dashboard.
         let refresh: Vec<_> = set
             .files
             .iter()
@@ -1025,6 +1126,21 @@ mod tests {
             set.files[1].single.diagnostics[0].code,
             "unknown_repeat_variable"
         );
+    }
+
+    #[test]
+    fn a_dashboard_file_over_its_limit_names_the_file_and_the_limit() {
+        let limit = crate::limits::MAX_DASHBOARD_BYTES;
+        let path = crate::limits::tests::sparse_file("big-dashboard.json", limit + 1);
+        let expected = format!(
+            "reading grafana dashboard: {}: the file is larger than the limit of {limit} bytes",
+            path.display()
+        );
+        let error = load_grafana_dashboard(&path).unwrap_err();
+        assert_eq!(format!("{error:#}"), expected);
+        let error = load_grafana_dashboards(&[path.clone(), path.clone()]).unwrap_err();
+        assert_eq!(format!("{error:#}"), expected);
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
@@ -1108,8 +1224,8 @@ mod tests {
         );
     }
 
-    /// `v2_grafana13_sections.json` was authored through Grafana 13.2.3's V2 API:
-    /// a row shadowing the dashboard's `quantile`, and a row whose `handler`
+    /// `v2_grafana13_sections.json` comes from Grafana 13.2.3's V2 API:
+    /// a row that hides the dashboard's `quantile`, and a row whose `handler`
     /// query variable drives a repeat.
     #[test]
     fn v2_grafana13_section_variables_fixture_imports_per_row() {
@@ -1941,7 +2057,7 @@ mod tests {
         assert_eq!(v2.vars.get("region"), classic.vars.get("region"));
     }
 
-    /// Applies a named malformation to `v2_compatibility.json`'s only panel.
+    /// Applies the named bad-input case to `v2_compatibility.json`'s only panel.
     fn v2_compatibility_with_panel_case(case: &str) -> serde_json::Value {
         let mut json: serde_json::Value = serde_json::from_str(include_str!(
             "../tests/fixtures/grafana/v2_compatibility.json"
@@ -2231,11 +2347,11 @@ mod tests {
         }
     }
 
-    /// `v2_grafana13_export.json` is a dashboard authored through Grafana 13.2.3's
-    /// `dashboard.grafana.app/v2` API and read back unchanged apart from dropping
-    /// `status`, so it carries the server's real serialization: unset slices are
-    /// `null`, `vizConfig.version` is empty, and the query-less text panel's query
-    /// group has an empty `kind`.
+    /// `v2_grafana13_export.json` holds a dashboard that went through Grafana 13.2.3's
+    /// `dashboard.grafana.app/v2` API and came back unchanged, apart from the removed
+    /// `status`. So it has the server's real JSON output. Unset slices are `null`,
+    /// `vizConfig.version` is empty, and the query-less text panel's query group
+    /// has an empty `kind`.
     #[test]
     fn v2_grafana13_export_imports_server_serialized_nulls() {
         let dashboard = parse_grafana_dashboard(include_str!(
@@ -2267,8 +2383,8 @@ mod tests {
     }
 
     /// `v2_grafana13_external_export.json` applies Grafana's "Share dashboard with
-    /// another instance" rules to the export above: query datasources are replaced
-    /// by export labels and query variable selections are cleared.
+    /// another instance" rules to the export above. The rules replace the query
+    /// datasources with export labels and clear the query variable selections.
     #[test]
     fn v2_grafana13_external_export_resolves_variables_dynamically() {
         let dashboard = parse_grafana_dashboard(include_str!(
@@ -2631,9 +2747,9 @@ mod tests {
         );
     }
 
-    /// `v2_grafana13_conditional.json` was authored through Grafana 13.2.3's V2 API
-    /// with variable, data, and time range conditions on rows, tabs, and an auto
-    /// grid item.
+    /// `v2_grafana13_conditional.json` comes from Grafana 13.2.3's V2 API. It has
+    /// variable, data, and time range conditions on rows, tabs, and an auto grid
+    /// item.
     #[test]
     fn v2_grafana13_conditional_rendering_fixture_imports_every_group() {
         use crate::conditions::Condition;
@@ -2796,7 +2912,7 @@ mod tests {
                 .get(&(crate::dashboard::TabGroupId::new(0), 0)),
             Some(&dc)
         );
-        // Without a saved selection, the first option is selected.
+        // Without a saved selection, the import selects the first option.
         assert_eq!(
             dashboard.var_values.get("dc"),
             Some(&vec!["eu".to_string()])
@@ -3005,7 +3121,7 @@ mod tests {
         );
     }
 
-    /// What an import means for the dashboard, leaving out source paths, which
+    /// What an import means for the dashboard, without source paths, which
     /// differ between the Classic and V2 formats.
     fn import_semantics(import: &DashboardImport) -> String {
         let panels: Vec<String> = import
@@ -3189,7 +3305,7 @@ mod tests {
             dashboard.vars.get("job"),
             Some(&"node-exporter".to_string())
         );
-        // Several selected values become a regex alternation, as in Grafana.
+        // Several selected values become a regex `(a|b)` group, as in Grafana.
         assert_eq!(
             dashboard.vars.get("instance").map(String::as_str),
             Some("(server1|server2)")
@@ -3311,7 +3427,7 @@ mod tests {
         let tuned = &dashboard.queries[0].resolution;
         assert_eq!(tuned.min_interval.as_deref(), Some(">1m"));
         assert_eq!(tuned.max_data_points, Some(300));
-        // Hidden targets are dropped, so intervals stay parallel to exprs.
+        // The import drops hidden targets, so intervals stay parallel to exprs.
         assert_eq!(
             tuned.target_min_intervals,
             [Some("30s".to_string()), None, Some("$min_step".to_string())]
@@ -3808,5 +3924,203 @@ mod tests {
                 && diagnostic.path == "panels[0].targets[1].expr"
                 && diagnostic.message.contains("$cluster")
         }));
+    }
+
+    #[test]
+    fn variable_scan_handles_unclosed_braces_and_non_ascii_text() {
+        let known = HashSet::from(["job".to_string()]);
+        let mut diagnostics = Vec::new();
+        let mut seen = HashSet::new();
+        collect_variable_diagnostics(
+            "rate(x[$__interval]) / ${missing} + $job é$näme ${unclosed $tail$",
+            "expr",
+            &known,
+            &mut diagnostics,
+            &mut seen,
+        );
+        let messages = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            messages,
+            [
+                "unresolved variable `${missing}`; provide it with --var or dashboard templating",
+                "unresolved variable `$n`; provide it with --var or dashboard templating",
+                "unresolved variable `$tail`; provide it with --var or dashboard templating",
+            ]
+        );
+    }
+
+    /// A V2 dashboard whose layout nests `wrappers` rows or tabs around a grid.
+    fn nested_v2_dashboard(wrappers: usize, tabs: bool) -> String {
+        let mut layout = serde_json::json!({"kind": "GridLayout", "spec": {"items": []}});
+        for _ in 0..wrappers {
+            layout = if tabs {
+                serde_json::json!({"kind": "TabsLayout", "spec": {"tabs": [
+                    {"kind": "TabsLayoutTab", "spec": {"title": "Tab", "layout": layout}}
+                ]}})
+            } else {
+                serde_json::json!({"kind": "RowsLayout", "spec": {"rows": [
+                    {"kind": "RowsLayoutRow", "spec": {"title": "Row", "layout": layout}}
+                ]}})
+            };
+        }
+        minimal_v2_with_layout(layout).to_string()
+    }
+
+    /// A V2 dashboard with `count` grid panels.
+    fn wide_v2_dashboard(count: usize) -> String {
+        let mut json = valid_v2_resource();
+        make_v2_panel_importable(&mut json);
+        let item = json["spec"]["layout"]["spec"]["items"][0].clone();
+        json["spec"]["layout"]["spec"]["items"] = serde_json::Value::Array(vec![item; count]);
+        json.to_string()
+    }
+
+    #[test]
+    fn v2_layout_at_the_depth_limit_imports() {
+        let wrappers = crate::dashboard::MAX_LAYOUT_DEPTH - 1;
+        for tabs in [false, true] {
+            let dashboard = parse_grafana_dashboard(&nested_v2_dashboard(wrappers, tabs)).unwrap();
+            assert_eq!(dashboard.layout.items.len(), 1);
+        }
+    }
+
+    #[test]
+    fn v2_layout_past_the_depth_limit_is_an_error() {
+        let wrappers = crate::dashboard::MAX_LAYOUT_DEPTH;
+        for tabs in [false, true] {
+            let error = parse_grafana_dashboard(&nested_v2_dashboard(wrappers, tabs))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("limit of 16 levels"), "{error}");
+        }
+    }
+
+    #[test]
+    fn v2_layout_over_the_node_limit_is_an_error() {
+        let limit = crate::dashboard::MAX_LAYOUT_NODES;
+        let dashboard = parse_grafana_dashboard(&wide_v2_dashboard(limit)).unwrap();
+        assert_eq!(dashboard.layout.items.len(), limit);
+        let error = parse_grafana_dashboard(&wide_v2_dashboard(limit + 1))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("limit of 4096 rows, tabs and panels"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn dashboard_set_checks_the_limits_of_the_combined_layout() {
+        let wrappers = crate::dashboard::MAX_LAYOUT_DEPTH - 1;
+        for tabs in [false, true] {
+            let deep = nested_v2_dashboard(wrappers, tabs);
+            let error = parse_grafana_dashboards(&[&deep]).unwrap_err().to_string();
+            assert!(error.contains("limit of 16 levels"), "{error}");
+        }
+        let half = wide_v2_dashboard(crate::dashboard::MAX_LAYOUT_NODES / 2);
+        let error = parse_grafana_dashboards(&[&half, &half])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("limit of 4096 rows, tabs and panels"),
+            "{error}"
+        );
+        assert!(parse_grafana_dashboards(&[&half]).is_ok());
+    }
+
+    /// `count` custom variables, named `v0`, `v1` and on, from `first`.
+    fn custom_variables(first: usize, count: usize, v2: bool) -> serde_json::Value {
+        (first..first + count)
+            .map(|index| {
+                let spec = serde_json::json!({"name": format!("v{index}"), "query": "a"});
+                if v2 {
+                    serde_json::json!({"kind": "CustomVariable", "spec": spec})
+                } else {
+                    let mut variable = spec;
+                    variable["type"] = "custom".into();
+                    variable
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn variables_over_the_dashboard_limit_are_an_error() {
+        let limit = crate::limits::MAX_DASHBOARD_VARIABLES;
+        let classic = |count: usize| {
+            serde_json::json!({"templating": {"list": custom_variables(0, count, false)}})
+                .to_string()
+        };
+        let full = classic(limit);
+        assert_eq!(parse_grafana_dashboard(&full).unwrap().vars.len(), limit);
+        // The limit is for each dashboard of a set.
+        assert!(parse_grafana_dashboards(&[&full, &full]).is_ok());
+        let expected = "the dashboard holds more than the limit of 256 variables";
+        let error = parse_grafana_dashboard(&classic(limit + 1)).unwrap_err();
+        assert_eq!(error.to_string(), expected);
+        let error = parse_grafana_dashboards(&[&full, &classic(limit + 1)]).unwrap_err();
+        assert!(format!("{error:#}").contains(expected), "{error:#}");
+    }
+
+    #[test]
+    fn row_and_tab_variables_count_toward_the_dashboard_limit() {
+        let limit = crate::limits::MAX_DASHBOARD_VARIABLES;
+        let mut row = v2_row_resource_with_field("variables", custom_variables(1, limit, true));
+        assert!(parse_grafana_dashboard(&row.to_string()).is_ok());
+        row["spec"]["variables"] = custom_variables(0, 1, true);
+        let error = parse_grafana_dashboard(&row.to_string()).unwrap_err();
+        assert!(
+            error.to_string().contains("limit of 256 variables"),
+            "{error}"
+        );
+
+        let mut tabs = valid_v2_resource();
+        tabs["spec"]["variables"] = custom_variables(0, 1, true);
+        tabs["spec"]["layout"] = serde_json::json!({
+            "kind": "TabsLayout",
+            "spec": {"tabs": [{"kind": "TabsLayoutTab", "spec": {
+                "title": "Tab",
+                "variables": custom_variables(1, limit, true),
+                "layout": {"kind": "GridLayout", "spec": {"items": []}}
+            }}]}
+        });
+        let error = parse_grafana_dashboard(&tabs.to_string()).unwrap_err();
+        assert!(
+            error.to_string().contains("limit of 256 variables"),
+            "{error}"
+        );
+    }
+
+    /// A classic dashboard whose rows nest `rows` deep around one panel.
+    fn nested_classic_dashboard(rows: usize) -> String {
+        let mut panel = serde_json::json!({"type": "timeseries", "targets": [{"expr": "up"}]});
+        for _ in 0..rows {
+            panel = serde_json::json!({"type": "row", "collapsed": true, "panels": [panel]});
+        }
+        serde_json::json!({"panels": [panel]}).to_string()
+    }
+
+    #[test]
+    fn classic_rows_past_the_depth_limit_are_an_error() {
+        let limit = crate::dashboard::MAX_LAYOUT_DEPTH;
+        let dashboard = parse_grafana_dashboard(&nested_classic_dashboard(limit - 1)).unwrap();
+        assert_eq!(dashboard.layout.panel_indices(), vec![0]);
+        let error = parse_grafana_dashboard(&nested_classic_dashboard(limit))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("limit of 16 levels"), "{error}");
+    }
+
+    #[test]
+    fn classic_panels_over_the_node_limit_are_an_error() {
+        let panel = serde_json::json!({"type": "timeseries", "targets": [{"expr": "up"}]});
+        let panels = vec![panel; crate::dashboard::MAX_LAYOUT_NODES + 1];
+        let error = parse_grafana_dashboard(&serde_json::json!({"panels": panels}).to_string())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("limit of 4096 rows and panels"), "{error}");
     }
 }

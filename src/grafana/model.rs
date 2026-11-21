@@ -15,7 +15,10 @@ pub(super) struct Dashboard {
 }
 
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "P10-R3: MAX_LAYOUT_NODES caps the nodes, so the size gap costs little. A Box adds one allocation for each panel."
+)]
 pub(super) enum LayoutNode {
     Panel(Panel),
     Row(Row),
@@ -74,8 +77,6 @@ pub(super) struct Variable {
     pub(super) include_all: bool,
     /// Statically known option values, which `All` selects.
     pub(super) options: Vec<String>,
-    #[allow(dead_code)]
-    pub(super) source_path: String,
     pub(super) query_path: Option<String>,
     /// When Grafana re-runs a query variable's query; unset means on load.
     pub(super) refresh: Option<VariableRefresh>,
@@ -100,7 +101,7 @@ pub(super) struct Panel {
     pub(super) kind: String,
     pub(super) title: String,
     pub(super) repeat: Option<Repeat>,
-    /// Conditional rendering of the auto grid item holding this panel.
+    /// The `conditionalRendering` of the auto grid item that holds this panel.
     pub(super) condition: Option<ConditionGroup>,
     pub(super) source_path: String,
     pub(super) targets: Vec<Target>,
@@ -108,7 +109,6 @@ pub(super) struct Panel {
     pub(super) grid: Option<GridPos>,
     pub(super) field_defaults: Option<FieldDefaults>,
     pub(super) reduce_options_path: Option<String>,
-    #[allow(dead_code)]
     pub(super) transformations_path: Option<String>,
     /// Panel min interval (Classic `interval`, V2 `queryOptions.interval`).
     pub(super) min_interval: Option<MinInterval>,
@@ -147,6 +147,14 @@ pub(super) fn reduce_options_are_custom(options: &Value) -> bool {
                 .iter()
                 .any(|calc| !matches!(calc.as_str(), Some("last" | "lastNotNull")))
         });
+    debug_assert!(
+        !fields || options.get("fields").is_some_and(Value::is_string),
+        "a custom field list comes from a string"
+    );
+    debug_assert!(
+        !calcs || options.get("calcs").is_some_and(Value::is_array),
+        "a custom calculation comes from a list"
+    );
     all_values || fields || calcs
 }
 
@@ -157,7 +165,16 @@ pub(super) fn max_data_points(value: Option<&Value>) -> Option<u32> {
         Value::String(text) => text.trim().parse().ok()?,
         _ => return None,
     };
-    (points >= 1.0).then(|| points.min(u32::MAX as f64) as u32)
+    let result = (points >= 1.0).then(|| crate::num::f64_to_u32(points.min(f64::from(u32::MAX))));
+    debug_assert!(
+        result.is_none_or(|count| count >= 1),
+        "a max data points value is positive"
+    );
+    debug_assert!(
+        !points.is_nan() || result.is_none(),
+        "a value that is not a number gives no limit"
+    );
+    result
 }
 
 #[derive(Debug)]

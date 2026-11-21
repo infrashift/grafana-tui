@@ -3,6 +3,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::model;
+use crate::dashboard::{MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES, MAX_LAYOUT_STEPS};
 
 pub(super) const V2_API_VERSION: &str = "dashboard.grafana.app/v2";
 
@@ -70,21 +71,229 @@ pub(super) fn adapt(value: Value) -> Result<model::Dashboard> {
         .iter()
         .filter(|diagnostic| diagnostic.code == "unsupported_element")
         .count();
+    debug_assert!(
+        dashboard.skipped_panels <= dashboard.diagnostics.len(),
+        "each skipped panel has a diagnostic"
+    );
+    debug_assert!(
+        dashboard.layout.len() <= MAX_LAYOUT_NODES,
+        "the top-level list is in the node limit"
+    );
     Ok(dashboard)
 }
 
+/// Parses a V2 layout and its nested rows and tabs with an explicit stack.
 fn parse_layout(
     layout: &JsonObject,
     elements: &JsonObject,
     path: &str,
     diagnostics: &mut Vec<super::ImportDiagnostic>,
 ) -> Result<Vec<model::LayoutNode>> {
-    match require_string_from(layout, "kind", &format!("{path}.kind"))? {
-        "GridLayout" => parse_grid_layout(layout, elements, path, diagnostics),
-        "RowsLayout" => parse_rows_layout(layout, elements, path, diagnostics),
-        "TabsLayout" => parse_tabs_layout(layout, elements, path, diagnostics),
-        "AutoGridLayout" => parse_auto_grid_layout(layout, elements, path, diagnostics),
-        kind => anyhow::bail!("unsupported Grafana V2 layout `{kind}` at {path}.kind"),
+    let mut parser = LayoutParser {
+        elements,
+        diagnostics,
+        frames: Vec::with_capacity(MAX_LAYOUT_DEPTH),
+        nodes: 0,
+    };
+    let mut finished = parser.start(layout, path)?;
+    for _ in 0..MAX_LAYOUT_STEPS {
+        debug_assert!(
+            parser.frames.len() <= MAX_LAYOUT_DEPTH,
+            "the stack depth is in the limit"
+        );
+        let Some(mut frame) = parser.frames.pop() else {
+            debug_assert!(
+                finished
+                    .as_ref()
+                    .is_none_or(|nodes| nodes.len() <= parser.nodes),
+                "each top-level node is counted"
+            );
+            return Ok(finished.unwrap_or_default());
+        };
+        if let Some(children) = finished.take() {
+            frame.close_section(children);
+        }
+        match parser.open_section(&mut frame)? {
+            Some((child, child_path)) => {
+                parser.frames.push(frame);
+                finished = parser.start(child, &child_path)?;
+            }
+            None => finished = Some(frame.into_nodes()),
+        }
+    }
+    anyhow::bail!("Grafana V2 layout at {path} has more than {MAX_LAYOUT_STEPS} parse steps")
+}
+
+/// The state of a V2 layout parse: the open rows and tabs layouts, and the item count.
+struct LayoutParser<'a, 'd> {
+    elements: &'a JsonObject,
+    diagnostics: &'d mut Vec<super::ImportDiagnostic>,
+    frames: Vec<SectionFrame<'a>>,
+    nodes: usize,
+}
+
+impl<'a> LayoutParser<'a, '_> {
+    /// Starts the layout at `path`. A rows or tabs layout opens a frame and gives `None`.
+    fn start(
+        &mut self,
+        layout: &'a JsonObject,
+        path: &str,
+    ) -> Result<Option<Vec<model::LayoutNode>>> {
+        ensure!(
+            self.frames.len() < MAX_LAYOUT_DEPTH,
+            "Grafana V2 layout at {path} nests rows and tabs deeper than the limit of \
+             {MAX_LAYOUT_DEPTH} levels"
+        );
+        let kind = require_string_from(layout, "kind", &format!("{path}.kind"))?;
+        let nodes = match kind {
+            "GridLayout" => parse_grid_layout(layout, self.elements, path, self.diagnostics)?,
+            "AutoGridLayout" => {
+                parse_auto_grid_layout(layout, self.elements, path, self.diagnostics)?
+            }
+            "RowsLayout" | "TabsLayout" => {
+                let frame = SectionFrame::new(kind == "TabsLayout", layout, path)?;
+                self.count(usize::from(frame.tabs), path)?;
+                self.frames.push(frame);
+                debug_assert!(
+                    self.frames.len() <= MAX_LAYOUT_DEPTH,
+                    "the stack depth is in the limit"
+                );
+                return Ok(None);
+            }
+            kind => anyhow::bail!("unsupported Grafana V2 layout `{kind}` at {path}.kind"),
+        };
+        self.count(nodes.iter().map(node_weight).sum(), path)?;
+        debug_assert!(
+            nodes.len() <= self.nodes,
+            "each node of the list is counted"
+        );
+        Ok(Some(nodes))
+    }
+
+    /// Reads the next row or tab of `frame`, and gives its child layout and the path to it.
+    fn open_section(
+        &mut self,
+        frame: &mut SectionFrame<'a>,
+    ) -> Result<Option<(&'a JsonObject, String)>> {
+        let Some((index, entry)) = frame.entries.next() else {
+            return Ok(None);
+        };
+        self.count(1, &frame.entries_path)?;
+        debug_assert!(frame.open.is_none(), "the frame has no open section");
+        debug_assert_eq!(
+            frame.entries_path.ends_with(".tabs"),
+            frame.tabs,
+            "the entry path names the list kind"
+        );
+        let entry_path = format!("{}[{index}]", frame.entries_path);
+        let (section, child, child_path) = if frame.tabs {
+            parse_tab_header(entry, entry_path, self.diagnostics)?
+        } else {
+            parse_row_header(entry, entry_path, self.diagnostics)?
+        };
+        frame.open = Some(section);
+        Ok(Some((child, child_path)))
+    }
+
+    /// Adds `added` items to the count, and fails over MAX_LAYOUT_NODES.
+    fn count(&mut self, added: usize, path: &str) -> Result<()> {
+        let before = self.nodes;
+        self.nodes = self.nodes.saturating_add(added);
+        debug_assert!(self.nodes >= before, "the node count does not shrink");
+        ensure!(
+            self.nodes <= MAX_LAYOUT_NODES,
+            "Grafana V2 layout at {path} holds more than the limit of {MAX_LAYOUT_NODES} rows, \
+             tabs and panels"
+        );
+        Ok(())
+    }
+}
+
+/// The number of layout items in a grid or auto grid node.
+fn node_weight(node: &model::LayoutNode) -> usize {
+    let weight = match node {
+        model::LayoutNode::AutoGrid(grid) => grid.panels.len().saturating_add(1),
+        model::LayoutNode::Panel(_) | model::LayoutNode::Row(_) | model::LayoutNode::Tabs(_) => 1,
+    };
+    debug_assert!(weight >= 1, "each node weighs one or more");
+    debug_assert!(
+        weight == 1 || matches!(node, model::LayoutNode::AutoGrid(_)),
+        "only an auto grid weighs more than one"
+    );
+    weight
+}
+
+/// A row or tab whose child layout the parser reads now.
+enum OpenSection {
+    Row(model::Row),
+    Tab(model::Tab),
+}
+
+/// A rows or tabs layout whose rows or tabs the parser reads one at a time.
+struct SectionFrame<'a> {
+    tabs: bool,
+    entries: std::iter::Enumerate<std::slice::Iter<'a, Value>>,
+    entries_path: String,
+    rows: Vec<model::LayoutNode>,
+    tab_list: Vec<model::Tab>,
+    open: Option<OpenSection>,
+}
+
+impl<'a> SectionFrame<'a> {
+    /// Opens the rows or tabs list of `layout`.
+    fn new(tabs: bool, layout: &'a JsonObject, path: &str) -> Result<Self> {
+        debug_assert!(path.ends_with("layout"), "the path names a layout");
+        let spec_path = format!("{path}.spec");
+        let spec = require_object_from(layout, "spec", &spec_path)?;
+        let key = if tabs { "tabs" } else { "rows" };
+        let entries_path = format!("{spec_path}.{key}");
+        let entries = optional_array_from(spec, key, &entries_path)?
+            .iter()
+            .enumerate();
+        Ok(Self {
+            tabs,
+            entries,
+            entries_path,
+            rows: Vec::new(),
+            tab_list: Vec::new(),
+            open: None,
+        })
+    }
+
+    /// Gives the open row or tab its children, and adds it to the finished list.
+    fn close_section(&mut self, children: Vec<model::LayoutNode>) {
+        match self.open.take() {
+            Some(OpenSection::Row(mut row)) => {
+                row.children = children;
+                self.rows.push(model::LayoutNode::Row(row));
+            }
+            Some(OpenSection::Tab(mut tab)) => {
+                tab.children = children;
+                self.tab_list.push(tab);
+            }
+            None => {}
+        }
+        debug_assert!(
+            self.tabs || self.tab_list.is_empty(),
+            "a rows layout holds no tabs"
+        );
+        debug_assert!(
+            !self.tabs || self.rows.is_empty(),
+            "a tabs layout holds no rows"
+        );
+    }
+
+    /// The finished rows, or one tab group that holds the finished tabs.
+    fn into_nodes(self) -> Vec<model::LayoutNode> {
+        debug_assert!(self.open.is_none(), "each section is closed");
+        debug_assert!(self.entries.clone().next().is_none(), "each entry is read");
+        if self.tabs {
+            vec![model::LayoutNode::Tabs(model::Tabs {
+                tabs: self.tab_list,
+            })]
+        } else {
+            self.rows
+        }
     }
 }
 
@@ -106,9 +315,12 @@ fn parse_auto_grid_layout(
     let spec = require_object_from(layout, "spec", &spec_path)?;
     let max_columns = match optional_number_from(spec, "maxColumnCount", &spec_path)? {
         // Grafana's editor only offers whole column counts; round anything else.
-        Some(count) => count.round().clamp(1.0, f64::from(AUTO_GRID_MAX_COLUMNS)) as u16,
+        Some(count) => {
+            crate::num::f64_to_u16(count.round().clamp(1.0, f64::from(AUTO_GRID_MAX_COLUMNS)))
+        }
         None => AUTO_GRID_DEFAULT_MAX_COLUMNS,
     };
+    debug_assert!(max_columns >= 1, "a grid has one column or more");
     let column_width_px = auto_grid_size_px(
         spec,
         &spec_path,
@@ -121,6 +333,10 @@ fn parse_auto_grid_layout(
         ("rowHeightMode", "rowHeight"),
         &AUTO_GRID_ROW_HEIGHTS_PX,
     )?;
+    debug_assert!(
+        column_width_px > 0.0 && row_height_px > 0.0,
+        "the grid sizes are positive"
+    );
     // `fillScreen` lets rows grow to the browser viewport; ignored like row `fillScreen`.
     optional_bool_from(spec, "fillScreen", &spec_path)?;
 
@@ -131,21 +347,7 @@ fn parse_auto_grid_layout(
         .enumerate()
     {
         let item_path = format!("{items_path}[{index}]");
-        let item = item.as_object().ok_or_else(|| {
-            anyhow!("invalid Grafana V2 auto grid item at {item_path}: expected an object")
-        })?;
-        require_expected_kind(item, &item_path, "AutoGridLayoutItem")?;
-        let item_spec_path = format!("{item_path}.spec");
-        let item_spec = require_object_from(item, "spec", &item_spec_path)?;
-        let condition = parse_condition_group(item_spec, &item_spec_path, diagnostics)?;
-        let repeat = parse_repeat(item_spec, &item_spec_path)?;
-        let (element_name, element) =
-            resolve_element_reference(item_spec, elements, &item_spec_path)?;
-        let element_path = format!("spec.elements[{element_name:?}]");
-        // Auto grid items are positioned when projected, so the panel has no grid.
-        if let Some(mut panel) = parse_panel(element, &element_path, None, diagnostics)? {
-            panel.repeat = repeat;
-            panel.condition = condition;
+        if let Some(panel) = parse_auto_grid_item(item, &item_path, elements, diagnostics)? {
             panels.push(panel);
         }
     }
@@ -156,6 +358,41 @@ fn parse_auto_grid_layout(
         row_height_px,
         panels,
     })])
+}
+
+/// Parses one auto grid item into its panel, with the repeat and the condition.
+fn parse_auto_grid_item(
+    item: &Value,
+    item_path: &str,
+    elements: &JsonObject,
+    diagnostics: &mut Vec<super::ImportDiagnostic>,
+) -> Result<Option<model::Panel>> {
+    let item = item.as_object().ok_or_else(|| {
+        anyhow!("invalid Grafana V2 auto grid item at {item_path}: expected an object")
+    })?;
+    require_expected_kind(item, item_path, "AutoGridLayoutItem")?;
+    let item_spec_path = format!("{item_path}.spec");
+    let item_spec = require_object_from(item, "spec", &item_spec_path)?;
+    let before = diagnostics.len();
+    let condition = parse_condition_group(item_spec, &item_spec_path, diagnostics)?;
+    let repeat = parse_repeat(item_spec, &item_spec_path)?;
+    let (element_name, element) = resolve_element_reference(item_spec, elements, &item_spec_path)?;
+    let element_path = format!("spec.elements[{element_name:?}]");
+    // The layout positions auto grid items when it projects them, so the panel has no grid.
+    let panel = parse_panel(element, &element_path, None, diagnostics)?;
+    debug_assert!(
+        diagnostics.len() >= before,
+        "the diagnostics list does not shrink"
+    );
+    debug_assert!(
+        panel.as_ref().is_none_or(|panel| panel.grid.is_none()),
+        "an auto grid panel has no grid position"
+    );
+    Ok(panel.map(|mut panel| {
+        panel.repeat = repeat;
+        panel.condition = condition;
+        panel
+    }))
 }
 
 /// Resolves an auto grid size from its `*Mode` name, or the custom pixel value.
@@ -171,55 +408,59 @@ fn auto_grid_size_px(
     let standard = named[1].1;
     let mode = optional_string_from(spec, mode_key, spec_path)?;
     let custom = optional_number_from(spec, custom_key, spec_path)?;
-    Ok(match mode.as_deref() {
+    let size = match mode.as_deref() {
         Some("custom") => custom.filter(|px| *px > 0.0).unwrap_or(standard),
         Some(mode) => named
             .iter()
             .find(|(name, _)| *name == mode)
             .map_or(standard, |(_, px)| *px),
         None => standard,
-    })
+    };
+    debug_assert!(size > 0.0 && size.is_finite(), "a grid size is positive");
+    Ok(size)
 }
 
-fn parse_tabs_layout(
-    layout: &JsonObject,
-    elements: &JsonObject,
-    path: &str,
+/// A row or tab with no children yet, its child layout, and the path to that layout.
+type SectionHeader<'a> = (OpenSection, &'a JsonObject, String);
+
+/// Parses a tab of a tabs layout. The caller parses its child layout.
+fn parse_tab_header<'a>(
+    tab: &'a Value,
+    tab_path: String,
     diagnostics: &mut Vec<super::ImportDiagnostic>,
-) -> Result<Vec<model::LayoutNode>> {
-    let spec_path = format!("{path}.spec");
-    let spec = require_object_from(layout, "spec", &spec_path)?;
-    let tabs_path = format!("{spec_path}.tabs");
-    let tabs = optional_array_from(spec, "tabs", &tabs_path)?;
-    let mut normalized = Vec::new();
-    for (index, tab) in tabs.iter().enumerate() {
-        let tab_path = format!("{tabs_path}[{index}]");
-        let tab = tab
-            .as_object()
-            .ok_or_else(|| anyhow!("invalid Grafana V2 tab at {tab_path}: expected an object"))?;
-        require_expected_kind(tab, &tab_path, "TabsLayoutTab")?;
-        let tab_spec_path = format!("{tab_path}.spec");
-        let tab_spec = require_object_from(tab, "spec", &tab_spec_path)?;
-        let title = optional_string_from(tab_spec, "title", &tab_spec_path)?.unwrap_or_default();
-        let condition = parse_condition_group(tab_spec, &tab_spec_path, diagnostics)?;
-        let repeat = parse_repeat(tab_spec, &tab_spec_path)?;
-        let variables =
-            normalize_variables(tab_spec, &format!("{tab_spec_path}.variables"), diagnostics)?;
-        let child_path = format!("{tab_spec_path}.layout");
-        let child_layout = require_object_from(tab_spec, "layout", &child_path)?;
-        let children = parse_layout(child_layout, elements, &child_path, diagnostics)?;
-        normalized.push(model::Tab {
-            title,
-            repeat,
-            condition,
-            variables,
-            source_path: tab_path,
-            children,
-        });
-    }
-    Ok(vec![model::LayoutNode::Tabs(model::Tabs {
-        tabs: normalized,
-    })])
+) -> Result<SectionHeader<'a>> {
+    let tab = tab
+        .as_object()
+        .ok_or_else(|| anyhow!("invalid Grafana V2 tab at {tab_path}: expected an object"))?;
+    require_expected_kind(tab, &tab_path, "TabsLayoutTab")?;
+    let tab_spec_path = format!("{tab_path}.spec");
+    let tab_spec = require_object_from(tab, "spec", &tab_spec_path)?;
+    debug_assert!(tab_path.contains(".tabs["), "the tab path names a tab");
+    let before = diagnostics.len();
+    let title = optional_string_from(tab_spec, "title", &tab_spec_path)?.unwrap_or_default();
+    let condition = parse_condition_group(tab_spec, &tab_spec_path, diagnostics)?;
+    let repeat = parse_repeat(tab_spec, &tab_spec_path)?;
+    let variables =
+        normalize_variables(tab_spec, &format!("{tab_spec_path}.variables"), diagnostics)?;
+    let child_path = format!("{tab_spec_path}.layout");
+    let child_layout = require_object_from(tab_spec, "layout", &child_path)?;
+    let tab = model::Tab {
+        title,
+        repeat,
+        condition,
+        variables,
+        source_path: tab_path,
+        children: Vec::new(),
+    };
+    debug_assert!(
+        diagnostics.len() >= before,
+        "the diagnostics list does not shrink"
+    );
+    debug_assert!(
+        child_path.ends_with(".layout"),
+        "the child path names a layout"
+    );
+    Ok((OpenSection::Tab(tab), child_layout, child_path))
 }
 
 fn parse_grid_layout(
@@ -245,57 +486,65 @@ fn parse_grid_layout(
             nodes.push(model::LayoutNode::Panel(panel));
         }
     }
+    debug_assert!(nodes.len() <= items.len(), "each node comes from an item");
+    debug_assert!(
+        nodes
+            .iter()
+            .all(|node| matches!(node, model::LayoutNode::Panel(panel) if panel.grid.is_some())),
+        "each grid node is a placed panel"
+    );
     Ok(nodes)
 }
 
-fn parse_rows_layout(
-    layout: &JsonObject,
-    elements: &JsonObject,
-    path: &str,
+/// Parses a row of a rows layout. The caller parses its child layout.
+fn parse_row_header<'a>(
+    row: &'a Value,
+    row_path: String,
     diagnostics: &mut Vec<super::ImportDiagnostic>,
-) -> Result<Vec<model::LayoutNode>> {
-    let spec_path = format!("{path}.spec");
-    let spec = require_object_from(layout, "spec", &spec_path)?;
-    let rows_path = format!("{spec_path}.rows");
-    let rows = optional_array_from(spec, "rows", &rows_path)?;
-    let mut nodes = Vec::new();
-    for (index, row) in rows.iter().enumerate() {
-        let row_path = format!("{rows_path}[{index}]");
-        let row = row
-            .as_object()
-            .ok_or_else(|| anyhow!("invalid Grafana V2 row at {row_path}: expected an object"))?;
-        require_expected_kind(row, &row_path, "RowsLayoutRow")?;
-        let row_spec_path = format!("{row_path}.spec");
-        let row_spec = require_object_from(row, "spec", &row_spec_path)?;
-        let title = optional_string_from(row_spec, "title", &row_spec_path)?.unwrap_or_default();
-        let collapsed = optional_bool_from(row_spec, "collapse", &row_spec_path)?;
-        let hidden_header = optional_bool_from(row_spec, "hideHeader", &row_spec_path)?;
+) -> Result<SectionHeader<'a>> {
+    let row = row
+        .as_object()
+        .ok_or_else(|| anyhow!("invalid Grafana V2 row at {row_path}: expected an object"))?;
+    require_expected_kind(row, &row_path, "RowsLayoutRow")?;
+    let row_spec_path = format!("{row_path}.spec");
+    let row_spec = require_object_from(row, "spec", &row_spec_path)?;
+    debug_assert!(row_path.contains(".rows["), "the row path names a row");
+    let before = diagnostics.len();
+    let title = optional_string_from(row_spec, "title", &row_spec_path)?.unwrap_or_default();
+    let collapsed = optional_bool_from(row_spec, "collapse", &row_spec_path)?;
+    let hidden_header = optional_bool_from(row_spec, "hideHeader", &row_spec_path)?;
 
-        let condition = parse_condition_group(row_spec, &row_spec_path, diagnostics)?;
-        let repeat = parse_repeat(row_spec, &row_spec_path)?;
+    let condition = parse_condition_group(row_spec, &row_spec_path, diagnostics)?;
+    let repeat = parse_repeat(row_spec, &row_spec_path)?;
 
-        let variables =
-            normalize_variables(row_spec, &format!("{row_spec_path}.variables"), diagnostics)?;
+    let variables =
+        normalize_variables(row_spec, &format!("{row_spec_path}.variables"), diagnostics)?;
 
-        // `fillScreen` stretches a row to the browser viewport; terminal rows already
-        // size to their content, so the flag is validated and otherwise ignored.
-        optional_bool_from(row_spec, "fillScreen", &row_spec_path)?;
+    // `fillScreen` stretches a row to the browser viewport. Terminal rows already
+    // size to their content, so the parser validates the flag and then ignores it.
+    optional_bool_from(row_spec, "fillScreen", &row_spec_path)?;
 
-        let child_path = format!("{row_spec_path}.layout");
-        let child_layout = require_object_from(row_spec, "layout", &child_path)?;
-        let children = parse_layout(child_layout, elements, &child_path, diagnostics)?;
-        nodes.push(model::LayoutNode::Row(model::Row {
-            title,
-            repeat,
-            condition,
-            variables,
-            collapsed,
-            hidden_header,
-            source_path: row_path,
-            children,
-        }));
-    }
-    Ok(nodes)
+    let child_path = format!("{row_spec_path}.layout");
+    let child_layout = require_object_from(row_spec, "layout", &child_path)?;
+    let row = model::Row {
+        title,
+        repeat,
+        condition,
+        variables,
+        collapsed,
+        hidden_header,
+        source_path: row_path,
+        children: Vec::new(),
+    };
+    debug_assert!(
+        diagnostics.len() >= before,
+        "the diagnostics list does not shrink"
+    );
+    debug_assert!(
+        child_path.ends_with(".layout"),
+        "the child path names a layout"
+    );
+    Ok((OpenSection::Row(row), child_layout, child_path))
 }
 
 /// Reads the `variables` of the dashboard spec, or of a row or tab spec, whose
@@ -306,7 +555,7 @@ fn normalize_variables(
     diagnostics: &mut Vec<super::ImportDiagnostic>,
 ) -> Result<Vec<model::Variable>> {
     let variables = optional_array_from(spec, "variables", variables_path)?;
-
+    let before = diagnostics.len();
     let mut normalized = Vec::new();
     for (index, variable) in variables.iter().enumerate() {
         let path = format!("{variables_path}[{index}]");
@@ -343,6 +592,17 @@ fn normalize_variables(
             normalized.push(variable);
         }
     }
+    debug_assert!(
+        diagnostics.len().saturating_sub(before) >= variables.len() - normalized.len(),
+        "each skipped variable gives a diagnostic"
+    );
+    debug_assert!(
+        normalized.iter().all(|variable| variable
+            .query_path
+            .as_deref()
+            .is_none_or(|path| path.starts_with(variables_path))),
+        "each query path is under the list path"
+    );
     Ok(normalized)
 }
 
@@ -351,12 +611,12 @@ fn normalize_query_variable(
     source_path: &str,
     diagnostics: &mut Vec<super::ImportDiagnostic>,
 ) -> Result<Option<model::Variable>> {
-    let source_path = source_path.to_string();
     let name = require_string_from(spec, "name", &format!("{source_path}.spec.name"))?.to_string();
     let query_path = format!("{source_path}.spec.query");
     let query = require_object_from(spec, "query", &query_path)?;
     require_expected_kind(query, &query_path, "DataQuery")?;
     let datasource = require_string_from(query, "group", &format!("{query_path}.group"))?;
+    let before = diagnostics.len();
     let is_prometheus = is_prometheus_group(datasource);
     if !is_prometheus {
         diagnostics.push(super::ImportDiagnostic::new(
@@ -367,9 +627,48 @@ fn normalize_query_variable(
     }
     let query_spec_path = format!("{query_path}.spec");
     let query_spec = require_object_from(query, "spec", &query_spec_path)?;
+    let query = query_variable_text(spec, query_spec, source_path);
+    debug_assert!(
+        diagnostics.len() <= before.saturating_add(1),
+        "a query variable gives one diagnostic or less"
+    );
+    let variable = model::Variable {
+        name,
+        kind: is_prometheus.then_some("query".to_string()),
+        current: current_from_option(spec),
+        query: query.as_ref().map(|(query, _)| query.clone()),
+        regex: optional_string(spec, "regex"),
+        all_value: optional_string(spec, "allValue"),
+        multi: optional_bool_from(spec, "multi", source_path)?,
+        include_all: optional_bool_from(spec, "includeAll", source_path)?,
+        options: option_values(spec),
+        query_path: query.map(|(_, path)| path),
+        refresh: query_variable_refresh(spec),
+    };
+    debug_assert_eq!(
+        variable.query.is_some(),
+        variable.query_path.is_some(),
+        "a query has a path"
+    );
+    debug_assert!(
+        variable
+            .query_path
+            .as_deref()
+            .is_none_or(|path| path.starts_with(source_path)),
+        "the query path is under the variable path"
+    );
+    Ok(Some(variable))
+}
+
+/// Returns the query text of a query variable and the path that holds it.
+fn query_variable_text(
+    spec: &JsonObject,
+    query_spec: &JsonObject,
+    source_path: &str,
+) -> Option<(String, String)> {
     // Grafana stores a Classic variable's plain string query, when it converts
     // the dashboard to V2, as `__legacyStringValue`.
-    let query = ["query", "__legacyStringValue"]
+    let text = ["query", "__legacyStringValue"]
         .into_iter()
         .find_map(|key| {
             let query = query_spec.get(key)?.as_str()?.trim();
@@ -392,26 +691,32 @@ fn normalize_query_variable(
                     )
                 })
         });
+    debug_assert!(
+        text.as_ref()
+            .is_none_or(|(query, _)| !query.is_empty() && query.trim() == query),
+        "a query is trimmed and not empty"
+    );
+    debug_assert!(
+        text.as_ref()
+            .is_none_or(|(_, path)| path.starts_with(source_path)),
+        "the query path is under the variable path"
+    );
+    text
+}
 
-    Ok(Some(model::Variable {
-        name,
-        kind: is_prometheus.then_some("query".to_string()),
-        current: current_from_option(spec),
-        query: query.as_ref().map(|(query, _)| query.clone()),
-        regex: optional_string(spec, "regex"),
-        all_value: optional_string(spec, "allValue"),
-        multi: optional_bool_from(spec, "multi", &source_path)?,
-        include_all: optional_bool_from(spec, "includeAll", &source_path)?,
-        options: option_values(spec),
-        source_path,
-        query_path: query.map(|(_, path)| path),
-        refresh: match spec.get("refresh").and_then(Value::as_str) {
-            Some("never") => Some(model::VariableRefresh::Never),
-            Some("onDashboardLoad") => Some(model::VariableRefresh::OnDashboardLoad),
-            Some("onTimeRangeChanged") => Some(model::VariableRefresh::OnTimeRangeChange),
-            _ => None,
-        },
-    }))
+/// Returns when a query variable refreshes, from its `refresh` name.
+fn query_variable_refresh(spec: &JsonObject) -> Option<model::VariableRefresh> {
+    let refresh = match spec.get("refresh").and_then(Value::as_str) {
+        Some("never") => Some(model::VariableRefresh::Never),
+        Some("onDashboardLoad") => Some(model::VariableRefresh::OnDashboardLoad),
+        Some("onTimeRangeChanged") => Some(model::VariableRefresh::OnTimeRangeChange),
+        _ => None,
+    };
+    debug_assert!(
+        refresh.is_none() || spec.get("refresh").is_some_and(Value::is_string),
+        "a refresh setting comes from a string"
+    );
+    refresh
 }
 
 fn normalize_option_variable(
@@ -419,8 +724,9 @@ fn normalize_option_variable(
     spec: &JsonObject,
     source_path: &str,
 ) -> Result<model::Variable> {
-    let source_path = source_path.to_string();
+    debug_assert!(kind.ends_with("Variable"), "the kind names a variable");
     let mut options = option_values(spec);
+    let saved = options.len();
     if options.is_empty()
         && matches!(kind, "CustomVariable" | "IntervalVariable")
         && let Some(query) = spec.get("query").and_then(Value::as_str)
@@ -428,6 +734,10 @@ fn normalize_option_variable(
         let json = spec.get("valuesFormat").and_then(Value::as_str) == Some("json");
         options = crate::app::parse_custom_variable_values(query, json);
     }
+    debug_assert!(
+        saved == 0 || options.len() == saved,
+        "custom values fill only an empty option list"
+    );
     Ok(model::Variable {
         name: require_string_from(spec, "name", &format!("{source_path}.spec.name"))?.to_string(),
         kind: None,
@@ -435,19 +745,18 @@ fn normalize_option_variable(
         query: None,
         regex: None,
         all_value: optional_string(spec, "allValue"),
-        multi: optional_bool_from(spec, "multi", &source_path)?,
-        include_all: optional_bool_from(spec, "includeAll", &source_path)?,
+        multi: optional_bool_from(spec, "multi", source_path)?,
+        include_all: optional_bool_from(spec, "includeAll", source_path)?,
         options,
-        source_path,
         query_path: None,
         refresh: None,
     })
 }
 
-/// Values of a variable's saved `options`, excluding Grafana's `$__all` entry.
+/// Values of a variable's saved `options`, without Grafana's `$__all` entry.
 fn option_values(spec: &JsonObject) -> Vec<String> {
-    spec.get("options")
-        .and_then(Value::as_array)
+    let options = spec.get("options").and_then(Value::as_array);
+    let values: Vec<String> = options
         .into_iter()
         .flatten()
         .filter_map(|option| match option.get("value")? {
@@ -456,11 +765,15 @@ fn option_values(spec: &JsonObject) -> Vec<String> {
             _ => None,
         })
         .filter(|value| value != "$__all")
-        .collect()
+        .collect();
+    debug_assert!(
+        values.len() <= options.map_or(0, Vec::len),
+        "each value comes from an option"
+    );
+    values
 }
 
 fn normalize_switch_variable(spec: &JsonObject, source_path: &str) -> Result<model::Variable> {
-    let source_path = source_path.to_string();
     Ok(model::Variable {
         name: require_string_from(spec, "name", &format!("{source_path}.spec.name"))?.to_string(),
         kind: None,
@@ -476,7 +789,6 @@ fn normalize_switch_variable(spec: &JsonObject, source_path: &str) -> Result<mod
         multi: false,
         include_all: false,
         options: Vec::new(),
-        source_path,
         query_path: None,
         refresh: None,
     })
@@ -502,17 +814,27 @@ fn require_object_from<'a>(
     key: &str,
     path: &str,
 ) -> Result<&'a JsonObject> {
+    debug_assert!(
+        !key.is_empty() && !key.contains('.'),
+        "the key is one field name"
+    );
+    debug_assert!(path.ends_with(key), "the path names the key");
     object
         .get(key)
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow!("invalid Grafana V2 resource at {path}: expected an object"))
 }
 
-/// Returns the array at `key`, treating an absent or `null` value as empty.
+/// Returns the array at `key`. An absent or `null` value gives an empty array.
 ///
 /// Grafana's resource API serializes unset slices as `null`, and its frontend
-/// exporter drops empty fields, so neither can be distinguished from `[]`.
+/// exporter drops empty fields, so the parser cannot tell either of them from `[]`.
 fn optional_array_from<'a>(object: &'a JsonObject, key: &str, path: &str) -> Result<&'a [Value]> {
+    debug_assert!(
+        !key.is_empty() && !key.contains('.'),
+        "the key is one field name"
+    );
+    debug_assert!(path.ends_with(key), "the path names the key");
     match object.get(key) {
         None | Some(Value::Null) => Ok(&[]),
         Some(Value::Array(values)) => Ok(values),
@@ -520,12 +842,17 @@ fn optional_array_from<'a>(object: &'a JsonObject, key: &str, path: &str) -> Res
     }
 }
 
-/// Returns the object at `key`, treating an absent or `null` value as `None`.
+/// Returns the object at `key`. An absent or `null` value gives `None`.
 fn optional_object_from<'a>(
     object: &'a JsonObject,
     key: &str,
     path: &str,
 ) -> Result<Option<&'a JsonObject>> {
+    debug_assert!(
+        !key.is_empty() && !key.contains('.'),
+        "the key is one field name"
+    );
+    debug_assert!(path.ends_with(key), "the path names the key");
     match object.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Object(value)) => Ok(Some(value)),
@@ -534,6 +861,10 @@ fn optional_object_from<'a>(
 }
 
 fn optional_string_from(object: &JsonObject, key: &str, path: &str) -> Result<Option<String>> {
+    debug_assert!(
+        !key.is_empty() && !key.contains('.'),
+        "the key is one field name"
+    );
     match object.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(value)) => Ok(Some(value.clone())),
@@ -542,14 +873,27 @@ fn optional_string_from(object: &JsonObject, key: &str, path: &str) -> Result<Op
 }
 
 fn optional_number_from(object: &JsonObject, key: &str, path: &str) -> Result<Option<f64>> {
+    debug_assert!(
+        !key.is_empty() && !key.contains('.'),
+        "the key is one field name"
+    );
     match object.get(key) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(value)) => Ok(value.as_f64()),
+        Some(Value::Number(value)) => {
+            let number = value.as_f64();
+            debug_assert!(number.is_none_or(f64::is_finite), "a JSON number is finite");
+            Ok(number)
+        }
         Some(_) => anyhow::bail!("invalid Grafana V2 resource at {path}.{key}: expected a number"),
     }
 }
 
 fn require_string_from<'a>(object: &'a JsonObject, key: &str, path: &str) -> Result<&'a str> {
+    debug_assert!(
+        !key.is_empty() && !key.contains('.'),
+        "the key is one field name"
+    );
+    debug_assert!(path.ends_with(key), "the path names the key");
     object
         .get(key)
         .and_then(Value::as_str)
@@ -557,6 +901,10 @@ fn require_string_from<'a>(object: &'a JsonObject, key: &str, path: &str) -> Res
 }
 
 fn optional_bool_from(object: &JsonObject, key: &str, path: &str) -> Result<bool> {
+    debug_assert!(
+        !key.is_empty() && !key.contains('.'),
+        "the key is one field name"
+    );
     match object.get(key) {
         None | Some(Value::Null) => Ok(false),
         Some(Value::Bool(value)) => Ok(*value),
@@ -565,14 +913,20 @@ fn optional_bool_from(object: &JsonObject, key: &str, path: &str) -> Result<bool
 }
 
 fn require_i32_from(object: &JsonObject, key: &str, path: &str) -> Result<i32> {
+    debug_assert!(
+        !key.is_empty() && !key.contains('.'),
+        "the key is one field name"
+    );
+    debug_assert!(path.ends_with(key), "the path names the key");
     let value = object.get(key).and_then(Value::as_i64).ok_or_else(|| {
         anyhow!("invalid Grafana V2 grid coordinate at {path}: expected an integer")
     })?;
     i32::try_from(value)
-        .map_err(|_| anyhow!("invalid Grafana V2 grid coordinate at {path}: expected an i32"))
+        .with_context(|| format!("invalid Grafana V2 grid coordinate at {path}: expected an i32"))
 }
 
 fn parse_grid_item(value: &Value, path: &str) -> Result<ResolvedGridItem> {
+    debug_assert!(path.contains(".items["), "the path names a grid item");
     let item = value
         .as_object()
         .ok_or_else(|| anyhow!("invalid Grafana V2 grid item at {path}: expected an object"))?;
@@ -628,7 +982,15 @@ fn parse_repeat(spec: &JsonObject, spec_path: &str) -> Result<Option<model::Repe
     };
     let max_per_row = optional_number_from(repeat, "maxPerRow", &repeat_path)?
         .filter(|count| *count >= 1.0)
-        .map(|count| count.round().min(f64::from(u16::MAX)) as u16);
+        .map(|count| crate::num::f64_to_u16(count.round().min(f64::from(u16::MAX))));
+    debug_assert!(
+        max_per_row.is_none_or(|count| count >= 1),
+        "a max per row value is positive"
+    );
+    debug_assert!(
+        !variable.is_empty() && variable.trim() == variable,
+        "the repeat variable is trimmed and not empty"
+    );
     Ok(Some(model::Repeat {
         variable,
         direction,
@@ -638,15 +1000,13 @@ fn parse_repeat(spec: &JsonObject, spec_path: &str) -> Result<Option<model::Repe
 
 /// Reads the `conditionalRendering` group of a row, tab, or auto grid item spec.
 ///
-/// Condition kinds grafana-tui does not know are skipped with a diagnostic, which
-/// leaves them undecided, as Grafana treats conditions it cannot evaluate.
+/// The parser skips condition kinds that grafana-tui does not know, with a diagnostic.
+/// This leaves them undecided, as Grafana treats conditions it cannot evaluate.
 fn parse_condition_group(
     spec: &JsonObject,
     spec_path: &str,
     diagnostics: &mut Vec<super::ImportDiagnostic>,
 ) -> Result<Option<crate::conditions::ConditionGroup>> {
-    use crate::conditions::{Condition, ConditionGroup, VariableOperator};
-
     let path = format!("{spec_path}.conditionalRendering");
     let Some(group) = optional_object_from(spec, "conditionalRendering", &path)? else {
         return Ok(None);
@@ -674,71 +1034,103 @@ fn parse_condition_group(
     };
 
     let items_path = format!("{group_spec_path}.items");
+    let items = optional_array_from(group_spec, "items", &items_path)?;
     let mut conditions = Vec::new();
-    for (index, item) in optional_array_from(group_spec, "items", &items_path)?
-        .iter()
-        .enumerate()
-    {
+    for (index, item) in items.iter().enumerate() {
         let item_path = format!("{items_path}[{index}]");
-        let item = item.as_object().ok_or_else(|| {
-            anyhow!("invalid Grafana V2 condition at {item_path}: expected an object")
-        })?;
-        let kind = require_string_from(item, "kind", &format!("{item_path}.kind"))?;
-        let item_spec_path = format!("{item_path}.spec");
-        let condition = match kind {
-            "ConditionalRenderingVariable" => {
-                let item_spec = require_object_from(item, "spec", &item_spec_path)?;
-                let operator = match optional_string_from(item_spec, "operator", &item_spec_path)?
-                    .as_deref()
-                {
-                    None | Some("equals") => VariableOperator::Equals,
-                    Some("notEquals") => VariableOperator::NotEquals,
-                    Some("matches") => VariableOperator::Matches,
-                    Some("notMatches") => VariableOperator::NotMatches,
-                    Some(other) => anyhow::bail!(
-                        "invalid Grafana V2 condition operator `{other}` at {item_spec_path}.operator"
-                    ),
-                };
-                let name_path = format!("{item_spec_path}.variable");
-                Condition::Variable {
-                    name: require_string_from(item_spec, "variable", &name_path)?.to_string(),
-                    operator,
-                    value: optional_string_from(item_spec, "value", &item_spec_path)?
-                        .unwrap_or_default(),
-                }
-            }
-            "ConditionalRenderingData" => {
-                let item_spec = require_object_from(item, "spec", &item_spec_path)?;
-                Condition::Data {
-                    has_data: optional_bool_from(item_spec, "value", &item_spec_path)?,
-                }
-            }
-            "ConditionalRenderingTimeRangeSize" => {
-                let item_spec = require_object_from(item, "spec", &item_spec_path)?;
-                let value = optional_string_from(item_spec, "value", &item_spec_path)?;
-                Condition::TimeRangeAtMost(
-                    value
-                        .as_deref()
-                        .and_then(crate::conditions::parse_time_range_size),
-                )
-            }
-            other => {
-                diagnostics.push(super::ImportDiagnostic::new(
-                    "unsupported_condition",
-                    &item_path,
-                    format!("unsupported Grafana V2 condition kind `{other}` is ignored"),
-                ));
-                continue;
-            }
-        };
-        conditions.push(condition);
+        if let Some(condition) = parse_condition_item(item, &item_path, diagnostics)? {
+            conditions.push(condition);
+        }
     }
+    debug_assert!(
+        conditions.len() <= items.len(),
+        "each condition comes from an item"
+    );
 
-    Ok(Some(ConditionGroup {
+    Ok(Some(crate::conditions::ConditionGroup {
         show,
         match_all,
         conditions,
     }))
+}
+
+/// Parses one condition of a condition group. An unknown kind gives `None`.
+fn parse_condition_item(
+    item: &Value,
+    item_path: &str,
+    diagnostics: &mut Vec<super::ImportDiagnostic>,
+) -> Result<Option<crate::conditions::Condition>> {
+    use crate::conditions::Condition;
+
+    debug_assert!(
+        item_path.contains(".items["),
+        "the path names a condition item"
+    );
+    let before = diagnostics.len();
+    let item = item.as_object().ok_or_else(|| {
+        anyhow!("invalid Grafana V2 condition at {item_path}: expected an object")
+    })?;
+    let kind = require_string_from(item, "kind", &format!("{item_path}.kind"))?;
+    let item_spec_path = format!("{item_path}.spec");
+    let condition = match kind {
+        "ConditionalRenderingVariable" => {
+            let item_spec = require_object_from(item, "spec", &item_spec_path)?;
+            parse_variable_condition(item_spec, &item_spec_path)?
+        }
+        "ConditionalRenderingData" => {
+            let item_spec = require_object_from(item, "spec", &item_spec_path)?;
+            Condition::Data {
+                has_data: optional_bool_from(item_spec, "value", &item_spec_path)?,
+            }
+        }
+        "ConditionalRenderingTimeRangeSize" => {
+            let item_spec = require_object_from(item, "spec", &item_spec_path)?;
+            let value = optional_string_from(item_spec, "value", &item_spec_path)?;
+            Condition::TimeRangeAtMost(
+                value
+                    .as_deref()
+                    .and_then(crate::conditions::parse_time_range_size),
+            )
+        }
+        other => {
+            diagnostics.push(super::ImportDiagnostic::new(
+                "unsupported_condition",
+                item_path,
+                format!("unsupported Grafana V2 condition kind `{other}` is ignored"),
+            ));
+            return Ok(None);
+        }
+    };
+    debug_assert_eq!(
+        diagnostics.len(),
+        before,
+        "a known condition gives no diagnostic"
+    );
+    Ok(Some(condition))
+}
+
+/// Parses the spec of a variable condition: the variable, operator and value.
+fn parse_variable_condition(
+    item_spec: &JsonObject,
+    item_spec_path: &str,
+) -> Result<crate::conditions::Condition> {
+    use crate::conditions::VariableOperator;
+
+    let operator = match optional_string_from(item_spec, "operator", item_spec_path)?.as_deref() {
+        None | Some("equals") => VariableOperator::Equals,
+        Some("notEquals") => VariableOperator::NotEquals,
+        Some("matches") => VariableOperator::Matches,
+        Some("notMatches") => VariableOperator::NotMatches,
+        Some(other) => anyhow::bail!(
+            "invalid Grafana V2 condition operator `{other}` at {item_spec_path}.operator"
+        ),
+    };
+    let name_path = format!("{item_spec_path}.variable");
+    Ok(crate::conditions::Condition::Variable {
+        name: require_string_from(item_spec, "variable", &name_path)?.to_string(),
+        operator,
+        value: optional_string_from(item_spec, "value", item_spec_path)?.unwrap_or_default(),
+    })
 }
 
 /// Reads the `element` reference of a grid or auto grid item spec.
@@ -766,6 +1158,10 @@ fn resolve_element_reference<'a>(
     elements: &'a JsonObject,
     item_spec_path: &str,
 ) -> Result<(String, &'a Value)> {
+    debug_assert!(
+        item_spec_path.ends_with(".spec"),
+        "the path names an item spec"
+    );
     let name = parse_element_reference(item_spec, item_spec_path)?;
     let item_path = item_spec_path
         .strip_suffix(".spec")
@@ -780,24 +1176,18 @@ fn parse_panel(
     grid: Option<model::GridPos>,
     diagnostics: &mut Vec<super::ImportDiagnostic>,
 ) -> Result<Option<model::Panel>> {
+    debug_assert!(
+        path.starts_with("spec.elements["),
+        "the path names an element"
+    );
+    let before = diagnostics.len();
     let element = value
         .as_object()
         .ok_or_else(|| anyhow!("invalid Grafana V2 element at {path}: expected an object"))?;
     let kind_path = format!("{path}.kind");
     let kind = require_string_from(element, "kind", &kind_path)?;
     if kind != "Panel" {
-        let message = if kind == "LibraryPanel" {
-            "Grafana V2 library panel skipped: exports reference library panels by uid only; \
-             re-export with \"Share dashboard with another instance\" enabled to inline them"
-                .to_string()
-        } else {
-            format!("unsupported Grafana V2 element kind `{kind}` skipped")
-        };
-        diagnostics.push(super::ImportDiagnostic::new(
-            "unsupported_element",
-            path,
-            message,
-        ));
+        report_unsupported_element(kind, path, diagnostics);
         return Ok(None);
     }
     validate_panel_structure(element, path)?;
@@ -808,13 +1198,88 @@ fn parse_panel(
     let panel_path = format!("{path}.spec");
     let data_path = format!("{panel_path}.data.spec.queries");
     let query_options = raw.spec.data.spec.query_options;
-    let mut targets = Vec::new();
-    let mut has_visible_target = false;
-    let mut has_supported_visible_target = false;
-    for (index, query) in raw.spec.data.spec.queries.into_iter().enumerate() {
+    let parsed = parse_panel_targets(raw.spec.data.spec.queries, &data_path, diagnostics);
+    let viz_spec = raw.spec.viz_config.spec;
+    let field_defaults = field_defaults_from(viz_spec.field_config.defaults, &panel_path);
+    debug_assert!(
+        diagnostics.len() >= before,
+        "the diagnostics list does not shrink"
+    );
+    Ok(Some(model::Panel {
+        repeat: None,
+        condition: None,
+        kind: raw.spec.viz_config.group,
+        title: raw.spec.title,
+        source_path: path.to_string(),
+        targets: parsed.targets,
+        count_as_skipped_if_empty: parsed.has_visible_target
+            && !parsed.has_supported_visible_target,
+        grid,
+        field_defaults: Some(field_defaults),
+        reduce_options_path: viz_spec
+            .options
+            .reduce_options
+            .is_some_and(|options| model::reduce_options_are_custom(&options))
+            .then(|| format!("{panel_path}.vizConfig.spec.options.reduceOptions")),
+        transformations_path: (!raw.spec.data.spec.transformations.is_empty())
+            .then(|| format!("{panel_path}.data.spec.transformations")),
+        min_interval: model::MinInterval::new(
+            query_options.interval,
+            format!("{panel_path}.data.spec.queryOptions.interval"),
+        ),
+        max_data_points: model::max_data_points(query_options.max_data_points.as_ref()),
+    }))
+}
+
+/// Adds a diagnostic for an element that is not an inline panel.
+fn report_unsupported_element(
+    kind: &str,
+    path: &str,
+    diagnostics: &mut Vec<super::ImportDiagnostic>,
+) {
+    debug_assert_ne!(kind, "Panel", "the element is not a panel");
+    debug_assert!(
+        path.starts_with("spec.elements["),
+        "the path names an element"
+    );
+    let message = if kind == "LibraryPanel" {
+        "Grafana V2 library panel skipped: exports reference library panels by uid only; \
+         re-export with \"Share dashboard with another instance\" enabled to inline them"
+            .to_string()
+    } else {
+        format!("unsupported Grafana V2 element kind `{kind}` skipped")
+    };
+    diagnostics.push(super::ImportDiagnostic::new(
+        "unsupported_element",
+        path,
+        message,
+    ));
+}
+
+/// The targets of a V2 panel, and which of its queries are visible.
+struct PanelTargets {
+    targets: Vec<model::Target>,
+    has_visible_target: bool,
+    has_supported_visible_target: bool,
+}
+
+/// Converts the queries of a V2 panel to targets. It skips other datasources.
+fn parse_panel_targets(
+    queries: Vec<RawPanelQuery>,
+    data_path: &str,
+    diagnostics: &mut Vec<super::ImportDiagnostic>,
+) -> PanelTargets {
+    let mut parsed = PanelTargets {
+        targets: Vec::new(),
+        has_visible_target: false,
+        has_supported_visible_target: false,
+    };
+    let count = queries.len();
+    let before = diagnostics.len();
+    for (index, query) in queries.into_iter().enumerate() {
         let query_path = format!("{data_path}[{index}].spec.query");
         if !query.spec.hidden {
-            has_visible_target = true;
+            parsed.has_visible_target = true;
         }
         if !is_prometheus_group(&query.spec.query.group) {
             diagnostics.push(super::ImportDiagnostic::new(
@@ -828,38 +1293,80 @@ fn parse_panel(
             continue;
         }
         if !query.spec.hidden {
-            has_supported_visible_target = true;
+            parsed.has_supported_visible_target = true;
         }
-
-        let expr_path = format!("{query_path}.spec.expr");
-        let expr = query
-            .spec
-            .query
-            .spec
-            .expr
-            .filter(|expr| !expr.trim().is_empty());
-        if !query.spec.hidden && expr.is_none() {
-            diagnostics.push(super::ImportDiagnostic::new(
-                "missing_query_expression",
-                &expr_path,
-                "visible Prometheus query has no expression and was skipped",
-            ));
-        }
-        targets.push(model::Target {
-            expr,
-            expr_path,
-            legend_format: query.spec.query.spec.legend_format,
-            instant: query.spec.query.spec.instant,
-            hidden: query.spec.hidden,
-            min_interval: model::MinInterval::new(
-                query.spec.query.spec.interval,
-                format!("{query_path}.spec.interval"),
-            ),
-        });
+        parsed
+            .targets
+            .push(prometheus_target(query, &query_path, diagnostics));
     }
-    let viz_spec = raw.spec.viz_config.spec;
-    let defaults = viz_spec.field_config.defaults;
-    let field_defaults = model::FieldDefaults {
+    debug_assert!(
+        diagnostics.len().saturating_sub(before) >= count - parsed.targets.len(),
+        "each skipped query gives a diagnostic"
+    );
+    debug_assert!(
+        !parsed.has_supported_visible_target || parsed.has_visible_target,
+        "a supported visible query is a visible query"
+    );
+    parsed
+}
+
+/// Converts one Prometheus query of a V2 panel to a target.
+fn prometheus_target(
+    query: RawPanelQuery,
+    query_path: &str,
+    diagnostics: &mut Vec<super::ImportDiagnostic>,
+) -> model::Target {
+    let expr_path = format!("{query_path}.spec.expr");
+    let expr = query
+        .spec
+        .query
+        .spec
+        .expr
+        .filter(|expr| !expr.trim().is_empty());
+    let before = diagnostics.len();
+    if !query.spec.hidden && expr.is_none() {
+        diagnostics.push(super::ImportDiagnostic::new(
+            "missing_query_expression",
+            &expr_path,
+            "visible Prometheus query has no expression and was skipped",
+        ));
+    }
+    debug_assert!(
+        diagnostics.len() <= before.saturating_add(1),
+        "a query gives one diagnostic or less"
+    );
+    let target = model::Target {
+        expr,
+        expr_path,
+        legend_format: query.spec.query.spec.legend_format,
+        instant: query.spec.query.spec.instant,
+        hidden: query.spec.hidden,
+        min_interval: model::MinInterval::new(
+            query.spec.query.spec.interval,
+            format!("{query_path}.spec.interval"),
+        ),
+    };
+    debug_assert!(
+        target
+            .expr
+            .as_deref()
+            .is_none_or(|expr| !expr.trim().is_empty()),
+        "an expression is not empty"
+    );
+    debug_assert!(
+        target.expr_path.starts_with(query_path),
+        "the expression path is under the query path"
+    );
+    target
+}
+
+/// Converts the field config defaults of a V2 panel.
+fn field_defaults_from(defaults: RawFieldDefaults, panel_path: &str) -> model::FieldDefaults {
+    let steps = defaults
+        .thresholds
+        .as_ref()
+        .map_or(0, |thresholds| thresholds.steps.len());
+    let converted = model::FieldDefaults {
         unit: defaults.unit,
         decimals: defaults.decimals,
         no_value: defaults.no_value,
@@ -892,39 +1399,35 @@ fn parse_panel(
             .is_some_and(non_empty_json_value)
             .then(|| format!("{panel_path}.vizConfig.spec.fieldConfig.defaults.mappings")),
     };
-
-    Ok(Some(model::Panel {
-        repeat: None,
-        condition: None,
-        kind: raw.spec.viz_config.group,
-        title: raw.spec.title,
-        source_path: path.to_string(),
-        targets,
-        count_as_skipped_if_empty: has_visible_target && !has_supported_visible_target,
-        grid,
-        field_defaults: Some(field_defaults),
-        reduce_options_path: viz_spec
-            .options
-            .reduce_options
-            .is_some_and(|options| model::reduce_options_are_custom(&options))
-            .then(|| format!("{panel_path}.vizConfig.spec.options.reduceOptions")),
-        transformations_path: (!raw.spec.data.spec.transformations.is_empty())
-            .then(|| format!("{panel_path}.data.spec.transformations")),
-        min_interval: model::MinInterval::new(
-            query_options.interval,
-            format!("{panel_path}.data.spec.queryOptions.interval"),
-        ),
-        max_data_points: model::max_data_points(query_options.max_data_points.as_ref()),
-    }))
+    debug_assert_eq!(
+        converted
+            .thresholds
+            .as_ref()
+            .map_or(0, |thresholds| thresholds.steps.len()),
+        steps,
+        "each threshold step is converted"
+    );
+    debug_assert!(
+        converted
+            .mappings_path
+            .as_deref()
+            .is_none_or(|path| path.starts_with(panel_path)),
+        "the mappings path is under the panel path"
+    );
+    converted
 }
 
-/// Validates the shape of an inline V2 panel before typed deserialization.
+/// Validates the shape of an inline V2 panel before serde reads it into types.
 ///
-/// Only `vizConfig.group` and each query's `group` are required: without them the
-/// renderer and datasource are unknown. Every other container may be absent or
-/// `null` in real exports and is defaulted, but a present value of the wrong type
-/// is still rejected at its native path.
+/// Only `vizConfig.group` and each query's `group` must be present. Without them,
+/// the renderer and the datasource are unknown. Real exports can omit any other
+/// container or set it to `null`, and then it takes its default. But this function
+/// still rejects a present value of the wrong type at its native path.
 fn validate_panel_structure(element: &JsonObject, path: &str) -> Result<()> {
+    debug_assert!(
+        path.starts_with("spec.elements["),
+        "the path names an element"
+    );
     let panel_path = format!("{path}.spec");
     let panel = require_object_from(element, "spec", &panel_path)?;
     let id_path = format!("{panel_path}.id");
@@ -978,6 +1481,10 @@ fn validate_panel_structure(element: &JsonObject, path: &str) -> Result<()> {
 }
 
 fn validate_query_group_spec(data_spec: &JsonObject, data_spec_path: &str) -> Result<()> {
+    debug_assert!(
+        data_spec_path.ends_with(".data.spec"),
+        "the path names a query group spec"
+    );
     let queries_path = format!("{data_spec_path}.queries");
     let queries = optional_array_from(data_spec, "queries", &queries_path)?;
     optional_array_from(
@@ -1010,6 +1517,10 @@ fn validate_query_group_spec(data_spec: &JsonObject, data_spec_path: &str) -> Re
 }
 
 fn require_expected_kind(object: &JsonObject, path: &str, expected: &str) -> Result<()> {
+    debug_assert!(
+        expected.starts_with(|ch: char| ch.is_ascii_uppercase()),
+        "the expected kind is a type name"
+    );
     let kind_path = format!("{path}.kind");
     let kind = require_string_from(object, "kind", &kind_path)?;
     ensure!(
@@ -1031,7 +1542,7 @@ fn non_empty_json_value(value: &Value) -> bool {
 
 /// Deserializes an absent or `null` field as its type's default.
 ///
-/// Pair with `#[serde(default)]` so missing fields also take the default.
+/// Pair with `#[serde(default)]` so that absent fields also take the default.
 fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,

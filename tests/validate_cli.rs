@@ -1,3 +1,9 @@
+// The Power of 10 rules apply only to the code outside the tests (ADR-0002).
+#![allow(
+    clippy::unwrap_used,
+    reason = "P10-R7: the rules apply to production code only"
+)]
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -463,18 +469,26 @@ fn assert_demo_set_validates(set: &str, count: usize, title_prefix: &str, min_pa
         );
         let summary: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert!(
-            summary["title"].as_str().unwrap().starts_with(title_prefix),
+            summary
+                .get("title")
+                .and_then(|title| title.as_str())
+                .unwrap()
+                .starts_with(title_prefix),
             "{}",
             path.display()
         );
         assert!(
-            summary["panel_count"].as_u64().unwrap() >= min_panels,
+            summary
+                .get("panel_count")
+                .and_then(|count| count.as_u64())
+                .unwrap()
+                >= min_panels,
             "{}",
             path.display()
         );
         assert_eq!(
-            summary["diagnostics"],
-            serde_json::json!([]),
+            summary.get("diagnostics"),
+            Some(&serde_json::json!([])),
             "{}",
             path.display()
         );
@@ -498,17 +512,28 @@ fn assert_demo_set_validates_at_once(set: &str, title_prefix: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
     let summary: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let dashboards = summary["dashboards"].as_array().unwrap();
-    assert_eq!(dashboards.len(), paths.len());
+    let dashboards = summary
+        .get("dashboards")
+        .and_then(|list| list.as_array())
+        .unwrap();
+    assert_eq!(dashboards.len(), paths.len(), "one summary for each file");
     for (dashboard, path) in dashboards.iter().zip(&paths) {
-        assert_eq!(dashboard["path"], path.display().to_string());
+        assert_eq!(
+            dashboard["path"],
+            path.display().to_string(),
+            "the summaries keep the file order"
+        );
         assert!(
             dashboard["title"]
                 .as_str()
                 .unwrap()
-                .starts_with(title_prefix)
+                .starts_with(title_prefix),
+            "the title starts with {title_prefix}"
         );
-        assert!(dashboard["diagnostics"].as_array().unwrap().is_empty());
+        assert!(
+            dashboard["diagnostics"].as_array().unwrap().is_empty(),
+            "the dashboard has no diagnostics"
+        );
     }
 }
 

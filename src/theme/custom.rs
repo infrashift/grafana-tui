@@ -6,63 +6,165 @@ use ratatui::style::Color;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-/// Declares the TOML keys for single-color roles; each key is the `Theme` field it overrides.
-macro_rules! theme_spec {
-    ($($role:ident),* $(,)?) => {
-        /// A `[themes.<name>]` table: a built-in theme to start from plus role overrides.
-        #[derive(Debug, Clone, Default, Deserialize)]
-        #[serde(deny_unknown_fields)]
-        pub(crate) struct ThemeSpec {
-            /// Built-in theme to start from; the default theme when omitted.
-            pub(crate) extends: Option<String>,
-            $(pub(crate) $role: Option<String>,)*
-            /// Low, mid and high heatmap bands.
-            pub(crate) heatmap: Option<Vec<String>>,
-            pub(crate) palette: Option<Vec<String>>,
-        }
-
-        impl ThemeSpec {
-            fn apply_roles(&self, theme: &mut Theme) -> Result<()> {
-                $(
-                    if let Some(value) = &self.$role {
-                        theme.$role = parse_theme_color(value)
-                            .with_context(|| format!("`{}`", stringify!($role)))?;
-                    }
-                )*
-                Ok(())
-            }
-        }
-    };
+/// A `[themes.<name>]` table: a built-in theme to start from plus role overrides.
+///
+/// Each single-color field has the name of the `Theme` field that it overrides.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ThemeSpec {
+    /// Built-in theme to start from; the default theme when omitted.
+    pub(crate) extends: Option<String>,
+    /// Override of the `background` color role.
+    pub(crate) background: Option<String>,
+    /// Override of the `surface` color role.
+    pub(crate) surface: Option<String>,
+    /// Override of the `text` color role.
+    pub(crate) text: Option<String>,
+    /// Override of the `text_muted` color role.
+    pub(crate) text_muted: Option<String>,
+    /// Override of the `title` color role.
+    pub(crate) title: Option<String>,
+    /// Override of the `border` color role.
+    pub(crate) border: Option<String>,
+    /// Override of the `border_focused` color role.
+    pub(crate) border_focused: Option<String>,
+    /// Override of the `selection_fg` color role.
+    pub(crate) selection_fg: Option<String>,
+    /// Override of the `selection_bg` color role.
+    pub(crate) selection_bg: Option<String>,
+    /// Override of the `error` color role.
+    pub(crate) error: Option<String>,
+    /// Override of the `warning` color role.
+    pub(crate) warning: Option<String>,
+    /// Override of the `success` color role.
+    pub(crate) success: Option<String>,
+    /// Override of the `axis` color role.
+    pub(crate) axis: Option<String>,
+    /// Override of the `grid` color role.
+    pub(crate) grid: Option<String>,
+    /// Override of the `cursor` color role.
+    pub(crate) cursor: Option<String>,
+    /// Override of the `gauge_track` color role.
+    pub(crate) gauge_track: Option<String>,
+    /// Override of the `heatmap_empty` color role.
+    pub(crate) heatmap_empty: Option<String>,
+    /// Override of the `annotation` color role.
+    pub(crate) annotation: Option<String>,
+    /// Override of the `threshold_default` color role.
+    pub(crate) threshold_default: Option<String>,
+    /// Low, mid and high heatmap bands.
+    pub(crate) heatmap: Option<Vec<String>>,
+    pub(crate) palette: Option<Vec<String>>,
 }
 
-theme_spec!(
-    background,
-    surface,
-    text,
-    text_muted,
-    title,
-    border,
-    border_focused,
-    selection_fg,
-    selection_bg,
-    error,
-    warning,
-    success,
-    axis,
-    grid,
-    cursor,
-    gauge_track,
-    heatmap_empty,
-    annotation,
-    threshold_default,
-);
+/// The number of single-color roles that a `[themes.<name>]` table can override.
+const ROLE_COUNT: usize = 19;
+
+/// One single-color role: its TOML key, the configured value and the `Theme` field to set.
+type RoleSlot<'a> = (&'static str, Option<&'a String>, &'a mut Color);
+
+impl ThemeSpec {
+    /// Pairs each single-color key with its `Theme` field, in declaration order.
+    fn role_slots<'a>(&'a self, theme: &'a mut Theme) -> [RoleSlot<'a>; ROLE_COUNT] {
+        [
+            (
+                "background",
+                self.background.as_ref(),
+                &mut theme.background,
+            ),
+            ("surface", self.surface.as_ref(), &mut theme.surface),
+            ("text", self.text.as_ref(), &mut theme.text),
+            (
+                "text_muted",
+                self.text_muted.as_ref(),
+                &mut theme.text_muted,
+            ),
+            ("title", self.title.as_ref(), &mut theme.title),
+            ("border", self.border.as_ref(), &mut theme.border),
+            (
+                "border_focused",
+                self.border_focused.as_ref(),
+                &mut theme.border_focused,
+            ),
+            (
+                "selection_fg",
+                self.selection_fg.as_ref(),
+                &mut theme.selection_fg,
+            ),
+            (
+                "selection_bg",
+                self.selection_bg.as_ref(),
+                &mut theme.selection_bg,
+            ),
+            ("error", self.error.as_ref(), &mut theme.error),
+            ("warning", self.warning.as_ref(), &mut theme.warning),
+            ("success", self.success.as_ref(), &mut theme.success),
+            ("axis", self.axis.as_ref(), &mut theme.axis),
+            ("grid", self.grid.as_ref(), &mut theme.grid),
+            ("cursor", self.cursor.as_ref(), &mut theme.cursor),
+            (
+                "gauge_track",
+                self.gauge_track.as_ref(),
+                &mut theme.gauge_track,
+            ),
+            (
+                "heatmap_empty",
+                self.heatmap_empty.as_ref(),
+                &mut theme.heatmap_empty,
+            ),
+            (
+                "annotation",
+                self.annotation.as_ref(),
+                &mut theme.annotation,
+            ),
+            (
+                "threshold_default",
+                self.threshold_default.as_ref(),
+                &mut theme.threshold_default,
+            ),
+        ]
+    }
+
+    /// Parses each configured single-color role into `theme`, and names the key on error.
+    fn apply_roles(&self, theme: &mut Theme) -> Result<()> {
+        let slots = self.role_slots(theme);
+        debug_assert!(
+            slots.iter().enumerate().all(|(index, (role, _, _))| {
+                slots
+                    .iter()
+                    .take(index)
+                    .all(|(before, _, _)| before != role)
+            }),
+            "each role key is unique"
+        );
+        debug_assert!(
+            slots.iter().all(|(role, _, _)| !role.is_empty()),
+            "each role has a key"
+        );
+        for (role, value, slot) in slots {
+            if let Some(value) = value {
+                *slot = parse_theme_color(value).with_context(|| format!("`{role}`"))?;
+            }
+        }
+        Ok(())
+    }
+}
 
 /// Builds every configured theme, so a mistake in any of them surfaces at startup.
 pub(crate) fn custom_themes(specs: &BTreeMap<String, ThemeSpec>) -> Result<Vec<Theme>> {
-    specs
+    let themes = specs
         .iter()
         .map(|(name, spec)| build(name, spec).with_context(|| format!("theme `{name}`")))
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    debug_assert!(
+        themes.len() == specs.len(),
+        "each theme table gives one theme"
+    );
+    debug_assert!(
+        themes.iter().all(|theme| !theme.palette.is_empty()),
+        "each user theme has a palette color"
+    );
+    Ok(themes)
 }
 
 fn build(name: &str, spec: &ThemeSpec) -> Result<Theme> {
@@ -81,13 +183,9 @@ fn build(name: &str, spec: &ThemeSpec) -> Result<Theme> {
                 bands.len()
             );
         };
-        theme.heatmap = [low, mid, high]
-            .map(|band| parse_theme_color(band))
-            .into_iter()
-            .collect::<Result<Vec<_>>>()
-            .context("`heatmap`")?
-            .try_into()
-            .expect("three bands");
+        let [low, mid, high] =
+            [low, mid, high].map(|band| parse_theme_color(band).context("`heatmap`"));
+        theme.heatmap = [low?, mid?, high?];
     }
     if let Some(palette) = &spec.palette {
         if palette.is_empty() {
@@ -99,6 +197,11 @@ fn build(name: &str, spec: &ThemeSpec) -> Result<Theme> {
             .collect::<Result<_>>()
             .context("`palette`")?;
     }
+    debug_assert!(theme.name == name, "the theme has the name of its table");
+    debug_assert!(
+        !theme.palette.is_empty(),
+        "a user theme has a palette color"
+    );
     Ok(theme)
 }
 
@@ -108,7 +211,8 @@ pub(crate) fn parse_theme_color(value: &str) -> Result<Color> {
         && hex.len() == 6
         && hex.chars().all(|digit| digit.is_ascii_hexdigit())
     {
-        let rgb = u32::from_str_radix(hex, 16).expect("six hex digits");
+        let rgb = u32::from_str_radix(hex, 16).with_context(|| format!("`{value}`"))?;
+        debug_assert!(rgb <= 0x00ff_ffff, "six hex digits give a 24-bit color");
         return Ok(super::rgb(rgb));
     }
     Ok(match value.to_ascii_lowercase().as_str() {

@@ -14,44 +14,39 @@
  * limitations under the License.
  */
 
-use crate::app::{AppState, PanelState};
+use crate::app::{AppState, PanelState, PanelType, SeriesView};
+use crate::num;
 use ratatui::{
     prelude::*,
     widgets::{Bar, BarChart, BarGroup, Block, Borders, Paragraph},
 };
 
 pub(super) fn render_bar_gauge(frame: &mut Frame, area: Rect, p: &PanelState, app: &AppState) {
+    debug_assert!(
+        matches!(p.panel_type, PanelType::BarGauge),
+        "the panel is a bar gauge"
+    );
     let theme = &app.theme;
 
     let mut max_label_len = 3;
 
     let scale = 1000.0;
 
-    // Map intermediate valid series
-    let mut valid_series: Vec<_> = p
-        .series
-        .iter()
-        .filter(|s| s.visible && s.value.is_some())
-        .collect();
-
-    // Sort descending safely
-    valid_series.sort_by(|a, b| {
-        let v_a = a.value.unwrap_or(0.0);
-        let v_b = b.value.unwrap_or(0.0);
-        v_b.partial_cmp(&v_a).unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    // Truncate based on area width
-    let max_bars = (area.width / 4).saturating_sub(1).max(1) as usize;
-    valid_series.truncate(max_bars);
+    let valid_series = bar_series(p, area.width);
 
     let mut bars = Vec::with_capacity(valid_series.len());
     let (min, max) = bar_range(p, valid_series.iter().filter_map(|s| s.value));
+    debug_assert!(
+        min <= 0.0 || p.min.is_some(),
+        "the bars start at zero or below unless the panel sets a minimum"
+    );
 
     for s in valid_series {
-        let v = s.value.unwrap();
+        let Some(v) = s.value else {
+            continue;
+        };
         max_label_len = max_label_len.max(s.name.len());
-        let color = p.get_color_for_value(v).unwrap_or(theme.palette[0]);
+        let color = p.get_color_for_value(v).unwrap_or(theme.palette_color(0));
         let bar = Bar::default()
             .value(bar_height(v, min, max, scale))
             .text_value(p.display.format_number(v))
@@ -67,16 +62,16 @@ pub(super) fn render_bar_gauge(frame: &mut Frame, area: Rect, p: &PanelState, ap
         return;
     }
 
-    let bar_width = (area.width / bars.len() as u16)
+    let bar_width = (area.width / num::usize_to_u16(bars.len()))
         .saturating_sub(1)
-        .min(max_label_len as u16)
+        .min(num::usize_to_u16(max_label_len))
         .max(3);
 
     let bar_group = BarGroup::default().bars(&bars);
 
     let bar_chart = BarChart::default()
         .block(Block::default().borders(Borders::NONE))
-        .max(scale as u64)
+        .max(num::f64_to_u64(scale))
         .data(bar_group)
         .bar_width(bar_width)
         .bar_gap(1);
@@ -84,24 +79,65 @@ pub(super) fn render_bar_gauge(frame: &mut Frame, area: Rect, p: &PanelState, ap
     frame.render_widget(bar_chart, area);
 }
 
-/// The range bars fill: the panel's `min` and `max`, defaulting to zero and
-/// the largest value, extended to the smallest value when it is negative.
+/// Returns the visible series with a value, largest first, as many as fit in `width`.
+fn bar_series(p: &PanelState, width: u16) -> Vec<&SeriesView> {
+    // Map intermediate valid series
+    let mut valid_series: Vec<_> = p
+        .series
+        .iter()
+        .filter(|s| s.visible && s.value.is_some())
+        .collect();
+
+    // Sort from the highest value to the lowest. A NaN does not cause a panic.
+    valid_series.sort_by(|a, b| {
+        let v_a = a.value.unwrap_or(0.0);
+        let v_b = b.value.unwrap_or(0.0);
+        v_b.partial_cmp(&v_a).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Truncate based on area width
+    let max_bars = usize::from((width / 4).saturating_sub(1).max(1));
+    valid_series.truncate(max_bars);
+    debug_assert!(
+        valid_series.len() <= max_bars,
+        "the bars fit the panel width"
+    );
+    debug_assert!(
+        valid_series.iter().all(|s| s.visible && s.value.is_some()),
+        "each bar is a visible series with a value"
+    );
+    valid_series
+}
+
+/// The range that bars fill: the panel's `min` and `max`. Their defaults are
+/// zero and the largest value. A negative smallest value extends the range.
 fn bar_range(p: &PanelState, values: impl Iterator<Item = f64>) -> (f64, f64) {
     let (low, high) = values
         .filter(|value| value.is_finite())
         .fold((0.0_f64, f64::NEG_INFINITY), |(low, high), value| {
             (low.min(value), high.max(value))
         });
+    debug_assert!(low <= 0.0, "the default range starts at zero or below");
+    debug_assert!(
+        high == f64::NEG_INFINITY || high >= low,
+        "the largest value is not below the smallest value"
+    );
     (p.min.unwrap_or(low), p.max.unwrap_or(high))
 }
 
 /// A bar's height in `0..=scale`, so negative values still draw against `min`.
 fn bar_height(value: f64, min: f64, max: f64, scale: f64) -> u64 {
-    if max > min {
-        (((value - min) / (max - min)).clamp(0.0, 1.0) * scale).round() as u64
+    debug_assert!(scale > 0.0, "the bar scale is more than zero");
+    let height = if max > min {
+        num::f64_to_u64((((value - min) / (max - min)).clamp(0.0, 1.0) * scale).round())
     } else {
-        scale as u64
-    }
+        num::f64_to_u64(scale)
+    };
+    debug_assert!(
+        height <= num::f64_to_u64(scale),
+        "the bar is not taller than the scale"
+    );
+    height
 }
 
 #[cfg(test)]

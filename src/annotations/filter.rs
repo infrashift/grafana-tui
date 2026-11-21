@@ -66,10 +66,23 @@ pub(crate) fn tag_catalogue(
     for tag in filter.selected() {
         counts.entry(tag.clone()).or_default();
     }
-    counts
+    let catalogue: Vec<TagCatalogueEntry> = counts
         .into_iter()
         .map(|(tag, count)| TagCatalogueEntry { tag, count })
-        .collect()
+        .collect();
+    debug_assert!(
+        catalogue.iter().all(|entry| entry.count <= snapshot.len()),
+        "an event counts one time for each of its tags"
+    );
+    debug_assert!(
+        filter.selected().iter().all(|tag| {
+            catalogue
+                .binary_search_by(|entry| entry.tag.as_str().cmp(tag.as_str()))
+                .is_ok()
+        }),
+        "the catalogue lists each selected tag"
+    );
+    catalogue
 }
 
 #[cfg(test)]

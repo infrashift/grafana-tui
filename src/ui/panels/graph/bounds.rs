@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-use crate::app::{PanelState, ThresholdMode, YAxisMode};
+use super::view::threshold_steps;
+use crate::app::{PanelState, YAxisMode};
 
 pub(crate) fn calculate_y_bounds(p: &PanelState) -> [f64; 2] {
     let mut min = f64::INFINITY;
@@ -39,6 +40,49 @@ pub(crate) fn calculate_y_bounds(p: &PanelState) -> [f64; 2] {
         return fallback_bounds(explicit_min, explicit_max);
     }
 
+    let [min, max] = adjusted_range(p, [min, max], explicit_min, explicit_max);
+    if max <= min {
+        return fallback_bounds(Some(min), explicit_max.filter(|value| *value > min));
+    }
+
+    // Add 5% of the range as padding. Halves keep the range finite for data
+    // near f64::MAX, and the clamps keep each bound finite.
+    let padding = (max / 2.0 - min / 2.0) * 0.1;
+    let bounds = [
+        if explicit_min.is_some() {
+            min
+        } else {
+            (min - padding).max(f64::MIN)
+        },
+        if explicit_max.is_some() {
+            max
+        } else {
+            (max + padding).min(f64::MAX)
+        },
+    ];
+    let [lower, upper] = bounds;
+    debug_assert!(
+        lower <= upper,
+        "the lower bound is a number and not above the upper bound"
+    );
+    debug_assert!(
+        lower.is_finite() && upper.is_finite(),
+        "the bounds are finite"
+    );
+    debug_assert!(
+        explicit_min.is_none_or(|value| value.to_bits() == lower.to_bits()),
+        "an explicit minimum stays the lower bound"
+    );
+    bounds
+}
+
+/// Widens a flat data range, applies the zero-based mode and applies the explicit limits.
+fn adjusted_range(
+    p: &PanelState,
+    [mut min, mut max]: [f64; 2],
+    explicit_min: Option<f64>,
+    explicit_max: Option<f64>,
+) -> [f64; 2] {
     if min == max {
         min -= 1.0;
         max += 1.0;
@@ -58,41 +102,11 @@ pub(crate) fn calculate_y_bounds(p: &PanelState) -> [f64; 2] {
     if let Some(value) = explicit_max {
         max = value;
     }
-
-    if max <= min {
-        return fallback_bounds(Some(min), explicit_max.filter(|value| *value > min));
-    }
-
-    // Add some padding
-    let range = max - min;
-    [
-        if explicit_min.is_some() {
-            min
-        } else {
-            min - range * 0.05
-        },
-        if explicit_max.is_some() {
-            max
-        } else {
-            max + range * 0.05
-        },
-    ]
+    [min, max]
 }
 
 fn observe_thresholds(p: &PanelState, min: &mut f64, max: &mut f64, has_data: &mut bool) {
-    let Some(thresholds) = &p.thresholds else {
-        return;
-    };
-
-    for step in thresholds.steps.iter().filter_map(|step| step.value) {
-        let value = match thresholds.mode {
-            ThresholdMode::Absolute => step,
-            ThresholdMode::Percentage => {
-                let min = p.min.unwrap_or(0.0);
-                let max = p.max.unwrap_or(100.0);
-                min + (step / 100.0) * (max - min)
-            }
-        };
+    for (value, _) in threshold_steps(p) {
         observe_value(value, min, max, has_data);
     }
 }
@@ -105,20 +119,53 @@ fn observe_value(value: f64, min: &mut f64, max: &mut f64, has_data: &mut bool) 
     *min = min.min(value);
     *max = max.max(value);
     *has_data = true;
+    debug_assert!(
+        *min <= value && value <= *max,
+        "the observed range holds the value"
+    );
+    debug_assert!(
+        min.is_finite() && max.is_finite(),
+        "the observed range is finite"
+    );
 }
 
 fn fallback_bounds(explicit_min: Option<f64>, explicit_max: Option<f64>) -> [f64; 2] {
-    match (explicit_min, explicit_max) {
+    debug_assert!(
+        explicit_min.is_none_or(f64::is_finite) && explicit_max.is_none_or(f64::is_finite),
+        "the explicit limits are finite"
+    );
+    let bounds = match (explicit_min, explicit_max) {
         (Some(min), Some(max)) if max > min => [min, max],
         (Some(min), _) => [min, min + 1.0],
         (_, Some(max)) => [max - 1.0, max],
         _ => [0.0, 1.0],
-    }
+    };
+    let [lower, upper] = bounds;
+    debug_assert!(
+        lower.is_finite() && upper.is_finite() && lower <= upper,
+        "the fallback bounds are finite and in order"
+    );
+    bounds
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_near_the_float_limits_gives_finite_bounds() {
+        let mut panel = create_test_panel();
+        panel.series = vec![crate::app::SeriesView {
+            name: "edge".to_string(),
+            value: None,
+            points: vec![(0.0, -f64::MAX), (1.0, f64::MAX)],
+            visible: true,
+        }];
+
+        let [lower, upper] = calculate_y_bounds(&panel);
+
+        assert_eq!([lower, upper], [f64::MIN, f64::MAX]);
+    }
     use crate::app::{
         GraphOptions, PanelOptions, SeriesView, ThresholdMode, ThresholdStep, Thresholds,
     };
@@ -174,7 +221,7 @@ mod tests {
         });
 
         let bounds = calculate_y_bounds(&p);
-        assert!(bounds[0] < 10.0); // Should ignore NAN
+        assert!(bounds[0] < 10.0); // The bounds ignore NAN
         assert!(bounds[1] > 20.0);
     }
 
@@ -189,7 +236,7 @@ mod tests {
         });
 
         let bounds = calculate_y_bounds(&p);
-        assert!(bounds[0] < 10.0); // Should ignore INFINITY
+        assert!(bounds[0] < 10.0); // The bounds ignore INFINITY
         assert!(bounds[1] > 20.0);
     }
 
@@ -206,7 +253,7 @@ mod tests {
 
         let bounds = calculate_y_bounds(&p);
         // Range is 0.0 to 20.0. Padding is 5% of 20.0 = 1.0.
-        // So min should be 0.0 - 1.0 = -1.0.
+        // So min is 0.0 - 1.0 = -1.0.
         assert_eq!(bounds[0], -1.0);
         assert!(bounds[1] > 20.0);
     }

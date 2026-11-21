@@ -62,42 +62,58 @@ pub(crate) struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        builtin(DEFAULT_THEME).expect("the default theme is built in")
+        Self::from_base(DEFAULT_THEME, &builtin::TOKYO_NIGHT)
     }
 }
 
-/// Every selectable theme: the built-ins in display order, each replaced by a
-/// user theme of the same name, followed by the remaining user themes.
+/// Every theme that the user can select: the built-ins in display order, then
+/// the other user themes. A user theme replaces the built-in of the same name.
 pub(crate) fn catalog(custom: &[Theme]) -> Vec<Theme> {
     let find_custom = |name: &str| {
         custom
             .iter()
             .find(|theme| theme.name.eq_ignore_ascii_case(name))
     };
-    let mut themes: Vec<Theme> = builtin_names()
-        .map(|name| {
-            find_custom(name)
-                .cloned()
-                .unwrap_or_else(|| builtin(name).expect("listed builtins resolve"))
-        })
+    let mut themes: Vec<Theme> = builtin::builtin_themes()
+        .map(|theme| find_custom(&theme.name).cloned().unwrap_or(theme))
         .collect();
+    let builtin_count = themes.len();
+    debug_assert!(
+        builtin_count == builtin_names().count(),
+        "the catalog has each built-in theme once"
+    );
     for theme in custom {
         if !builtin_names().any(|name| name.eq_ignore_ascii_case(&theme.name)) {
             themes.push(theme.clone());
         }
     }
+    debug_assert!(
+        themes.len() <= builtin_count.saturating_add(custom.len()),
+        "the catalog adds each user theme no more than once"
+    );
+    debug_assert!(
+        themes.iter().all(|theme| !theme.palette.is_empty()),
+        "each catalog theme has a palette color"
+    );
     themes
 }
 
-/// Finds a theme in `catalog` by name or built-in alias, ignoring case.
+/// Finds a theme in `catalog` by name or built-in alias. The search ignores case.
 pub(crate) fn resolve(name: &str, catalog: &[Theme]) -> Result<Theme> {
     let find = |name: &str| {
         catalog
             .iter()
             .find(|theme| theme.name.eq_ignore_ascii_case(name))
     };
+    debug_assert!(!catalog.is_empty(), "the theme catalog is not empty");
     match find(name).or_else(|| builtin::alias_target(name).and_then(find)) {
-        Some(theme) => Ok(theme.clone()),
+        Some(theme) => {
+            debug_assert!(
+                !theme.palette.is_empty(),
+                "the resolved theme has a palette color"
+            );
+            Ok(theme.clone())
+        }
         None => bail!(
             "unknown theme `{name}`; available themes: {}",
             catalog
@@ -112,17 +128,26 @@ pub(crate) fn resolve(name: &str, catalog: &[Theme]) -> Result<Theme> {
 impl Theme {
     /// Replaces a threshold step color the terminal cannot show.
     pub(crate) fn threshold_color(&self, color: Color) -> Color {
-        if color == Color::Reset {
+        let shown = if color == Color::Reset {
             self.threshold_default
         } else {
             color
-        }
+        };
+        debug_assert!(
+            shown == color || color == Color::Reset,
+            "the function replaces only the reset color"
+        );
+        debug_assert!(
+            shown != Color::Reset || self.threshold_default == Color::Reset,
+            "a reset color stays only when the theme default is reset"
+        );
+        shown
     }
 }
 
 /// The ANSI theme: follows the terminal's own palette and background.
 fn terminal() -> Theme {
-    Theme {
+    let theme = Theme {
         name: "terminal".to_string(),
         background: Color::Reset,
         surface: Color::Reset,
@@ -158,10 +183,28 @@ fn terminal() -> Theme {
             Color::LightCyan,
             Color::LightRed,
         ],
-    }
+    };
+    debug_assert!(
+        !theme.palette.is_empty(),
+        "the terminal palette has a color"
+    );
+    debug_assert!(
+        has_distinct_colors(&theme.palette),
+        "the terminal palette has no duplicate colors"
+    );
+    theme
 }
 
-/// The handful of colors a palette-based theme is built from.
+/// Tells if each color in `palette` is different from all the colors before it.
+fn has_distinct_colors(palette: &[Color]) -> bool {
+    let first = |color: &Color| palette.iter().position(|other| other == color);
+    palette
+        .iter()
+        .enumerate()
+        .all(|(index, color)| first(color) == Some(index))
+}
+
+/// The few colors that a palette-based theme starts from.
 #[derive(Debug, Clone, Copy)]
 struct Base {
     bg: u32,
@@ -186,11 +229,27 @@ struct Base {
 }
 
 const fn rgb(hex: u32) -> Color {
-    Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+    let [_, r, g, b] = hex.to_be_bytes();
+    Color::Rgb(r, g, b)
 }
 
 impl Theme {
+    /// Returns the palette color at `index`, wrapped to the length of the palette.
+    pub(crate) fn palette_color(&self, index: usize) -> Color {
+        debug_assert!(
+            !self.palette.is_empty(),
+            "a theme palette has at least one color"
+        );
+        let wrapped = index.checked_rem(self.palette.len()).unwrap_or(0);
+        debug_assert!(
+            wrapped < self.palette.len(),
+            "the wrapped index is in the palette"
+        );
+        self.palette.get(wrapped).copied().unwrap_or(self.text)
+    }
+
     fn from_base(name: &str, base: &Base) -> Self {
+        debug_assert!(!name.is_empty(), "a built-in theme has a name");
         let mut palette = Vec::new();
         for hex in [
             base.blue,
@@ -206,6 +265,14 @@ impl Theme {
                 palette.push(color);
             }
         }
+        debug_assert!(
+            (1..=7).contains(&palette.len()),
+            "the palette has one to seven base colors"
+        );
+        debug_assert!(
+            has_distinct_colors(&palette),
+            "the palette has no duplicate colors"
+        );
         Self {
             name: name.to_string(),
             background: rgb(base.bg),
@@ -233,12 +300,26 @@ impl Theme {
     }
 }
 
+/// Parses the two hex digits at byte `start` of `c`. A bad digit or a split character gives 0.
+fn hex_byte(c: &str, start: usize) -> u8 {
+    c.get(start..start.saturating_add(2))
+        .and_then(|digits| u8::from_str_radix(digits, 16).ok())
+        .unwrap_or(0)
+}
+
+/// Converts a Grafana color, `#rrggbb` or a named color, to a terminal color.
+/// An unknown name gives `Color::Reset`.
 pub(crate) fn parse_grafana_color(c: &str) -> Color {
     if c.starts_with('#') && c.len() >= 7 {
-        let r = u8::from_str_radix(&c[1..3], 16).unwrap_or(0);
-        let g = u8::from_str_radix(&c[3..5], 16).unwrap_or(0);
-        let b = u8::from_str_radix(&c[5..7], 16).unwrap_or(0);
-        return Color::Rgb(r, g, b);
+        let color = Color::Rgb(hex_byte(c, 1), hex_byte(c, 3), hex_byte(c, 5));
+        debug_assert!(
+            c.get(1..7)
+                .filter(|hex| hex.chars().all(|digit| digit.is_ascii_hexdigit()))
+                .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                .is_none_or(|value| rgb(value) == color),
+            "six hex digits give the color of a direct parse"
+        );
+        return color;
     }
 
     match c.to_lowercase().as_str() {
@@ -266,6 +347,21 @@ pub(crate) fn parse_grafana_color(c: &str) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grafana_hex_colors_with_split_characters_do_not_panic() {
+        assert_eq!(parse_grafana_color("#a0b1c2"), Color::Rgb(0xa0, 0xb1, 0xc2));
+        assert_eq!(parse_grafana_color("#aé123"), Color::Rgb(0, 0, 0x23));
+        assert_eq!(parse_grafana_color("#zz11é"), Color::Rgb(0, 0x11, 0));
+    }
+
+    #[test]
+    fn palette_colors_wrap_to_the_palette_length() {
+        let theme = Theme::default();
+        let count = theme.palette.len();
+        assert_eq!(theme.palette_color(count + 1), theme.palette[1]);
+        assert_eq!(theme.palette_color(0), theme.palette[0]);
+    }
 
     #[test]
     fn every_builtin_resolves_with_a_usable_palette() {
@@ -318,6 +414,7 @@ mod tests {
             );
         }
         assert_eq!(Theme::default().name, DEFAULT_THEME);
+        assert_eq!(Some(Theme::default()), builtin(DEFAULT_THEME));
     }
 
     #[test]

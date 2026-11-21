@@ -16,51 +16,27 @@
 
 use super::labels::PlotBounds;
 use super::overlay::{copy_foreground, is_blank_cell, overlay_cell_if_blank_or_weak_area_fill};
-use crate::app::{PanelState, ThresholdMode};
 use ratatui::{prelude::*, widgets::GraphType};
 
-pub(super) struct ThresholdRenderData {
-    pub(super) datasets: Vec<Vec<(f64, f64)>>,
-    pub(super) labels: Vec<(f64, Color)>,
-}
-
-pub(super) fn prepare_thresholds(
-    panel: &PanelState,
-    marker_name: &str,
+/// Returns the chart points of each threshold line across the time range `x_bounds`.
+pub(super) fn threshold_datasets(
+    thresholds: &[(f64, Color)],
+    dashed: bool,
     x_bounds: [f64; 2],
-) -> ThresholdRenderData {
-    let mut datasets = Vec::new();
-    let mut labels = Vec::new();
-
-    let Some(thresholds) = &panel.thresholds else {
-        return ThresholdRenderData { datasets, labels };
-    };
-
-    for step in thresholds.steps.iter().filter(|step| step.value.is_some()) {
-        let value = step.value.unwrap();
-        let threshold_value = match thresholds.mode {
-            ThresholdMode::Absolute => value,
-            ThresholdMode::Percentage => {
-                let min = panel.min.unwrap_or(0.0);
-                let max = panel.max.unwrap_or(100.0);
-                min + (value / 100.0) * (max - min)
-            }
-        };
-
-        datasets.push(threshold_dataset(
-            marker_name,
-            thresholds.style.as_deref(),
-            x_bounds,
-            threshold_value,
-        ));
-        labels.push((threshold_value, step.color));
-    }
-
-    ThresholdRenderData { datasets, labels }
+) -> Vec<Vec<(f64, f64)>> {
+    thresholds
+        .iter()
+        .map(|(value, _)| threshold_dataset(dashed, x_bounds, *value))
+        .collect()
 }
 
 pub(super) fn threshold_marker(marker_name: &str) -> (ratatui::symbols::Marker, GraphType) {
-    match marker_name.to_lowercase().as_str() {
+    debug_assert!(
+        !marker_name.ends_with("line"),
+        "a line marker draws raw cells, not a dataset"
+    );
+    let name = marker_name.to_lowercase();
+    let marker = match name.as_str() {
         "braille" => (ratatui::symbols::Marker::Braille, GraphType::Line),
         "block" => (ratatui::symbols::Marker::Block, GraphType::Line),
         "bar" => (ratatui::symbols::Marker::Bar, GraphType::Line),
@@ -77,7 +53,12 @@ pub(super) fn threshold_marker(marker_name: &str) -> (ratatui::symbols::Marker, 
         "dashed-octant" => (ratatui::symbols::Marker::Octant, GraphType::Scatter),
         "dashed-dot" => (ratatui::symbols::Marker::Dot, GraphType::Scatter),
         _ => (ratatui::symbols::Marker::Dot, GraphType::Line),
-    }
+    };
+    debug_assert!(
+        marker.1 != GraphType::Scatter || name.starts_with("dashed"),
+        "only a dashed marker draws separate points"
+    );
+    marker
 }
 
 pub(super) fn render_raw_threshold_lines(
@@ -92,7 +73,7 @@ pub(super) fn render_raw_threshold_lines(
         return;
     }
 
-    let chart_height = plot.bottom.saturating_sub(plot.top) as f64;
+    let chart_height = f64::from(plot.bottom.saturating_sub(plot.top));
     if chart_height <= 0.0 {
         return;
     }
@@ -107,51 +88,70 @@ pub(super) fn render_raw_threshold_lines(
         }
 
         let ratio = (*threshold_value - y_bounds[0]) / (y_bounds[1] - y_bounds[0]);
-        let y_offset = (ratio * chart_height).round() as u16;
+        let y_offset = crate::num::f64_to_u16((ratio * chart_height).round());
         let y = plot.bottom.saturating_sub(y_offset);
 
         if y < plot.top || y > plot.bottom {
             continue;
         }
 
+        let mut line_cell = ratatui::buffer::Cell::default();
+        line_cell
+            .set_char(line_char)
+            .set_style(Style::default().fg(*color));
         for x in plot.left..plot.right {
             if is_dashed && x % 2 == 0 {
                 continue;
             }
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                let mut line_cell = ratatui::buffer::Cell::default();
-                line_cell
-                    .set_char(line_char)
-                    .set_style(Style::default().fg(*color));
-
-                if let Some(strong_data_buf) = strong_data_buf {
-                    if let Some(mask_cell) = strong_data_buf.cell((x, y)) {
-                        overlay_cell_if_blank_or_weak_area_fill(cell, &line_cell, mask_cell);
-                    }
-                } else if is_blank_cell(cell) {
-                    copy_foreground(cell, &line_cell);
-                }
-            }
+            draw_threshold_cell(buf, (x, y), &line_cell, strong_data_buf);
         }
     }
 }
 
-fn threshold_dataset(
-    marker_name: &str,
-    threshold_style: Option<&str>,
-    x_bounds: [f64; 2],
-    threshold_value: f64,
-) -> Vec<(f64, f64)> {
-    let [start, end] = x_bounds;
-    if marker_name.starts_with("dashed") || threshold_style == Some("dashed") {
-        let points_count = 15;
-        let step_x = (end - start) / points_count as f64;
-        return (0..=points_count)
-            .map(|i| (start + (i as f64 * step_x), threshold_value))
-            .collect();
+/// Draws one threshold line cell where the data mask or the blank cell allows it.
+fn draw_threshold_cell(
+    buf: &mut ratatui::buffer::Buffer,
+    position: (u16, u16),
+    line_cell: &ratatui::buffer::Cell,
+    strong_data_buf: Option<&ratatui::buffer::Buffer>,
+) {
+    debug_assert!(
+        !is_blank_cell(line_cell),
+        "the threshold line cell is visible"
+    );
+    debug_assert!(
+        strong_data_buf.is_none_or(|mask| mask.cell(position).is_some()),
+        "the data mask covers each threshold line cell"
+    );
+    let Some(cell) = buf.cell_mut(position) else {
+        return;
+    };
+    if let Some(strong_data_buf) = strong_data_buf {
+        if let Some(mask_cell) = strong_data_buf.cell(position) {
+            overlay_cell_if_blank_or_weak_area_fill(cell, line_cell, mask_cell);
+        }
+    } else if is_blank_cell(cell) {
+        copy_foreground(cell, line_cell);
     }
+}
 
-    vec![(start, threshold_value), (end, threshold_value)]
+fn threshold_dataset(dashed: bool, x_bounds: [f64; 2], threshold_value: f64) -> Vec<(f64, f64)> {
+    let [start, end] = x_bounds;
+    debug_assert!(start <= end, "the time range is in order");
+    let points: Vec<(f64, f64)> = if dashed {
+        let points_count: i32 = 15;
+        let step_x = (end - start) / f64::from(points_count);
+        (0..=points_count)
+            .map(|i| (start + (f64::from(i) * step_x), threshold_value))
+            .collect()
+    } else {
+        vec![(start, threshold_value), (end, threshold_value)]
+    };
+    debug_assert!(
+        (dashed && points.len() == 16) || (!dashed && points.len() == 2),
+        "a dashed line has 16 points and a solid line has 2"
+    );
+    points
 }
 
 #[cfg(test)]

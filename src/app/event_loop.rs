@@ -36,13 +36,20 @@ where
     let mut events = EventStream::new();
     let mut needs_draw = true;
 
+    // semscope: allow(NASA-P10-02) the TUI event loop runs until the user quits (ADR-0002)
     loop {
+        debug_assert!(app.one_dialog_or_less(), "one dialog or less is open");
+        debug_assert!(
+            app.theme_picker_in_range(),
+            "the theme picker selects a theme of the list"
+        );
+        debug_assert!(app.search_is_consistent(), "the search state is consistent");
         if needs_draw {
             terminal.draw(|f| ui::draw_ui(f, app))?;
             needs_draw = false;
         }
 
-        // Refreshes run in the background, so input is handled while
+        // Refreshes run in the background, so the loop handles input while
         // Prometheus is slow or unreachable.
         let refresh_at = app.next_refresh_at();
         let slow_refresh_at = app.slow_refresh_at();
@@ -51,46 +58,11 @@ where
                 let Some(event) = event else {
                     return Ok(());
                 };
-                let action = match event? {
-                    Event::Key(key) => {
-                        let size = terminal.size()?;
-                        input::handle_key(key, size, app).await?
-                    }
-                    Event::Mouse(mouse) => {
-                        let size = terminal.size()?;
-                        input::handle_mouse(mouse, size, app).await?
-                    }
-                    Event::Resize(width, height) => {
-                        ui::scroll_selected_into_view(Rect::new(0, 0, width, height), app);
-                        InputAction::Redraw
-                    }
-                    _ => InputAction::Redraw,
-                };
-
-                match action {
-                    InputAction::Quit => {
-                        finalize_recording_before_quit(app)?;
-                        return Ok(());
-                    }
-                    InputAction::ExportCurrent => {
-                        let viewport = terminal_viewport(terminal)?;
-                        let exported = export::export_current(app, viewport);
-                        report_export_error(app, "Export", exported);
-                        needs_draw = true;
-                        capture_recording_after_change(terminal, app)?;
-                    }
-                    InputAction::ToggleRecording => {
-                        let viewport = terminal_viewport(terminal)?;
-                        let toggled = export::toggle_recording(app, viewport);
-                        report_export_error(app, "Recording", toggled);
-                        needs_draw = true;
-                        capture_recording_after_change(terminal, app)?;
-                    }
-                    InputAction::Redraw => {
-                        needs_draw = true;
-                        capture_recording_after_change(terminal, app)?;
-                    }
+                let action = event_action(event?, terminal, app).await?;
+                if !apply_action(action, terminal, app)? {
+                    return Ok(());
                 }
+                needs_draw = true;
             }
             Some(finished) = app.join_refresh_task() => {
                 if app.finish_refresh_task(finished) {
@@ -107,6 +79,78 @@ where
     }
 }
 
+/// Handles one terminal event and returns the action that it causes.
+async fn event_action<B: ratatui::backend::Backend>(
+    event: Event,
+    terminal: &Terminal<B>,
+    app: &mut AppState,
+) -> Result<InputAction>
+where
+    <B as ratatui::backend::Backend>::Error: Send + Sync + 'static,
+{
+    let action = match event {
+        Event::Key(key) => {
+            let size = terminal.size()?;
+            input::handle_key(key, size, app).await?
+        }
+        Event::Mouse(mouse) => {
+            let size = terminal.size()?;
+            input::handle_mouse(mouse, size, app).await?
+        }
+        Event::Resize(width, height) => {
+            ui::scroll_selected_into_view(Rect::new(0, 0, width, height), app);
+            InputAction::Redraw
+        }
+        _ => InputAction::Redraw,
+    };
+    debug_assert!(app.search_is_consistent(), "the search state is consistent");
+    debug_assert!(
+        app.selection_in_panels(),
+        "the selected panel is in the panel list"
+    );
+    debug_assert!(app.one_dialog_or_less(), "one dialog or less is open");
+    Ok(action)
+}
+
+/// Does what `action` asks for. Returns `false` when the app quits.
+fn apply_action<B: ratatui::backend::Backend>(
+    action: InputAction,
+    terminal: &Terminal<B>,
+    app: &mut AppState,
+) -> Result<bool>
+where
+    <B as ratatui::backend::Backend>::Error: Send + Sync + 'static,
+{
+    debug_assert!(
+        app.recording_in_limit(),
+        "the recording is in its frame limit"
+    );
+    match action {
+        InputAction::Quit => {
+            finalize_recording_before_quit(app)?;
+            debug_assert!(app.recording.is_none(), "the quit saves the recording");
+            return Ok(false);
+        }
+        InputAction::ExportCurrent => {
+            let viewport = terminal_viewport(terminal)?;
+            let exported = export::export_current(app, viewport);
+            report_export_error(app, "Export", exported);
+        }
+        InputAction::ToggleRecording => {
+            let viewport = terminal_viewport(terminal)?;
+            let toggled = export::toggle_recording(app, viewport);
+            report_export_error(app, "Recording", toggled);
+        }
+        InputAction::Redraw => {}
+    }
+    capture_recording_after_change(terminal, app)?;
+    debug_assert!(
+        app.recording_in_limit(),
+        "the recording is in its frame limit"
+    );
+    Ok(true)
+}
+
 /// Sleeps until `deadline`, or forever without one.
 async fn sleep_until(deadline: Option<Instant>) {
     match deadline {
@@ -120,7 +164,18 @@ where
     <B as ratatui::backend::Backend>::Error: Send + Sync + 'static,
 {
     let size = terminal.size()?;
-    Ok(Rect::new(0, 0, size.width, size.height))
+    let viewport = Rect::new(0, 0, size.width, size.height);
+    debug_assert_eq!(
+        (viewport.width, viewport.height),
+        (size.width, size.height),
+        "the viewport has the size of the terminal"
+    );
+    debug_assert_eq!(
+        (viewport.x, viewport.y),
+        (0, 0),
+        "the viewport starts at the top left corner"
+    );
+    Ok(viewport)
 }
 
 fn capture_recording_after_change<B: ratatui::backend::Backend>(
@@ -134,14 +189,22 @@ where
         return Ok(());
     }
 
+    debug_assert!(
+        app.recording_in_limit(),
+        "the recording is in its frame limit"
+    );
     let viewport = terminal_viewport(terminal)?;
     let captured = export::capture_recording_frame(app, viewport);
     report_export_error(app, "Recording frame", captured);
+    debug_assert!(
+        app.recording_in_limit(),
+        "the recording is in its frame limit"
+    );
     Ok(())
 }
 
-/// Shows a failed export or recording step in the status line instead of
-/// ending the session, so a full disk or a read-only directory is recoverable.
+/// Shows a failed export or recording step in the status line. The session
+/// continues, so the user can recover from a full disk or a read-only directory.
 fn report_export_error<T>(app: &mut AppState, action: &str, result: Result<T>) {
     if let Err(error) = result {
         app.export_status = Some(format!("{action} failed: {error:#}"));
@@ -151,9 +214,14 @@ fn report_export_error<T>(app: &mut AppState, action: &str, result: Result<T>) {
 /// Saves an active recording's manifest. It is a no-op without a recording, so
 /// it is safe to call on every exit path.
 pub(crate) fn finalize_recording_before_quit(app: &mut AppState) -> Result<()> {
+    debug_assert!(
+        app.recording_in_limit(),
+        "the recording is in its frame limit"
+    );
     if app.recording.is_some() {
         export::stop_recording(app, RecordingCompletionReason::Quit)?;
     }
+    debug_assert!(app.recording.is_none(), "no recording stays active");
     Ok(())
 }
 
@@ -218,7 +286,7 @@ mod tests {
 
     #[test]
     fn export_failures_are_reported_instead_of_ending_the_session() {
-        // A file where the export directory should be makes every write fail.
+        // A file in the place of the export directory makes every write fail.
         let blocker = test_export_dir("blocked");
         fs::write(&blocker, "not a directory").unwrap();
         let mut app = test_app(ExportOptions {

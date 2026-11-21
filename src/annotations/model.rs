@@ -18,7 +18,7 @@ pub(crate) struct AnnotationEvent {
 
 impl AnnotationEvent {
     pub(crate) fn timestamp_secs(&self) -> f64 {
-        self.time.timestamp() as f64
+        crate::num::i64_to_f64(self.time.timestamp())
             + f64::from(self.time.timestamp_subsec_nanos()) / 1_000_000_000.0
     }
 }
@@ -28,15 +28,27 @@ pub(crate) struct AnnotationSnapshot {
     events: Vec<AnnotationEvent>,
 }
 
-/// Most events a snapshot keeps; beyond it the oldest are dropped.
+/// The most events that a snapshot keeps. Past this limit, it drops the oldest.
 pub(crate) const MAX_EVENTS: usize = 100_000;
 
 impl AnnotationSnapshot {
     pub(crate) fn new(mut events: Vec<AnnotationEvent>) -> Self {
+        let given = events.len();
         events.sort_by_key(|event| event.time);
         if events.len() > MAX_EVENTS {
             events.drain(..events.len() - MAX_EVENTS);
         }
+        debug_assert!(
+            events.len() == given.min(MAX_EVENTS),
+            "the snapshot drops only the oldest events past MAX_EVENTS"
+        );
+        debug_assert!(
+            events
+                .iter()
+                .zip(events.iter().skip(1))
+                .all(|(earlier, later)| earlier.time <= later.time),
+            "the events are in time order"
+        );
         Self { events }
     }
 
@@ -57,10 +69,19 @@ pub(crate) struct AnnotationPanelContext<'a> {
 
 impl AnnotationTarget {
     pub(crate) fn applies_to(&self, panel: AnnotationPanelContext<'_>) -> bool {
-        match self {
+        debug_assert!(
+            !matches!(self, Self::PanelTitles(titles) if titles.is_empty()),
+            "a target lists one panel title or more"
+        );
+        let applies = match self {
             Self::All => true,
             Self::PanelTitles(titles) => titles.contains(panel.title),
-        }
+        };
+        debug_assert!(
+            !applies || matches!(self, Self::All) || !panel.title.is_empty(),
+            "a title target applies only to a panel with a title"
+        );
+        applies
     }
 }
 

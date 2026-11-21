@@ -25,11 +25,14 @@ mod theme_picker;
 pub(crate) use annotations::{annotation_cluster_page_size, render_annotation_modal};
 pub(crate) use draw::draw_ui;
 pub(crate) use format::{DisplayFormat, format_time, get_hash_color, value_to_heatmap_color};
-#[allow(unused_imports)]
+#[cfg(test)]
+pub(crate) use layout::test_support::visible_panel_rects;
 pub(crate) use layout::{
     DashboardRect, DashboardRectKind, hit_test, scroll_selected_into_view, visible_dashboard_rects,
-    visible_panel_rects,
 };
-pub(crate) use panels::{NoticeLevel, calculate_y_bounds, data_notice, fit_panel_title};
+pub(crate) use panels::{
+    NoticeLevel, calculate_y_bounds, cluster_badge, data_notice, fit_panel_title, svg_time_ticks,
+    svg_value_ticks,
+};
 pub(crate) use tabs::{render_tab_bar, tab_at, tab_bar_geometry, tab_title, truncate_title};
 pub(crate) use theme_picker::{render_theme_picker, theme_picker_page_size};

@@ -3,7 +3,7 @@ title: Keyboard and Mouse
 description: Keyboard shortcuts and mouse interactions.
 ---
 
-grafana-tui is designed for keyboard-first dashboard inspection.
+In grafana-tui, the keyboard controls all of the functions. Use it to examine a dashboard.
 
 ## Keyboard Controls
 
@@ -35,9 +35,9 @@ grafana-tui is designed for keyboard-first dashboard inspection.
 | `Left` / `Right` | Move cursor in inspect mode |
 | `?` | Toggle debug info |
 
-> **Known issue**: `[` and `]` are also bound to panning, but only when the
-> terminal reports Shift with them, which most terminals do not. Live mode can
-> only be restored from fullscreen.
+> **Known issue**: `[` and `]` also pan the time range, but only when the
+> terminal reports Shift with them. Most terminals do not. Only the fullscreen
+> mode can restore the live mode.
 
 ## Mouse Support
 
@@ -47,27 +47,42 @@ grafana-tui is designed for keyboard-first dashboard inspection.
 | Drag | Move the cursor in fullscreen inspect mode |
 | Scroll | Scroll the dashboard vertically |
 
-In normal mode, clicking selects rows or panels. Press `v` or `f` on a selected
-panel to use cursor-focused interactions.
+In normal mode, a click selects a row or a panel. To use the cursor, select a
+panel and press `v` or `f`.
 
 ## Annotation Modals
 
-The global tag filter opens with `t`. Use `Up`/`Down` or `k`/`j` to move,
-`Space` to toggle the highlighted tag, `c` to clear the draft, `Enter` to apply
-it, or `Esc` to discard it. In an annotation cluster, use `Up`/`Down` or
-`k`/`j` to select an event, `PgUp`/`PgDn` to page, and `Enter` or `Esc` to
-close it. Mouse input is ignored while either annotation modal is open.
+The `t` key opens the global tag filter. These keys operate in the tag filter:
+
+| Key | Action |
+|---|---|
+| `Up` / `Down` or `k` / `j` | Move the highlight |
+| `Space` | Toggle the highlighted tag |
+| `c` | Clear the draft |
+| `Enter` | Apply the draft |
+| `Esc` | Discard the draft |
+
+These keys operate in an annotation cluster:
+
+| Key | Action |
+|---|---|
+| `Up` / `Down` or `k` / `j` | Select an event |
+| `PgUp` / `PgDn` | Show the previous / next page |
+| `Enter` or `Esc` | Close the cluster |
+
+While an annotation modal is open, the TUI ignores mouse input.
 
 ## Theme Picker
 
-`T` opens the theme picker in any mode except search. Themes are grouped by
-family, and user-defined themes appear under Custom. Each row shows the theme's
+`T` opens the theme picker in any mode except search. The picker groups the
+themes by family. User-defined themes show under Custom. Each row shows the theme's
 background and series colors.
 
-Moving the selection with `Up`/`Down`, `k`/`j`, `PgUp`/`PgDn`, `Home`, or
-`End` previews that theme immediately. `Enter` keeps it; `Esc`, `T`, or `q`
-restores the theme the picker opened with, which is marked `•`. Mouse input is
-ignored while the picker is open.
+When you move the selection with `Up`/`Down`, `k`/`j`, `PgUp`/`PgDn`, `Home`,
+or `End`, the TUI shows that theme immediately. `Enter` keeps it. `Esc`, `T`,
+or `q` restores the theme that was active when the picker opened. The picker
+marks that theme with `•`. While the picker is open, the TUI ignores mouse
+input.
 
 The choice lasts for the current session. To keep it, set `theme` in the
 [configuration file](/grafana-tui/configuration/#themes).

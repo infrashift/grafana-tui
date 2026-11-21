@@ -144,7 +144,7 @@ pub(crate) struct Args {
     #[arg(long, value_enum, value_name = "FORMAT")]
     pub(crate) export_format: Option<crate::export::ExportFormat>,
 
-    /// Maximum number of changed frames to keep in one recording; must be greater than zero.
+    /// Maximum number of changed frames to keep in one recording, from 1 to 100000.
     #[arg(long, value_name = "COUNT")]
     pub(crate) record_max_frames: Option<usize>,
 
@@ -175,19 +175,26 @@ pub(crate) enum ValidateFormat {
 }
 
 /// Helper to parse key=value pairs for CLI arguments.
-pub(crate) fn parse_key_val<T, U>(
-    s: &str,
-) -> Result<(T, U), Box<dyn std::error::Error + Send + Sync + 'static>>
+///
+/// The error is the message that clap shows, so the function returns it as text.
+pub(crate) fn parse_key_val<T, U>(s: &str) -> Result<(T, U), String>
 where
     T: std::str::FromStr,
-    T::Err: std::error::Error + Send + Sync + 'static,
+    T::Err: std::fmt::Display,
     U: std::str::FromStr,
-    U::Err: std::error::Error + Send + Sync + 'static,
+    U::Err: std::fmt::Display,
 {
-    let pos = s
-        .find('=')
+    let (key, value) = s
+        .split_once('=')
         .ok_or_else(|| format!("invalid KEY=value: no `=` found in `{}`", s))?;
-    Ok((s[..pos].parse()?, s[pos + 1..].parse()?))
+    debug_assert!(!key.contains('='), "the key ends at the first equals sign");
+    debug_assert!(
+        key.len().saturating_add(value.len()).saturating_add(1) == s.len(),
+        "the key, the equals sign and the value make the full argument"
+    );
+    let key = key.parse().map_err(|error: T::Err| error.to_string())?;
+    let value = value.parse().map_err(|error: U::Err| error.to_string())?;
+    Ok((key, value))
 }
 
 #[cfg(test)]

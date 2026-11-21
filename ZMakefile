@@ -1,0 +1,175 @@
+# grafana-tui build tasks in zmake modern mode. The Makefile has the same
+# targets. zmake reads this file before the Makefile. GNU Make reads the
+# Makefile. Each `@name:` line declares a task, so this file has no .PHONY
+# list. Keep the two files in step: `zmake -n <task>` and `make -n <task>`
+# print the same recipe lines.
+
+BINARY    := grafana-tui
+VERSION   := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+TARGET    ?= $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
+DIST_DIR  := dist
+PREFIX    ?= $(HOME)/.local
+COVER_MIN ?= 95
+CARGO     ?= cargo
+SEMSCOPE  ?= semscope
+LEXISCOPE ?= lexiscope
+PYTHON    ?= python3
+OKFW      ?= okfw
+# The documents that lexiscope checks against ASD-STE100. CHANGELOG.md is
+# generated history, so it is not in the list.
+STE_PATHS := README.md DEVELOPMENT.md CONTRIBUTING.md RELEASE_PROCESS.md ROADMAP.md \
+             GRAFANA_COMPATIBILITY.md examples docs/src/content/docs .okfw src tests
+# lexiscope cannot skip the Apache license header, and the header is legal
+# text. The files that hold the header stay out of the scan until lexiscope
+# can skip it (ISSUE-012).
+STE_LICENSED := $(shell grep -rl 'Licensed under the Apache License' src tests 2>/dev/null)
+STE_SCAN  := $(LEXISCOPE) scan --ruleset ste-100 --ruleset vocabulary.cue --fail-on note \
+             --exclude node_modules --exclude .okfw/daily --exclude .okfw/ephemeral \
+             --exclude index.md --exclude log.md \
+             $(foreach file,$(STE_LICENSED),--exclude $(file))
+
+.DEFAULT_GOAL := build
+
+## all: run every gate, then build the release binary
+@all: check build
+
+## build: build the release binary into target/release
+@build:
+    $(CARGO) build --release --locked
+
+## install: install grafana-tui into PREFIX/bin (default ~/.local/bin)
+@install:
+    $(CARGO) install --path . --locked --root $(PREFIX)
+
+## run: build and run the TUI; give flags with ARGS="--prometheus-url ..."
+@run:
+    $(CARGO) run --locked -- $(ARGS)
+
+## test: run the unit tests and the integration tests
+@test:
+    $(CARGO) test --locked
+
+## test-install: run the install.sh tests
+@test-install:
+    bash tests/install.sh
+
+## cover: run the tests with coverage and print the summary for each file
+@cover:
+    $(CARGO) llvm-cov --locked
+
+## cover-html: open an HTML coverage report
+@cover-html:
+    $(CARGO) llvm-cov --locked --open
+
+## cover-check: fail when the line coverage is less than COVER_MIN (default 95%)
+@cover-check:
+    $(CARGO) llvm-cov --locked --summary-only --fail-under-lines $(COVER_MIN)
+
+## lint: run clippy on each target, with each warning as an error
+@lint:
+    $(CARGO) clippy --locked --all-targets -- -D warnings
+
+## fmt: run rustfmt on the tree
+@fmt:
+    $(CARGO) fmt
+
+## vuln: run cargo-audit against the RustSec advisory database (needs the network)
+@vuln:
+    $(CARGO) audit
+
+## tidy: fail when Cargo.lock does not agree with Cargo.toml
+@tidy:
+    $(CARGO) metadata --locked --format-version 1 >/dev/null
+
+## p10: check src/ against the NASA Power of 10 rules (semscope, then the R5 assertion density)
+@p10:
+    $(SEMSCOPE) scan --ruleset nasa-p10 --ruleset .semscope.cue --fail-level error src
+    $(PYTHON) -I scripts/p10-assert-density.py
+
+## docs-style: check the docs and the code comments against ASD-STE100 (lexiscope)
+@docs-style:
+    $(STE_SCAN) $(STE_PATHS)
+
+## wiki: validate the OKF wiki in .okfw/
+@wiki:
+    $(OKFW) validate --all
+
+## check: run every gate: fmt, lint, tests, coverage, p10, wiki and docs-style
+@check: fmt lint test test-install cover-check p10 wiki docs-style
+
+# install.sh extracts the binary by name from the root of the archive. The
+# binary is at the top level of the tarball, next to the license files.
+## package: build the release tarball for TARGET (default: the host) into ./dist
+@package:
+    $(CARGO) build --release --locked --target $(TARGET)
+    @mkdir -p $(DIST_DIR)
+    @stage=$$(mktemp -d) && \
+        cp target/$(TARGET)/release/$(BINARY) README.md LICENSE NOTICE "$$stage"/ && \
+        tar -czf $(DIST_DIR)/$(BINARY)-$(TARGET).tar.gz -C "$$stage" $(BINARY) README.md LICENSE NOTICE && \
+        rm -rf "$$stage"
+    @echo "-> $(DIST_DIR)/$(BINARY)-$(TARGET).tar.gz"
+
+## checksums: write the SHA-256 manifest that install.sh verifies
+@checksums:
+    @cd $(DIST_DIR) && files=$$(ls $(BINARY)-*.tar.gz $(BINARY)-*.zip 2>/dev/null || true) && \
+        if [ -z "$$files" ]; then echo "no archives in $(DIST_DIR)"; exit 1; fi && \
+        if command -v sha256sum >/dev/null 2>&1; then sha256sum $$files; else shasum -a 256 $$files; fi \
+            > $(BINARY)-checksums.txt
+    @cat $(DIST_DIR)/$(BINARY)-checksums.txt
+
+## version: print the version from Cargo.toml
+@version:
+    @echo $(VERSION)
+
+# The new section covers SINCE..HEAD. SINCE is the latest tag by default.
+# The first release of the fork has no tag. For that release, give the commit
+# of the last version in CHANGELOG.md: zmake changelog SINCE=ee4c529
+SINCE ?= $(shell git describe --tags --abbrev=0 2>/dev/null)
+## changelog: add the v$(VERSION) section to the top of CHANGELOG.md (needs git-cliff)
+@changelog:
+    @[ -n "$(SINCE)" ] || { echo "no tag to start from; pass SINCE=<commit>"; exit 1; }
+    git cliff --tag v$(VERSION) --prepend CHANGELOG.md $(SINCE)..HEAD
+
+## clean: remove the build output
+@clean:
+    rm -rf $(DIST_DIR)
+    $(CARGO) clean
+
+## tools: install the development tools (clippy, rustfmt, llvm-tools, cargo-audit, cargo-llvm-cov)
+@tools:
+    rustup component add clippy rustfmt llvm-tools-preview
+    $(CARGO) install --locked cargo-audit cargo-llvm-cov
+
+## help: show this help
+@help:
+    @grep -hE '^## [a-z0-9-]+: ' ZMakefile | \
+        sed 's/^## //' | awk 'BEGIN {FS = ": "}; {printf "  \033[36m%-13s\033[0m %s\n", $$1, $$2}'
+
+# The user guide in docs/ is an Astro Starlight site that bun builds. CI
+# builds it for each pull request. .github/workflows/docs-release.yml
+# publishes it to https://infrashift.github.io/grafana-tui/ from main.
+
+# A file target: the name has a slash and the recipe uses $@.
+docs/node_modules: docs/package.json docs/bun.lock
+    cd docs && bun install --frozen-lockfile
+    @touch $@
+
+## docs-install: install the exact versions that docs/bun.lock pins
+@docs-install:
+    cd docs && bun install --frozen-lockfile
+
+## docs-dev: serve the docs with live reload at http://localhost:4321/grafana-tui/
+@docs-dev: docs/node_modules
+    cd docs && bun --bun run dev
+
+## docs-build: build the docs site into docs/dist
+@docs-build: docs/node_modules
+    cd docs && bun --bun run build
+
+## docs-preview: serve the built docs/dist to check a production build
+@docs-preview: docs-build
+    cd docs && bun --bun run preview
+
+## docs-clean: remove the docs build output and the docs dependencies
+@docs-clean:
+    rm -rf docs/dist docs/.astro docs/node_modules

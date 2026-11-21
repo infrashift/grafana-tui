@@ -16,6 +16,13 @@ struct Builtin {
 }
 
 const fn base(name: &'static str, family: &'static str, base: Base) -> Builtin {
+    // `BUILTINS` is a constant, so these checks run when the program compiles.
+    debug_assert!(!name.is_empty(), "a built-in theme has a name");
+    debug_assert!(!family.is_empty(), "a built-in theme has a family");
+    debug_assert!(
+        base.bg != base.fg,
+        "the background and the text have different colors"
+    );
     Builtin {
         name,
         family,
@@ -65,30 +72,74 @@ pub(crate) fn builtin_names() -> impl Iterator<Item = &'static str> {
 
 /// Display group of a built-in theme, such as "Catppuccin".
 pub(crate) fn builtin_family(name: &str) -> Option<&'static str> {
-    BUILTINS
+    let family = BUILTINS
         .iter()
         .find(|builtin| builtin.name.eq_ignore_ascii_case(name))
-        .map(|builtin| builtin.family)
+        .map(|builtin| builtin.family);
+    debug_assert!(
+        family.is_none_or(|family| family.starts_with(|first: char| first.is_ascii_uppercase())),
+        "a family name starts with a capital letter"
+    );
+    family
 }
 
-/// The built-in theme an alias points at, ignoring case.
+/// The built-in theme that an alias points at. The lookup ignores case.
 pub(super) fn alias_target(name: &str) -> Option<&'static str> {
-    ALIASES
+    let target = ALIASES
         .iter()
         .find(|(alias, _)| alias.eq_ignore_ascii_case(name))
-        .map(|(_, target)| *target)
+        .map(|(_, target)| *target);
+    debug_assert!(
+        target.is_none_or(|target| builtin_names().any(|known| known == target)),
+        "an alias points at a built-in theme"
+    );
+    debug_assert!(
+        target.is_none_or(|target| !target.eq_ignore_ascii_case(name)),
+        "an alias is not the name of its target"
+    );
+    target
 }
 
-/// Looks up a built-in theme or alias, ignoring case.
+/// Looks up a built-in theme or alias. The lookup ignores case.
 pub(crate) fn builtin(name: &str) -> Option<Theme> {
     let name = alias_target(name).unwrap_or(name);
-    let builtin = BUILTINS
+    let theme = BUILTINS
         .iter()
-        .find(|builtin| builtin.name.eq_ignore_ascii_case(name))?;
-    Some(match &builtin.spec {
+        .find(|builtin| builtin.name.eq_ignore_ascii_case(name))
+        .map(build);
+    debug_assert!(
+        theme
+            .as_ref()
+            .is_none_or(|theme| theme.name.eq_ignore_ascii_case(name)),
+        "the theme has the name that the search found"
+    );
+    debug_assert!(
+        theme.as_ref().is_none_or(|theme| !theme.palette.is_empty()),
+        "a built-in theme has a palette color"
+    );
+    theme
+}
+
+/// Every built-in theme, in display order.
+pub(super) fn builtin_themes() -> impl Iterator<Item = Theme> {
+    BUILTINS.iter().map(build)
+}
+
+/// Builds the theme of one built-in entry.
+fn build(builtin: &Builtin) -> Theme {
+    let theme = match &builtin.spec {
         Spec::Terminal => terminal(),
         Spec::Base(base) => Theme::from_base(builtin.name, base),
-    })
+    };
+    debug_assert!(
+        theme.name == builtin.name,
+        "the theme has the name of its entry"
+    );
+    debug_assert!(
+        !theme.palette.is_empty(),
+        "a built-in theme has a palette color"
+    );
+    theme
 }
 
 // folke/tokyonight.nvim lua/tokyonight/colors/{storm,night,moon}.lua. Day comes

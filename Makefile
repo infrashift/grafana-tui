@@ -1,4 +1,5 @@
-# grafana-tui — build tooling
+# grafana-tui build tasks for GNU Make. The ZMakefile has the same tasks for
+# zmake. Keep the two files in step (ADR-0005).
 BINARY    := grafana-tui
 VERSION   := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 TARGET    ?= $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
@@ -6,11 +7,27 @@ DIST_DIR  := dist
 PREFIX    ?= $(HOME)/.local
 COVER_MIN ?= 95
 CARGO     ?= cargo
+SEMSCOPE  ?= semscope
+LEXISCOPE ?= lexiscope
+PYTHON    ?= python3
+OKFW      ?= okfw
+# The documents that lexiscope checks against ASD-STE100. CHANGELOG.md is
+# generated history, so it is not in the list.
+STE_PATHS := README.md DEVELOPMENT.md CONTRIBUTING.md RELEASE_PROCESS.md ROADMAP.md \
+             GRAFANA_COMPATIBILITY.md examples docs/src/content/docs .okfw src tests
+# lexiscope cannot skip the Apache license header, and the header is legal
+# text. The files that hold the header stay out of the scan until lexiscope
+# can skip it (ISSUE-012).
+STE_LICENSED := $(shell grep -rl 'Licensed under the Apache License' src tests 2>/dev/null)
+STE_SCAN  := $(LEXISCOPE) scan --ruleset ste-100 --ruleset vocabulary.cue --fail-on note \
+             --exclude node_modules --exclude .okfw/daily --exclude .okfw/ephemeral \
+             --exclude index.md --exclude log.md \
+             $(foreach file,$(STE_LICENSED),--exclude $(file))
 
 .DEFAULT_GOAL := build
 
 .PHONY: all build install run test test-install cover cover-html cover-check lint fmt vuln tidy \
-        check package checksums version changelog clean tools help \
+        check p10 docs-style wiki package checksums version changelog clean tools help \
         docs-install docs-dev docs-build docs-preview docs-clean
 
 all: check build
@@ -21,41 +38,51 @@ build: ## Build the release binary into target/release
 install: ## Install grafana-tui into PREFIX/bin (default ~/.local/bin)
 	$(CARGO) install --path . --locked --root $(PREFIX)
 
-run: ## Build and run the TUI; pass flags with ARGS="--prometheus-url ..."
+run: ## Build and run the TUI; give flags with ARGS="--prometheus-url ..."
 	$(CARGO) run --locked -- $(ARGS)
 
-test: ## Run unit and integration tests
+test: ## Run the unit tests and the integration tests
 	$(CARGO) test --locked
 
-test-install: ## Run the install.sh behavior tests
+test-install: ## Run the install.sh tests
 	bash tests/install.sh
 
-cover: ## Run tests with coverage and print the per-file summary
+cover: ## Run the tests with coverage and print the summary for each file
 	$(CARGO) llvm-cov --locked
 
 cover-html: ## Open an HTML coverage report
 	$(CARGO) llvm-cov --locked --open
 
-cover-check: ## Fail if line coverage < COVER_MIN (default 95%)
+cover-check: ## Fail when the line coverage is less than COVER_MIN (default 95%)
 	$(CARGO) llvm-cov --locked --summary-only --fail-under-lines $(COVER_MIN)
 
-lint: ## Run clippy over every target, denying warnings
+lint: ## Run clippy on each target, with each warning as an error
 	$(CARGO) clippy --locked --all-targets -- -D warnings
 
-fmt: ## rustfmt over the tree
+fmt: ## Run rustfmt on the tree
 	$(CARGO) fmt
 
-vuln: ## cargo-audit against the RustSec advisory database (needs the network)
+vuln: ## Run cargo-audit against the RustSec advisory database (needs the network)
 	$(CARGO) audit
 
-tidy: ## Fail if Cargo.lock is out of date with Cargo.toml (CI-friendly)
+tidy: ## Fail when Cargo.lock does not agree with Cargo.toml
 	$(CARGO) metadata --locked --format-version 1 >/dev/null
 
-check: fmt lint test test-install cover-check ## Everything CI runs (lint + tests + coverage gate)
+p10: ## Check src/ against the NASA Power of 10 rules (semscope, then the R5 assertion density)
+	$(SEMSCOPE) scan --ruleset nasa-p10 --ruleset .semscope.cue --fail-level error src
+	$(PYTHON) -I scripts/p10-assert-density.py
 
-# install.sh extracts the binary by name from the archive root, so it sits at
-# the top level of the tarball, next to the license files.
-package: ## Build the release tarball for TARGET (default: host) into ./dist
+docs-style: ## Check the docs and the code comments against ASD-STE100 (lexiscope)
+	$(STE_SCAN) $(STE_PATHS)
+
+wiki: ## Validate the OKF wiki in .okfw/
+	$(OKFW) validate --all
+
+check: fmt lint test test-install cover-check p10 wiki docs-style ## Run every gate: fmt, lint, tests, coverage, p10, wiki and docs-style
+
+# install.sh extracts the binary by name from the root of the archive. The
+# binary is at the top level of the tarball, next to the license files.
+package: ## Build the release tarball for TARGET (default: the host) into ./dist
 	$(CARGO) build --release --locked --target $(TARGET)
 	@mkdir -p $(DIST_DIR)
 	@stage=$$(mktemp -d) && \
@@ -64,7 +91,7 @@ package: ## Build the release tarball for TARGET (default: host) into ./dist
 		rm -rf "$$stage"
 	@echo "-> $(DIST_DIR)/$(BINARY)-$(TARGET).tar.gz"
 
-checksums: ## Write the SHA-256 manifest install.sh verifies against
+checksums: ## Write the SHA-256 manifest that install.sh verifies
 	@cd $(DIST_DIR) && files=$$(ls $(BINARY)-*.tar.gz $(BINARY)-*.zip 2>/dev/null || true) && \
 		if [ -z "$$files" ]; then echo "no archives in $(DIST_DIR)"; exit 1; fi && \
 		if command -v sha256sum >/dev/null 2>&1; then sha256sum $$files; else shasum -a 256 $$files; fi \
@@ -74,37 +101,37 @@ checksums: ## Write the SHA-256 manifest install.sh verifies against
 version: ## Print the version from Cargo.toml
 	@echo $(VERSION)
 
-# The new section covers SINCE..HEAD, where SINCE defaults to the latest tag.
-# The fork's first release has no tag to start from; pass the commit that
-# released the last version in CHANGELOG.md: make changelog SINCE=ee4c529
+# The new section covers SINCE..HEAD. SINCE is the latest tag by default.
+# The first release of the fork has no tag. For that release, give the commit
+# of the last version in CHANGELOG.md: make changelog SINCE=ee4c529
 SINCE ?= $(shell git describe --tags --abbrev=0 2>/dev/null)
-changelog: ## Prepend the v$(VERSION) section to CHANGELOG.md (needs git-cliff)
+changelog: ## Add the v$(VERSION) section to the top of CHANGELOG.md (needs git-cliff)
 	@[ -n "$(SINCE)" ] || { echo "no tag to start from; pass SINCE=<commit>"; exit 1; }
 	git cliff --tag v$(VERSION) --prepend CHANGELOG.md $(SINCE)..HEAD
 
-clean: ## Remove build artifacts
+clean: ## Remove the build output
 	rm -rf $(DIST_DIR)
 	$(CARGO) clean
 
-tools: ## Install dev tools (clippy, rustfmt, llvm-tools, cargo-audit, cargo-llvm-cov)
+tools: ## Install the development tools (clippy, rustfmt, llvm-tools, cargo-audit, cargo-llvm-cov)
 	rustup component add clippy rustfmt llvm-tools-preview
 	$(CARGO) install --locked cargo-audit cargo-llvm-cov
 
 help: ## Show this help
-	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-13s\033[0m %s\n", $$1, $$2}'
 
 ## Docs
 
-# The user guide in docs/ is an Astro Starlight site, built with bun. CI
-# builds it on every pull request, and .github/workflows/docs-release.yml
+# The user guide in docs/ is an Astro Starlight site that bun builds. CI
+# builds it for each pull request. .github/workflows/docs-release.yml
 # publishes it to https://infrashift.github.io/grafana-tui/ from main.
 
 docs/node_modules: docs/package.json docs/bun.lock
 	cd docs && bun install --frozen-lockfile
 	@touch $@
 
-docs-install: ## Install exactly what docs/bun.lock pins
+docs-install: ## Install the exact versions that docs/bun.lock pins
 	cd docs && bun install --frozen-lockfile
 
 docs-dev: docs/node_modules ## Serve the docs with live reload at http://localhost:4321/grafana-tui/
@@ -116,5 +143,5 @@ docs-build: docs/node_modules ## Build the docs site into docs/dist
 docs-preview: docs-build ## Serve the built docs/dist to check a production build
 	cd docs && bun --bun run preview
 
-docs-clean: ## Remove the docs build output and dependencies
+docs-clean: ## Remove the docs build output and the docs dependencies
 	rm -rf docs/dist docs/.astro docs/node_modules

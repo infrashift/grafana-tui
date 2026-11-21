@@ -15,6 +15,7 @@
  */
 
 use super::state::{GraphOptions, PanelOptions, PanelState, PanelType, YAxisMode};
+use super::variables::VariableLookup;
 use anyhow::Result;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -27,7 +28,7 @@ pub(crate) const DEFAULT_SCRAPE_INTERVAL: Duration = Duration::from_secs(15);
 /// the pixel width Grafana uses for a typical panel.
 const DEFAULT_MAX_DATA_POINTS: u32 = 1000;
 
-/// Prometheus rejects range queries that would return more points per series.
+/// Prometheus rejects a range query that returns more points per series.
 const PROMETHEUS_MAX_POINTS: u64 = 11_000;
 
 /// The step and `$__rate_interval` one query runs with, derived from the time
@@ -43,8 +44,8 @@ pub(crate) struct QueryIntervals {
 impl QueryIntervals {
     /// Divides `range` by `max_data_points` (default 1000), rounds the result
     /// to a Grafana-style interval, and keeps it no finer than `min_interval`.
-    /// The step is coarsened further when Prometheus's 11,000-point limit
-    /// would be exceeded.
+    /// If the step gives more points than Prometheus's 11,000-point limit,
+    /// this function makes the step coarser.
     pub(crate) fn new(
         range: Duration,
         min_interval: Duration,
@@ -63,6 +64,18 @@ impl QueryIntervals {
         let safe = Duration::from_secs(range.as_secs().div_ceil(PROMETHEUS_MAX_POINTS));
         let step = interval.max(safe).max(Duration::from_secs(1));
         let rate_interval = (step + scrape_interval).max(scrape_interval * 4);
+        debug_assert!(
+            step >= min_interval && step >= Duration::from_secs(1),
+            "the step is not finer than the min interval or one second"
+        );
+        debug_assert!(
+            step.as_secs().saturating_mul(PROMETHEUS_MAX_POINTS) >= range.as_secs(),
+            "the step keeps the query in the Prometheus point limit"
+        );
+        debug_assert!(
+            rate_interval >= step,
+            "the rate interval is not shorter than the step"
+        );
         Self {
             step,
             rate_interval,
@@ -109,24 +122,43 @@ fn round_interval(interval: Duration) -> Duration {
         (1_814_400_000, 7 * DAY),
         (3_628_800_000, 30 * DAY),
     ];
-    let ms = interval.as_millis() as u64;
+    debug_assert!(
+        TABLE
+            .windows(2)
+            .all(|pair| matches!(pair, [low, high] if low.0 < high.0)),
+        "the bounds of the table are in ascending order"
+    );
+    let ms = crate::num::u128_to_u64(interval.as_millis());
     let rounded = TABLE
         .iter()
         .find(|(bound, _)| ms <= *bound)
         .map_or(365 * DAY, |(_, value)| *value);
+    debug_assert!(
+        (1..=365 * DAY).contains(&rounded),
+        "the rounded interval is from 1 ms to one year"
+    );
     Duration::from_millis(rounded)
 }
 
 /// Parses a Grafana min interval such as `30s`, `1m`, or `>10s`.
-pub(crate) fn parse_min_interval(text: &str) -> Option<Duration> {
-    let text = text.trim();
+pub(crate) fn parse_min_interval(raw: &str) -> Option<Duration> {
+    let text = raw.trim();
     let text = text.strip_prefix('>').unwrap_or(text).trim();
+    debug_assert!(
+        text.len() <= raw.len(),
+        "the trimmed text is not longer than the input"
+    );
     if text.is_empty() {
         return None;
     }
-    humantime::parse_duration(text)
+    let interval = humantime::parse_duration(text)
         .ok()
-        .filter(|interval| !interval.is_zero())
+        .filter(|interval| !interval.is_zero());
+    debug_assert!(
+        interval.is_none_or(|interval| !interval.is_zero()),
+        "a min interval is never zero"
+    );
+    interval
 }
 
 pub(crate) fn expand_expr(
@@ -135,9 +167,41 @@ pub(crate) fn expand_expr(
     intervals: QueryIntervals,
     vars: &HashMap<String, String>,
 ) -> String {
-    let interval = intervals.step;
-    let rate_interval_secs = intervals.rate_interval.as_secs();
-    super::variables::substitute_variables(expr, |name| {
+    debug_assert!(!intervals.step.is_zero(), "the query step is not zero");
+    debug_assert!(
+        intervals.rate_interval >= intervals.step,
+        "the rate interval is not shorter than the step"
+    );
+    let lookup = QueryVariables {
+        interval: intervals.step,
+        rate_interval_secs: intervals.rate_interval.as_secs(),
+        range,
+        vars,
+    };
+    super::variables::substitute_variables(expr, lookup)
+}
+
+/// The variables of a panel query: Grafana's built-in interval variables and the dashboard ones.
+struct QueryVariables<'a> {
+    /// The query step, for `$__interval`.
+    interval: Duration,
+    /// The rate interval in seconds, for `$__rate_interval`.
+    rate_interval_secs: u64,
+    /// The dashboard time range, for `$__range`.
+    range: Duration,
+    /// The formatted values of the dashboard variables.
+    vars: &'a HashMap<String, String>,
+}
+
+impl VariableLookup for QueryVariables<'_> {
+    fn lookup(&mut self, name: &str) -> Option<Cow<'_, str>> {
+        let (interval, range, rate_interval_secs) =
+            (self.interval, self.range, self.rate_interval_secs);
+        debug_assert!(!interval.is_zero(), "the query step is not zero");
+        debug_assert!(
+            rate_interval_secs >= interval.as_secs(),
+            "the rate interval is not shorter than the step"
+        );
         Some(match name {
             "__interval" => Cow::Owned(format_prom_duration(interval)),
             "__interval_ms" => Cow::Owned(interval.as_millis().to_string()),
@@ -146,22 +210,20 @@ pub(crate) fn expand_expr(
             "__range_ms" => Cow::Owned(range.as_millis().to_string()),
             "__rate_interval" => Cow::Owned(format!("{rate_interval_secs}s")),
             "__rate_interval_ms" => Cow::Owned((rate_interval_secs * 1000).to_string()),
-            _ => Cow::Borrowed(vars.get(name)?.as_str()),
+            _ => Cow::Borrowed(self.vars.get(name)?.as_str()),
         })
-    })
+    }
 }
 
 fn format_prom_duration(duration: Duration) -> String {
-    let secs = duration.as_secs();
-    if secs == 0 {
-        return format!("{}ms", duration.as_millis().max(1));
-    }
-
     const DAY: u64 = 24 * 60 * 60;
     const HOUR: u64 = 60 * 60;
     const MINUTE: u64 = 60;
 
-    if secs.is_multiple_of(DAY) {
+    let secs = duration.as_secs();
+    let text = if secs == 0 {
+        format!("{}ms", duration.as_millis().max(1))
+    } else if secs.is_multiple_of(DAY) {
         format!("{}d", secs / DAY)
     } else if secs.is_multiple_of(HOUR) {
         format!("{}h", secs / HOUR)
@@ -169,7 +231,16 @@ fn format_prom_duration(duration: Duration) -> String {
         format!("{}m", secs / MINUTE)
     } else {
         format!("{}s", secs)
-    }
+    };
+    debug_assert!(
+        text.starts_with(|c: char| c.is_ascii_digit() && c != '0'),
+        "the duration text starts with a digit that is not zero"
+    );
+    debug_assert!(
+        text.ends_with(['d', 'h', 'm', 's']),
+        "the duration text ends with a unit"
+    );
+    text
 }
 
 /// Expands `{{label}}` placeholders, which may have spaces inside the braces,
@@ -178,41 +249,56 @@ fn format_prom_duration(duration: Duration) -> String {
 pub(crate) fn format_legend(fmt: &str, metric: &HashMap<String, String>) -> String {
     let mut out = String::with_capacity(fmt.len());
     let mut rest = fmt;
-    while let Some(start) = rest.find("{{") {
-        let Some(end) = rest[start + 2..].find("}}") else {
+    // Each pass reads a placeholder of four bytes or more, so the format length bounds the loop.
+    for _ in 0..fmt.len() {
+        let Some((before, opened)) = rest.split_once("{{") else {
             break;
         };
-        out.push_str(&rest[..start]);
-        let label = rest[start + 2..start + 2 + end].trim();
-        if let Some(value) = metric.get(label) {
+        let Some((label, after)) = opened.split_once("}}") else {
+            break;
+        };
+        debug_assert!(
+            after.len() + 4 <= rest.len(),
+            "each placeholder makes the rest shorter by four bytes or more"
+        );
+        out.push_str(before);
+        if let Some(value) = metric.get(label.trim()) {
             out.push_str(value);
         }
-        rest = &rest[start + 2 + end + 2..];
+        rest = after;
     }
     out.push_str(rest);
+    debug_assert!(
+        fmt.contains("{{") || out == fmt,
+        "a format without placeholders stays the same"
+    );
     out
 }
 
-/// A target's legend format, or `None` for Grafana's automatic naming, which
+/// A target's legend format, or `None` for Grafana's automatic series names, which
 /// `__auto` and an empty format ask for.
 pub(crate) fn custom_legend(fmt: Option<&String>) -> Option<&str> {
     fmt.map(|fmt| fmt.as_str())
         .filter(|fmt| !fmt.trim().is_empty() && fmt.trim() != "__auto")
 }
 
-/// Downsamples data points to a maximum number of points using max-pooling.
-/// This preserves peaks which is important for metrics.
+/// Downsamples data points to a maximum number of points. Each output point is
+/// the point with the maximum value in its chunk. This keeps peaks, which are
+/// important for metrics.
 pub(crate) fn downsample(points: Vec<(f64, f64)>, max_points: usize) -> Vec<(f64, f64)> {
     if points.len() <= max_points {
         return points;
     }
+    debug_assert!(max_points > 0, "the point limit is not zero");
 
-    let chunk_size = (points.len() as f64 / max_points as f64).ceil() as usize;
+    let chunk_size = crate::num::f64_to_usize(
+        (crate::num::usize_to_f64(points.len()) / crate::num::usize_to_f64(max_points)).ceil(),
+    );
     if chunk_size <= 1 {
         return points;
     }
 
-    points
+    let pooled: Vec<(f64, f64)> = points
         .chunks(chunk_size)
         .filter_map(|chunk| {
             chunk
@@ -220,7 +306,12 @@ pub(crate) fn downsample(points: Vec<(f64, f64)>, max_points: usize) -> Vec<(f64
                 .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                 .cloned()
         })
-        .collect()
+        .collect();
+    debug_assert!(
+        pooled.len() <= max_points,
+        "the downsampled series is in the point limit"
+    );
+    pooled
 }
 
 pub(crate) fn default_queries(mut provided: Vec<String>) -> Vec<PanelState> {
@@ -231,7 +322,9 @@ pub(crate) fn default_queries(mut provided: Vec<String>) -> Vec<PanelState> {
             r#"up"#.to_string(),
         ];
     }
-    provided
+    debug_assert!(!provided.is_empty(), "one or more queries are present");
+    let count = provided.len();
+    let panels: Vec<PanelState> = provided
         .into_iter()
         .map(|q| PanelState {
             title: q.clone(),
@@ -254,7 +347,9 @@ pub(crate) fn default_queries(mut provided: Vec<String>) -> Vec<PanelState> {
             resolution: Default::default(),
             notices: Default::default(),
         })
-        .collect()
+        .collect();
+    debug_assert_eq!(panels.len(), count, "each query has one panel");
+    panels
 }
 
 pub(crate) fn parse_duration(s: &str) -> Result<Duration> {
@@ -266,6 +361,15 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::time::Duration;
+
+    #[test]
+    fn legend_placeholders_expand_and_an_unclosed_one_stays() {
+        let metric = HashMap::from([("job".to_string(), "api".to_string())]);
+        assert_eq!(
+            format_legend("é{{ job }}-{{missing}}-{{open", &metric),
+            "éapi--{{open"
+        );
+    }
 
     const SECOND: Duration = Duration::from_secs(1);
     const MINUTE: Duration = Duration::from_secs(60);

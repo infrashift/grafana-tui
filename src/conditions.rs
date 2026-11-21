@@ -14,18 +14,18 @@
  * limitations under the License.
  */
 
-//! Grafana V2 conditional rendering: rules that show or hide rows, tabs, and
-//! auto grid items depending on variables, the time range, and panel data.
+//! Grafana V2 `conditionalRendering`: rules that show or hide rows, tabs, and
+//! auto grid items. The rules look at variables, the time range, and panel data.
 //!
-//! Evaluation follows Grafana 13's `dashboard-scene/conditional-rendering`.
+//! This module evaluates them as Grafana 13's `dashboard-scene/conditional-rendering` does.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::app::{ScopeBinding, find_binding};
 use crate::dashboard::{RowId, TabGroupId};
 
-/// A `ConditionalRenderingGroup`: conditions combined with `and` or `or`,
-/// showing or hiding its item when they hold.
+/// A `ConditionalRenderingGroup`: conditions combined with `and` or `or`.
+/// When they hold, the group shows or hides its item.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ConditionGroup {
     /// `visibility: show`; `hide` negates the combined result.
@@ -58,7 +58,7 @@ pub(crate) enum VariableOperator {
     NotMatches,
 }
 
-/// An item that conditional rendering can hide, by its displayed id.
+/// An item that a condition can hide, by its displayed id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ConditionTarget {
     Row(RowId),
@@ -68,7 +68,7 @@ pub(crate) enum ConditionTarget {
     Panel(usize),
 }
 
-/// Conditions of an imported layout, keyed by the ids it was imported with.
+/// Conditions of an imported layout, keyed by the ids from the import.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Conditions {
     pub(crate) rows: HashMap<RowId, ConditionGroup>,
@@ -76,24 +76,24 @@ pub(crate) struct Conditions {
     pub(crate) panels: HashMap<usize, ConditionGroup>,
 }
 
-/// What conditions are evaluated against.
+/// The values that the conditions check.
 pub(crate) struct ConditionContext<'a> {
     /// Raw selected values of each defined variable.
     pub(crate) values: &'a HashMap<String, Vec<String>>,
-    /// Names of every defined variable, including those without a selection.
+    /// Names of every defined variable, also those without a selection.
     pub(crate) defined: &'a HashSet<String>,
     /// Variables with `All` selected.
     pub(crate) all_selected: &'a HashSet<String>,
     /// Width of the dashboard time range.
     pub(crate) range_seconds: f64,
-    /// Whether a panel returned data, or `None` before it has loaded.
-    pub(crate) panel_has_data: &'a dyn Fn(usize) -> Option<bool>,
+    /// Whether each panel returned data, by panel index, or `None` before it has loaded.
+    pub(crate) panel_has_data: &'a [Option<bool>],
 }
 
 impl ConditionGroup {
-    /// Whether the group's item is shown. Conditions that cannot be decided,
-    /// such as a data condition before its panel loads, are left out; with none
-    /// left the item is shown.
+    /// Whether the group's item shows. This function leaves out the conditions
+    /// that have no result yet, such as a data condition before its panel loads.
+    /// When no condition remains, the item shows.
     pub(crate) fn shows(
         &self,
         context: &ConditionContext,
@@ -105,6 +105,14 @@ impl ConditionGroup {
             .iter()
             .filter_map(|condition| condition.evaluate(context, scope, panel))
             .collect();
+        debug_assert!(
+            results.len() <= self.conditions.len(),
+            "each condition gives one result or less"
+        );
+        debug_assert!(
+            panel.is_some() || !self.uses_data() || results.len() < self.conditions.len(),
+            "a data condition without a panel gives no result"
+        );
         if results.is_empty() {
             return true;
         }
@@ -130,6 +138,14 @@ impl Condition {
         scope: &[ScopeBinding],
         panel: Option<usize>,
     ) -> Option<bool> {
+        debug_assert!(
+            context.range_seconds >= 0.0,
+            "the time range size is not negative"
+        );
+        debug_assert!(
+            panel.is_none_or(|index| index < context.panel_has_data.len()),
+            "the panel index is in range"
+        );
         match self {
             Condition::Variable {
                 name,
@@ -138,7 +154,7 @@ impl Condition {
             } => evaluate_variable(context, scope, name, *operator, value),
             Condition::Data { has_data } => {
                 // Grafana only evaluates data conditions on panels.
-                let loaded = (context.panel_has_data)(panel?)?;
+                let loaded = context.panel_has_data.get(panel?).copied().flatten()?;
                 Some(loaded == *has_data)
             }
             Condition::TimeRangeAtMost(seconds) => Some(context.range_seconds <= (*seconds)?),
@@ -165,6 +181,11 @@ fn evaluate_variable(
         Some(values) if !values.is_empty() => values.iter().map(String::as_str).collect(),
         _ => vec![""],
     };
+    debug_assert!(!values.is_empty(), "the variable has one value or more");
+    debug_assert!(
+        scoped.is_some() || context.defined.contains(name),
+        "an unscoped variable is defined"
+    );
     let all = match scoped {
         Some(binding) => binding.all,
         None => context.all_selected.contains(name),
@@ -191,11 +212,11 @@ fn evaluate_variable(
 
 /// Parses a `ConditionalRenderingTimeRangeSize` value such as `7d` into seconds.
 ///
-/// Mirrors Grafana's `/^(\d+(?:\.\d+)?)[Mwdhmsy]$/` validation and
+/// Mirrors Grafana's `/^(\d+(?:\.\d+)?)[Mwdhmsy]$/` check and
 /// `rangeUtil.intervalToSeconds`, where a month is 30 days and a year 365.
 pub(crate) fn parse_time_range_size(value: &str) -> Option<f64> {
     let unit = value.chars().last()?;
-    let number = &value[..value.len() - unit.len_utf8()];
+    let number = value.strip_suffix(unit)?;
     let valid = !number.is_empty()
         && !number.starts_with('.')
         && !number.ends_with('.')
@@ -214,7 +235,10 @@ pub(crate) fn parse_time_range_size(value: &str) -> Option<f64> {
         'y' => 31_536_000.0,
         _ => return None,
     };
-    Some(number.parse::<f64>().ok()? * seconds)
+    debug_assert!(seconds >= 1.0, "the unit is one second or more");
+    let size = number.parse::<f64>().ok()? * seconds;
+    debug_assert!(size >= 0.0, "a time range size is not negative");
+    Some(size)
 }
 
 #[cfg(test)]
@@ -248,7 +272,7 @@ mod tests {
         fn context<'a>(
             &'a self,
             range_seconds: f64,
-            panel_has_data: &'a dyn Fn(usize) -> Option<bool>,
+            panel_has_data: &'a [Option<bool>],
         ) -> ConditionContext<'a> {
             ConditionContext {
                 values: &self.values,
@@ -276,7 +300,7 @@ mod tests {
         }
     }
 
-    const NO_DATA: &dyn Fn(usize) -> Option<bool> = &|_| None;
+    const NO_DATA: &[Option<bool>] = &[];
 
     #[test]
     fn variable_conditions_compare_any_selected_value() {
@@ -328,7 +352,7 @@ mod tests {
     #[test]
     fn groups_combine_ignore_undecided_conditions_and_may_hide() {
         let fixture = Fixture::new(&[("env", &["prod"])]);
-        let has_data = |panel: usize| (panel == 1).then_some(true);
+        let has_data = [None, Some(true)];
         let context = fixture.context(3600.0, &has_data);
         let prod = variable("env", VariableOperator::Equals, "prod");
         let dev = variable("env", VariableOperator::Equals, "dev");
@@ -338,7 +362,7 @@ mod tests {
         assert!(!group(false, true, vec![prod.clone()]).shows(&context, &[], None));
         assert!(group(true, true, vec![]).shows(&context, &[], None));
         // Undefined variables, unloaded panels, and data conditions on non-panels
-        // are undecided, so the item is shown.
+        // give no result, so the item shows.
         let undecided = vec![
             variable("missing", VariableOperator::Equals, "x"),
             Condition::Data { has_data: false },
@@ -365,7 +389,7 @@ mod tests {
         assert!(condition("1h").shows(&hour, &[], None));
         assert!(condition("1.5h").shows(&hour, &[], None));
         assert!(!condition("30m").shows(&hour, &[], None));
-        // Unparseable sizes are undecided.
+        // A size that does not parse gives no result.
         assert!(condition("1 hour").shows(&hour, &[], None));
     }
 

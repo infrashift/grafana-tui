@@ -15,6 +15,7 @@
  */
 
 use super::overlay::is_blank_cell;
+use crate::num;
 use crate::ui::format::{DisplayFormat, format_axis_time};
 use ratatui::prelude::*;
 
@@ -46,21 +47,32 @@ pub(super) fn y_label_width(
     threshold_labels: &[(f64, Color)],
     display: &DisplayFormat,
 ) -> u16 {
-    // Reserve space using the same unit formatter that will draw the labels;
-    // otherwise bytes/percent suffixes can clip or push into the plot area.
+    debug_assert!(
+        axis_labels.len() != 1,
+        "the y axis has no labels or a label at each end"
+    );
+    debug_assert!(
+        autogrid_ticks
+            .iter()
+            .zip(autogrid_ticks.iter().skip(1))
+            .all(|(a, b)| a < b),
+        "the grid ticks are in increasing order"
+    );
+    // Reserve space with the same unit formatter that draws the labels.
+    // Otherwise bytes/percent suffixes can clip or push into the plot area.
     let axis_width = axis_labels
         .iter()
-        .map(|label| label.width() as u16)
+        .map(|label| num::usize_to_u16(label.width()))
         .max()
         .unwrap_or(0);
     let grid_width = autogrid_ticks
         .iter()
-        .map(|tick| display.format_number(*tick).len() as u16)
+        .map(|tick| num::usize_to_u16(display.format_number(*tick).len()))
         .max()
         .unwrap_or(0);
     let threshold_width = threshold_labels
         .iter()
-        .map(|(tick, _)| display.format_number(*tick).len() as u16)
+        .map(|(tick, _)| num::usize_to_u16(display.format_number(*tick).len()))
         .max()
         .unwrap_or(0);
 
@@ -76,6 +88,15 @@ pub(super) fn render_intermediate_y_labels(
     if label_area.width == 0 {
         return;
     }
+    let [lower, upper] = labels.y_bounds;
+    debug_assert!(lower <= upper, "the y bounds are in order");
+    debug_assert!(
+        labels
+            .autogrid_ticks
+            .iter()
+            .all(|tick| *tick > lower && *tick < upper),
+        "each grid tick is inside the y bounds"
+    );
 
     for tick in labels.autogrid_ticks {
         if let Some(y) = value_to_y_label_row(*tick, labels.y_bounds, plot) {
@@ -133,10 +154,23 @@ fn value_to_plot_y(value: f64, y_bounds: [f64; 2], plot: PlotBounds) -> Option<u
         return None;
     }
 
-    let height = plot.bottom.saturating_sub(plot.top) as f64;
+    let height = f64::from(plot.bottom.saturating_sub(plot.top));
     let ratio = (value - y_bounds[0]) / (y_bounds[1] - y_bounds[0]);
-    let y_offset = (ratio * height).round() as u16;
-    Some(plot.bottom.saturating_sub(y_offset))
+    debug_assert!(
+        !(ratio < 0.0 || ratio > 1.0),
+        "the ratio is not outside the unit range"
+    );
+    let y_offset = num::f64_to_u16((ratio * height).round());
+    debug_assert!(
+        f64::from(y_offset) <= height,
+        "the row offset stays in the plot height"
+    );
+    let y = plot.bottom.saturating_sub(y_offset);
+    debug_assert!(
+        plot.bottom < plot.top || y >= plot.top,
+        "the row is not above the plot"
+    );
+    Some(y)
 }
 
 fn value_to_y_label_row(value: f64, y_bounds: [f64; 2], plot: PlotBounds) -> Option<u16> {
@@ -148,9 +182,23 @@ pub(super) fn value_to_plot_x(value: f64, x_bounds: [f64; 2], plot: PlotBounds) 
         return None;
     }
 
-    let width = plot.right.saturating_sub(plot.left).saturating_sub(1) as f64;
+    let width = f64::from(plot.right.saturating_sub(plot.left).saturating_sub(1));
     let ratio = (value - x_bounds[0]) / (x_bounds[1] - x_bounds[0]);
-    Some(plot.left.saturating_add((ratio * width).round() as u16))
+    debug_assert!(
+        !(ratio < 0.0 || ratio > 1.0),
+        "the ratio is not outside the unit range"
+    );
+    let x_offset = num::f64_to_u16((ratio * width).round());
+    debug_assert!(
+        f64::from(x_offset) <= width,
+        "the column offset stays in the plot width"
+    );
+    let x = plot.left.saturating_add(x_offset);
+    debug_assert!(
+        plot.right <= plot.left || x < plot.right,
+        "the column is left of the plot right edge"
+    );
+    Some(x)
 }
 
 fn write_right_aligned_label(
@@ -161,8 +209,13 @@ fn write_right_aligned_label(
     label: &str,
     color: Color,
 ) {
-    let label_width = label.chars().count() as u16;
+    debug_assert!(width > 0, "the label area has a width");
+    let label_width = num::usize_to_u16(label.chars().count());
     let x = left.saturating_add(width.saturating_sub(label_width));
+    debug_assert!(
+        label_width > width || x.checked_add(label_width) == left.checked_add(width),
+        "a label that fits ends at the right edge of the area"
+    );
     write_label(frame, x, y, label, color, false);
 }
 
@@ -175,10 +228,12 @@ fn write_centered_label(
     label: &str,
     color: Color,
 ) {
-    let label_width = label.chars().count() as u16;
+    debug_assert!(center >= min_x, "the label center is not left of the plot");
+    let label_width = num::usize_to_u16(label.chars().count());
     let Some(start_x) = centered_label_start(center, label_width, min_x, max_x) else {
         return;
     };
+    debug_assert!(label_width > 0, "a placed label has characters");
 
     let buf = frame.buffer_mut();
     for offset in 0..label_width {
@@ -192,7 +247,7 @@ fn write_centered_label(
 
     let style = Style::default().fg(color);
     for (offset, ch) in label.chars().enumerate() {
-        if let Some(cell) = buf.cell_mut((start_x.saturating_add(offset as u16), y)) {
+        if let Some(cell) = buf.cell_mut((start_x.saturating_add(num::usize_to_u16(offset)), y)) {
             cell.set_char(ch).set_style(style);
         }
     }
@@ -204,8 +259,8 @@ fn centered_label_start(center: u16, label_width: u16, min_x: u16, max_x: u16) -
     }
 
     let half_width = label_width / 2;
-    // For even-length labels, bias one cell right so the visual midpoint better matches
-    // the target chart column instead of consistently leaning left.
+    // Move an even-length label one cell right. Then its visual midpoint is nearer
+    // the target chart column, and the labels do not always lean left.
     let mut start_x = center.checked_sub(half_width)?;
     if label_width.is_multiple_of(2) {
         start_x = start_x.saturating_add(1);
@@ -214,6 +269,14 @@ fn centered_label_start(center: u16, label_width: u16, min_x: u16, max_x: u16) -
     if start_x < min_x || end_x_exclusive > max_x {
         return None;
     }
+    debug_assert!(
+        start_x <= center,
+        "the label starts at or left of its center"
+    );
+    debug_assert!(
+        end_x_exclusive > center,
+        "the label covers its center column"
+    );
 
     Some(start_x)
 }
@@ -222,7 +285,7 @@ fn write_label(frame: &mut Frame, x: u16, y: u16, label: &str, color: Color, bla
     let style = Style::default().fg(color);
     let buf = frame.buffer_mut();
     for (offset, ch) in label.chars().enumerate() {
-        let Some(cell) = buf.cell_mut((x.saturating_add(offset as u16), y)) else {
+        let Some(cell) = buf.cell_mut((x.saturating_add(num::usize_to_u16(offset)), y)) else {
             continue;
         };
         if !blank_only || is_blank_cell(cell) {

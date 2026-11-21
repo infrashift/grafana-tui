@@ -1,12 +1,14 @@
 use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Deserializer};
 use std::fmt;
-use std::future::Future;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::time::Duration;
 
-use super::{AnnotationSnapshot, command::CommandProvider, jsonl::JsonlFileProvider};
+use super::{
+    AnnotationSnapshot, command::CommandProvider, jsonl::JsonlFileProvider, model::MAX_EVENTS,
+};
+#[cfg(test)]
+use test_provider::TestProvider;
 
 pub(crate) const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -23,13 +25,10 @@ pub(crate) struct AnnotationCommandConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum AnnotationSourceConfig {
     File(PathBuf),
     Command(AnnotationCommandConfig),
 }
-
-pub(crate) type ProviderFuture<'a> = Pin<Box<dyn Future<Output = ProviderPoll> + Send + 'a>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AnnotationRefreshContext {
@@ -38,9 +37,24 @@ pub(crate) struct AnnotationRefreshContext {
 }
 
 impl AnnotationRefreshContext {
+    /// Returns the window of length `range` that ends at `end_ts`. An end out of the
+    /// chrono range becomes the Unix epoch. A start out of the chrono range becomes
+    /// the earliest time that chrono holds.
     pub(crate) fn from_unix_window(end_ts: i64, range: Duration) -> Self {
-        let to = DateTime::<Utc>::from_timestamp(end_ts, 0).expect("valid Unix timestamp");
-        let from = to - TimeDelta::from_std(range).expect("supported dashboard range");
+        let to = DateTime::<Utc>::from_timestamp(end_ts, 0).unwrap_or(DateTime::UNIX_EPOCH);
+        let from = TimeDelta::from_std(range)
+            .ok()
+            .and_then(|span| to.checked_sub_signed(span))
+            .unwrap_or(DateTime::<Utc>::MIN_UTC);
+        debug_assert!(from <= to, "the window starts before it ends");
+        debug_assert!(
+            (to - from).to_std().is_ok_and(|span| span <= range),
+            "the window is not longer than the range"
+        );
+        debug_assert!(
+            to.timestamp() == end_ts || to == DateTime::UNIX_EPOCH,
+            "the window ends at end_ts, or at the epoch when end_ts is out of range"
+        );
         Self { from, to }
     }
 }
@@ -53,7 +67,6 @@ impl AnnotationProviderError {
         Self(message.into())
     }
 
-    #[allow(dead_code)] // Used by command providers before they are runtime-wired.
     pub(crate) fn command(program: &str, reason: impl fmt::Display) -> Self {
         Self(format!("annotation command {program}: {reason}"))
     }
@@ -72,15 +85,71 @@ pub(crate) enum ProviderPoll {
     Failed(AnnotationProviderError),
 }
 
-pub(crate) trait AnnotationProvider: fmt::Debug + Send {
-    fn refresh<'a>(&'a mut self, context: &'a AnnotationRefreshContext) -> ProviderFuture<'a>;
+/// The source of the annotation events. Each variant is one kind of provider.
+#[derive(Debug)]
+pub(crate) enum AnnotationProvider {
+    /// A JSONL file that the provider reads again when it changes.
+    File(JsonlFileProvider),
+    /// A command that the provider runs for each refresh.
+    Command(CommandProvider),
+    /// A provider with a scripted behavior, for tests.
+    #[cfg(test)]
+    Test(TestProvider),
 }
 
-pub(crate) fn build_provider(source: AnnotationSourceConfig) -> Box<dyn AnnotationProvider> {
-    match source {
-        AnnotationSourceConfig::File(path) => Box::new(JsonlFileProvider::new(path)),
-        AnnotationSourceConfig::Command(config) => Box::new(CommandProvider::new(config)),
+impl AnnotationProvider {
+    /// Loads the events of the `context` window.
+    ///
+    /// The future is `Send` because each variant's future is `Send`.
+    /// A refresh task runs it on the tokio runtime. A drop of the future cancels the refresh.
+    pub(crate) async fn refresh(&mut self, context: &AnnotationRefreshContext) -> ProviderPoll {
+        debug_assert!(
+            context.from <= context.to,
+            "the refresh window starts before it ends"
+        );
+        let poll = match self {
+            Self::File(provider) => provider.refresh(context).await,
+            Self::Command(provider) => provider.refresh(context).await,
+            #[cfg(test)]
+            Self::Test(provider) => provider.refresh(context).await,
+        };
+        debug_assert!(
+            !matches!(&poll, ProviderPoll::Loaded(snapshot) if snapshot.len() > MAX_EVENTS),
+            "a loaded snapshot holds MAX_EVENTS events or fewer"
+        );
+        poll
     }
+}
+
+/// Builds the provider for the configured annotation source.
+pub(crate) fn build_provider(source: AnnotationSourceConfig) -> AnnotationProvider {
+    let command = match &source {
+        AnnotationSourceConfig::Command(config) => Some(config),
+        AnnotationSourceConfig::File(_) => None,
+    };
+    // The command-line and config checks reject an empty program and a zero timeout.
+    debug_assert!(
+        command.is_none_or(|config| !config.program.trim().is_empty()),
+        "an annotation command has a program"
+    );
+    debug_assert!(
+        command.is_none_or(|config| !config.timeout.is_zero()),
+        "an annotation command has a timeout that is not zero"
+    );
+    let is_command = command.is_some();
+    let provider = match source {
+        AnnotationSourceConfig::File(path) => {
+            AnnotationProvider::File(JsonlFileProvider::new(path))
+        }
+        AnnotationSourceConfig::Command(config) => {
+            AnnotationProvider::Command(CommandProvider::new(config))
+        }
+    };
+    debug_assert!(
+        matches!(provider, AnnotationProvider::Command(_)) == is_command,
+        "the provider has the kind of its source"
+    );
+    provider
 }
 
 fn default_command_timeout() -> Duration {
@@ -95,6 +164,95 @@ where
     humantime::parse_duration(&value).map_err(serde::de::Error::custom)
 }
 
+/// The test fakes of the annotation provider, behind `AnnotationProvider::Test`.
+#[cfg(test)]
+pub(crate) mod test_provider {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    use tokio::sync::Notify;
+
+    use super::{AnnotationRefreshContext, AnnotationSnapshot, ProviderPoll};
+
+    /// A provider with a scripted behavior for tests.
+    #[derive(Debug)]
+    pub(crate) enum TestProvider {
+        /// Loads an empty snapshot on each refresh.
+        Static,
+        /// Returns the scripted results in order, then `Unchanged`, and counts each refresh.
+        Scripted {
+            /// The results that are not returned yet.
+            outcomes: VecDeque<ProviderPoll>,
+            /// The number of refreshes, when the test reads it.
+            refresh_count: Option<Arc<Mutex<usize>>>,
+        },
+        /// Records the window of each refresh and returns `Unchanged`.
+        WindowRecorder(Arc<Mutex<Vec<AnnotationRefreshContext>>>),
+        /// Keeps the window of the last refresh and loads an empty snapshot.
+        Recording(Arc<Mutex<Option<AnnotationRefreshContext>>>),
+        /// Signals `provider_started`, waits for `metrics_started`, then loads an empty snapshot.
+        Handshake {
+            /// Notified when the refresh starts.
+            provider_started: Arc<Notify>,
+            /// The refresh waits for this signal.
+            metrics_started: Arc<Notify>,
+        },
+    }
+
+    impl TestProvider {
+        /// A provider that returns `outcomes` in order.
+        pub(crate) fn scripted(outcomes: Vec<ProviderPoll>) -> Self {
+            Self::Scripted {
+                outcomes: outcomes.into(),
+                refresh_count: None,
+            }
+        }
+
+        /// A provider that returns `outcomes` in order and counts each refresh in `refresh_count`.
+        pub(crate) fn scripted_recording(
+            outcomes: Vec<ProviderPoll>,
+            refresh_count: Arc<Mutex<usize>>,
+        ) -> Self {
+            Self::Scripted {
+                outcomes: outcomes.into(),
+                refresh_count: Some(refresh_count),
+            }
+        }
+
+        /// Runs the scripted behavior for the `context` window.
+        pub(crate) async fn refresh(&mut self, context: &AnnotationRefreshContext) -> ProviderPoll {
+            match self {
+                Self::Static => ProviderPoll::Loaded(AnnotationSnapshot::new(Vec::new())),
+                Self::Scripted {
+                    outcomes,
+                    refresh_count,
+                } => {
+                    if let Some(refresh_count) = refresh_count {
+                        *refresh_count.lock().unwrap() += 1;
+                    }
+                    outcomes.pop_front().unwrap_or(ProviderPoll::Unchanged)
+                }
+                Self::WindowRecorder(windows) => {
+                    windows.lock().unwrap().push(context.clone());
+                    ProviderPoll::Unchanged
+                }
+                Self::Recording(captured) => {
+                    *captured.lock().unwrap() = Some(context.clone());
+                    ProviderPoll::Loaded(AnnotationSnapshot::new(Vec::new()))
+                }
+                Self::Handshake {
+                    provider_started,
+                    metrics_started,
+                } => {
+                    provider_started.notify_one();
+                    metrics_started.notified().await;
+                    ProviderPoll::Loaded(AnnotationSnapshot::new(Vec::new()))
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -102,25 +260,32 @@ mod tests {
 
     use super::{
         AnnotationCommandConfig, AnnotationProvider, AnnotationRefreshContext,
-        AnnotationSourceConfig, ProviderFuture, ProviderPoll, build_provider,
+        AnnotationSourceConfig, ProviderPoll, build_provider,
     };
-    use crate::annotations::AnnotationSnapshot;
+    use crate::annotations::TestProvider;
 
-    #[derive(Debug)]
-    struct StaticProvider;
+    /// Compiles only when `future` is `Send`, as a spawned refresh task needs.
+    fn assert_send<T: Send>(future: T) -> T {
+        future
+    }
 
-    impl AnnotationProvider for StaticProvider {
-        fn refresh<'a>(&'a mut self, _context: &'a AnnotationRefreshContext) -> ProviderFuture<'a> {
-            Box::pin(async { ProviderPoll::Loaded(AnnotationSnapshot::new(Vec::new())) })
-        }
+    #[test]
+    fn windows_out_of_the_chrono_range_use_documented_limits() {
+        let context = AnnotationRefreshContext::from_unix_window(i64::MAX, Duration::ZERO);
+        assert_eq!(context.to, chrono::DateTime::UNIX_EPOCH);
+        assert_eq!(context.from, chrono::DateTime::UNIX_EPOCH);
+        let context = AnnotationRefreshContext::from_unix_window(100, Duration::MAX);
+        assert_eq!(context.from, chrono::DateTime::<chrono::Utc>::MIN_UTC);
+        let context = AnnotationRefreshContext::from_unix_window(100, Duration::from_secs(10));
+        assert_eq!(context.from.timestamp(), 90);
     }
 
     #[tokio::test]
-    async fn provider_contract_is_object_safe() {
-        let mut provider: Box<dyn AnnotationProvider> = Box::new(StaticProvider);
+    async fn provider_refresh_futures_are_send() {
+        let mut provider = AnnotationProvider::Test(TestProvider::Static);
         let context = AnnotationRefreshContext::from_unix_window(100, Duration::from_secs(10));
         assert!(matches!(
-            provider.refresh(&context).await,
+            assert_send(provider.refresh(&context)).await,
             ProviderPoll::Loaded(snapshot) if snapshot.len() == 0
         ));
     }

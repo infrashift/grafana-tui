@@ -16,7 +16,8 @@
 
 use crate::app::data::{QueryIntervals, parse_min_interval};
 use crate::app::template::{
-    DashboardTemplate, MaterializedCondition, ResolvedSections, Scope, SectionInstance, Variables,
+    DashboardTemplate, Materialized, MaterializedCondition, PanelInstance, ResolvedSections, Scope,
+    SectionInstance, Variables,
 };
 use crate::conditions::{ConditionContext, ConditionTarget};
 use crate::dashboard::{DashboardItemId, DashboardLayout, RowId, TabGroupId};
@@ -27,7 +28,6 @@ use crate::theme::Theme;
 use crate::ui::DisplayFormat;
 use anyhow::Result;
 use ratatui::style::Color;
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -55,15 +55,15 @@ pub(crate) struct PanelState {
     pub(crate) series: Vec<SeriesView>,
     /// Last error message, if any.
     pub(crate) last_error: Option<String>,
-    /// Last query URL used (for debugging).
+    /// The last query URL that the panel used. It helps to debug the panel.
     pub(crate) last_url: Option<String>,
     /// Total number of samples in the current view.
     pub(crate) last_samples: usize,
     /// Grid layout position (if imported from Grafana).
     pub(crate) grid: Option<GridUnit>,
-    /// Y-axis scaling mode.
+    /// The scale mode of the Y axis.
     pub(crate) y_axis_mode: YAxisMode,
-    /// Visualization type.
+    /// The panel type.
     pub(crate) panel_type: PanelType,
     /// Threshold configuration.
     pub(crate) thresholds: Option<Thresholds>,
@@ -73,9 +73,9 @@ pub(crate) struct PanelState {
     pub(crate) max: Option<f64>,
     /// Whether to render automatic grid lines for this panel.
     pub(crate) autogrid: Option<bool>,
-    /// Display formatting imported from Grafana field configuration.
+    /// The display format from the Grafana field configuration.
     pub(crate) display: DisplayFormat,
-    /// Renderer-specific presentation options.
+    /// Display options that apply to one renderer only.
     pub(crate) options: PanelOptions,
     /// Grafana query options that set the range query step.
     pub(crate) resolution: QueryResolution,
@@ -108,7 +108,7 @@ pub(crate) struct QueryResolution {
     pub(crate) target_min_intervals: Vec<Option<String>>,
 }
 
-/// Visualization types supported by grafana-tui.
+/// The panel types that grafana-tui supports.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum PanelType {
     Graph,
@@ -128,8 +128,8 @@ pub(crate) enum PanelOptions {
     Graph(GraphOptions),
 }
 
-/// Graph/timeseries rendering options imported from Grafana.
-#[derive(Debug, Clone, PartialEq)]
+/// Grafana options that control how a graph/timeseries panel draws.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct GraphOptions {
     pub(crate) draw_style: GraphDrawStyle,
     pub(crate) show_points: GraphPointMode,
@@ -139,41 +139,32 @@ pub(crate) struct GraphOptions {
     pub(crate) stacking: GraphStackingMode,
 }
 
-impl Default for GraphOptions {
-    fn default() -> Self {
-        Self {
-            draw_style: GraphDrawStyle::Line,
-            show_points: GraphPointMode::Auto,
-            fill_opacity: None,
-            axis_placement: GraphAxisPlacement::Visible,
-            line_interpolation: None,
-            stacking: GraphStackingMode::Off,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum GraphDrawStyle {
+    #[default]
     Line,
     Points,
     Bars,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum GraphPointMode {
+    #[default]
     Auto,
     Always,
     Never,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum GraphAxisPlacement {
+    #[default]
     Visible,
     Hidden,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum GraphStackingMode {
+    #[default]
     Off,
     Normal,
     Percent,
@@ -186,7 +177,7 @@ pub(crate) enum QueryMode {
     Instant,
 }
 
-/// Modes for Y-axis scaling.
+/// The scale modes of the Y axis.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum YAxisMode {
     /// Auto-scale based on min/max of data.
@@ -198,7 +189,7 @@ pub(crate) enum YAxisMode {
 /// Represents a single time-series line in a chart.
 #[derive(Debug, Clone)]
 pub(crate) struct SeriesView {
-    /// Stable name of the series (used for coloring).
+    /// The stable name of the series. The series color comes from this name.
     pub(crate) name: String,
     /// Latest value of the series (used for display).
     pub(crate) value: Option<f64>,
@@ -208,16 +199,19 @@ pub(crate) struct SeriesView {
     pub(crate) visible: bool,
 }
 
-/// Drops a panel's fetched data, keeping its configuration.
+/// Drops the fetched data of a panel. The panel keeps its configuration.
 fn clear_panel_data(panel: &mut PanelState) {
+    let queries = panel.exprs.len();
     panel.series = Vec::new();
     panel.last_error = None;
     panel.last_url = None;
     panel.last_samples = 0;
     panel.notices = DataNotices::default();
+    debug_assert!(!panel.has_loaded(), "a cleared panel has no data");
+    debug_assert_eq!(panel.exprs.len(), queries, "the panel keeps its queries");
 }
 
-/// Grid positioning unit (Grafana style).
+/// A grid position unit (as in Grafana).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GridUnit {
     pub(crate) x: i32,
@@ -247,10 +241,22 @@ pub(crate) struct Thresholds {
 
 impl PanelState {
     pub(crate) fn graph_options(&self) -> GraphOptions {
-        match &self.options {
+        let options = match &self.options {
             PanelOptions::Graph(options) => options.clone(),
             PanelOptions::None => GraphOptions::default(),
-        }
+        };
+        debug_assert!(
+            options.fill_opacity.is_none_or(|opacity| opacity <= 100),
+            "the fill opacity is a percentage"
+        );
+        debug_assert!(
+            options
+                .line_interpolation
+                .as_ref()
+                .is_none_or(|value| !value.trim().is_empty()),
+            "a line interpolation is not empty"
+        );
+        options
     }
 
     /// Whether a fetch has finished for the panel, successfully or not.
@@ -266,7 +272,7 @@ impl PanelState {
     }
 
     /// Step and rate interval for the expression at `index`. A target's min
-    /// interval takes precedence over the panel's, and either replaces both the
+    /// interval overrides the panel's, and either replaces both the
     /// dashboard minimum step and the scrape interval, as in Grafana.
     pub(crate) fn query_intervals(
         &self,
@@ -277,11 +283,10 @@ impl PanelState {
         vars: &HashMap<String, String>,
     ) -> QueryIntervals {
         let parse = |text: &str| {
-            let text = super::variables::substitute_variables(text, |name| {
-                vars.get(name).map(|value| Cow::Borrowed(value.as_str()))
-            });
+            let text = super::variables::substitute_variables(text, vars);
             parse_min_interval(&text)
         };
+        debug_assert!(index < self.exprs.len(), "the query index is in range");
         let resolution = &self.resolution;
         let min_interval = resolution
             .target_min_intervals
@@ -289,61 +294,78 @@ impl PanelState {
             .and_then(Option::as_deref)
             .and_then(parse)
             .or_else(|| resolution.min_interval.as_deref().and_then(parse));
-        QueryIntervals::new(
+        debug_assert!(
+            min_interval.is_none_or(|interval| !interval.is_zero()),
+            "a min interval is not zero"
+        );
+        let intervals = QueryIntervals::new(
             range,
             min_interval.unwrap_or(min_step),
             min_interval.unwrap_or(scrape_interval),
             resolution.max_data_points,
-        )
+        );
+        debug_assert!(
+            intervals.step >= min_interval.unwrap_or(min_step),
+            "the step is not finer than the min interval"
+        );
+        intervals
     }
 
     pub(crate) fn get_color_for_value(&self, val: f64) -> Option<Color> {
         let thresholds = self.thresholds.as_ref()?;
+        let value = match thresholds.mode {
+            ThresholdMode::Absolute => val,
+            ThresholdMode::Percentage => self.percent_of_range(val),
+        };
+        let color = threshold_color(&thresholds.steps, value);
+        debug_assert!(
+            color.is_none() || !thresholds.steps.is_empty(),
+            "a color comes from a threshold step"
+        );
+        color
+    }
 
-        let mut matched_color = None;
+    /// Where `val` lies between the panel's min and max, from 0 to 100.
+    fn percent_of_range(&self, val: f64) -> f64 {
+        let min = self.min.unwrap_or(0.0);
+        let max = self.max.unwrap_or(100.0);
+        let range = max - min;
 
-        match thresholds.mode {
-            ThresholdMode::Absolute => {
-                for step in &thresholds.steps {
-                    if let Some(step_val) = step.value {
-                        if val >= step_val {
-                            matched_color = Some(step.color);
-                        }
-                    } else {
-                        // Null value represents the base step (lowest possible)
-                        if matched_color.is_none() {
-                            matched_color = Some(step.color);
-                        }
-                    }
-                }
-            }
-            ThresholdMode::Percentage => {
-                let min = self.min.unwrap_or(0.0);
-                let max = self.max.unwrap_or(100.0);
-                let range = max - min;
-
-                let pct = if range > 0.0 {
-                    (val - min) / range * 100.0
-                } else {
-                    0.0
-                };
-
-                for step in &thresholds.steps {
-                    if let Some(step_val) = step.value {
-                        if pct >= step_val {
-                            matched_color = Some(step.color);
-                        }
-                    } else {
-                        if matched_color.is_none() {
-                            matched_color = Some(step.color);
-                        }
-                    }
-                }
-            }
-        }
-        matched_color
+        let percent = if range > 0.0 {
+            (val - min) / range * 100.0
+        } else {
+            0.0
+        };
+        debug_assert!(range > 0.0 || percent == 0.0, "an empty range gives zero");
+        percent
     }
 }
+
+/// The color of the last step that `value` reaches. A step without a value is
+/// the base step, which applies when no step before it matched.
+fn threshold_color(steps: &[ThresholdStep], value: f64) -> Option<Color> {
+    let mut matched_color = None;
+    for step in steps {
+        match step.value {
+            Some(step_val) if value >= step_val => matched_color = Some(step.color),
+            Some(_) => {}
+            None if matched_color.is_none() => matched_color = Some(step.color),
+            None => {}
+        }
+    }
+    debug_assert!(
+        matched_color.is_none() || !steps.is_empty(),
+        "a color comes from a threshold step"
+    );
+    debug_assert!(
+        matched_color.is_some() || steps.iter().all(|step| step.value.is_some()),
+        "a base step always gives a color"
+    );
+    matched_color
+}
+
+/// The longest time range that the zoom out key gives: one week.
+pub(super) const MAX_ZOOM_RANGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// Application mode.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -364,15 +386,29 @@ pub(crate) struct ThemePicker {
     pub(crate) original: Theme,
 }
 
+/// The values that `AppState::new` receives. The other fields get defaults.
+struct StateParts {
+    prometheus: prom::PromClient,
+    range: Duration,
+    min_step: Duration,
+    refresh_every: Duration,
+    title: String,
+    panels: Vec<PanelState>,
+    skipped_panels: usize,
+    theme: Theme,
+    threshold_marker: String,
+    export: ExportOptions,
+}
+
 #[derive(Debug)]
 pub(crate) struct AppState {
-    /// Prometheus client for making requests.
+    /// The Prometheus client that sends the requests.
     pub(crate) prometheus: prom::PromClient,
     /// Optional external point-event state.
     pub(crate) annotations: crate::annotations::AnnotationState,
     /// Owned active annotation cluster produced by the selected panel's latest draw.
     pub(crate) rendered_annotation_cluster: Option<Vec<crate::annotations::AnnotationEvent>>,
-    /// Active annotation exploration modal, if any.
+    /// The open modal that explores annotations, if any.
     pub(crate) annotation_modal: Option<crate::annotations::AnnotationModal>,
     /// Current time range window.
     pub(crate) range: Duration,
@@ -386,7 +422,7 @@ pub(crate) struct AppState {
     pub(crate) panels: Vec<PanelState>,
     /// When the last refresh finished.
     pub(crate) last_refresh: Instant,
-    /// Refresh work running in the background.
+    /// Refresh work that runs in the background.
     refreshes: refresh::RefreshTasks,
     /// Query end timestamp used by the currently rendered data.
     pub(crate) view_end_ts: i64,
@@ -406,18 +442,18 @@ pub(crate) struct AppState {
     pub(crate) template: Option<DashboardTemplate>,
     /// Variable values bound by repeats, for panels inside repeated items.
     pub(crate) panel_scopes: HashMap<usize, Scope>,
-    /// Variables with `All` selected, for conditional rendering.
+    /// Variables with `All` selected, for the conditions.
     pub(crate) all_vars: HashSet<String>,
-    /// Names of every dashboard variable, for conditional rendering.
+    /// Names of every dashboard variable, for the conditions.
     pub(crate) variable_names: HashSet<String>,
-    /// The expanded template including items conditional rendering hides;
+    /// The expanded template, with the items that the conditions hide.
     /// `layout` is this without `hidden_items`.
     unfiltered_layout: DashboardLayout,
-    /// Conditional rendering of `unfiltered_layout`'s items.
+    /// The conditions on the items of `unfiltered_layout`.
     conditions: Vec<MaterializedCondition>,
-    /// Items conditional rendering currently hides.
+    /// Items that the conditions hide now.
     hidden_items: HashSet<ConditionTarget>,
-    /// Row and tab copies whose variables are resolved against Prometheus.
+    /// Row and tab copies whose variables Prometheus resolves.
     section_instances: Vec<SectionInstance>,
     /// What those section query variables resolved to.
     section_values: ResolvedSections,
@@ -435,7 +471,7 @@ pub(crate) struct AppState {
     pub(crate) themes: Vec<Theme>,
     /// Open theme picker, if any.
     pub(crate) theme_picker: Option<ThemePicker>,
-    /// Time offset from "now" for panning backward in time (0 = live mode).
+    /// Time offset from "now" when the user pans back in time (0 = live mode).
     pub(crate) time_offset: Duration,
     /// Current application mode.
     pub(crate) mode: AppMode,
@@ -443,22 +479,22 @@ pub(crate) struct AppState {
     pub(crate) search_query: String,
     /// Filtered dashboard items based on search query.
     pub(crate) search_results: Vec<DashboardItemId>,
-    /// Cursor X position (timestamp) for inspection.
+    /// The X position (timestamp) of the inspect cursor.
     pub(crate) cursor_x: Option<f64>,
-    /// Global marker set for rendering thresholds
+    /// The global marker set that draws thresholds
     pub(crate) threshold_marker: String,
-    /// Global runtime toggle for automatic grid rendering.
+    /// The global runtime toggle that draws the automatic grid.
     pub(crate) autogrid_enabled: bool,
     /// Configured color for automatic grid lines and labels; the theme's grid
     /// color applies when unset.
     pub(crate) autogrid_color: Option<Color>,
     /// Leaves the terminal's own background visible instead of the theme's.
     pub(crate) transparent_background: bool,
-    /// Image export and recording configuration.
+    /// The configuration of the image export and the recording.
     pub(crate) export: ExportOptions,
-    /// Active frame recording state, if recording is enabled.
+    /// The state of the active frame recording, if there is one.
     pub(crate) recording: Option<RecordingState>,
-    /// Last export or recording status message.
+    /// The last status message of the export or the recording.
     pub(crate) export_status: Option<String>,
     /// Dashboards loaded together, one per tab, when there are several.
     pub(crate) dashboards: Option<DashboardSet>,
@@ -475,9 +511,12 @@ impl AppState {
     /// * `refresh_every` - The data refresh interval.
     /// * `title` - The dashboard title.
     /// * `panels` - The list of panels to display.
-    /// * `skipped_panels` - The count of panels that were skipped during import.
+    /// * `skipped_panels` - The count of panels that the import skipped.
     /// * `theme` - The UI theme to use.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "P10-R4: the constructor takes each start-up setting, and many tests call it"
+    )]
     pub(crate) fn new(
         prometheus: prom::PromClient,
         range: Duration,
@@ -490,23 +529,56 @@ impl AppState {
         threshold_marker: String,
         export: ExportOptions,
     ) -> Self {
-        let layout = DashboardLayout::flat(panels.len());
-        let selected_item = layout.first_visible();
-        Self {
+        let state = Self::from_parts(StateParts {
             prometheus,
+            range,
+            min_step,
+            refresh_every,
+            title,
+            panels,
+            skipped_panels,
+            theme,
+            threshold_marker,
+            export,
+        });
+        debug_assert!(!state.themes.is_empty(), "the theme catalog has themes");
+        debug_assert_eq!(
+            state.layout,
+            DashboardLayout::flat(state.panels.len()),
+            "a new state shows each panel in a flat layout"
+        );
+        debug_assert!(state.is_consistent(), "the app state is consistent");
+        debug_assert_eq!(
+            state.panels.is_empty(),
+            state.selected_item.is_none(),
+            "a dashboard with panels selects one"
+        );
+        state
+    }
+
+    /// Builds the state from the values of `new`, and gives the other fields their defaults.
+    fn from_parts(parts: StateParts) -> Self {
+        let layout = DashboardLayout::flat(parts.panels.len());
+        let selected_item = layout.first_visible();
+        debug_assert!(
+            Instant::now().checked_sub(parts.refresh_every).is_some(),
+            "the time of the last refresh exists"
+        );
+        Self {
+            prometheus: parts.prometheus,
             annotations: crate::annotations::AnnotationState::from_path(None),
             rendered_annotation_cluster: None,
             annotation_modal: None,
-            range,
-            min_step,
+            range: parts.range,
+            min_step: parts.min_step,
             scrape_interval: crate::app::data::DEFAULT_SCRAPE_INTERVAL,
-            refresh_every,
-            panels,
-            last_refresh: Instant::now() - refresh_every,
+            refresh_every: parts.refresh_every,
+            panels: parts.panels,
+            last_refresh: Instant::now() - parts.refresh_every,
             refreshes: refresh::RefreshTasks::default(),
             view_end_ts: chrono::Utc::now().timestamp(),
             vertical_scroll: 0,
-            title,
+            title: parts.title,
             debug_bar: false,
             vars: HashMap::new(),
             var_values: HashMap::new(),
@@ -521,10 +593,10 @@ impl AppState {
             section_instances: Vec::new(),
             section_values: ResolvedSections::new(),
             query_vars: Vec::new(),
-            skipped_panels,
+            skipped_panels: parts.skipped_panels,
             layout,
             selected_item,
-            theme,
+            theme: parts.theme,
             themes: crate::theme::catalog(&[]),
             theme_picker: None,
             time_offset: Duration::from_secs(0),
@@ -532,11 +604,11 @@ impl AppState {
             search_query: String::new(),
             search_results: Vec::new(),
             cursor_x: None,
-            threshold_marker,
+            threshold_marker: parts.threshold_marker,
             autogrid_enabled: true,
             autogrid_color: None,
             transparent_background: false,
-            export,
+            export: parts.export,
             recording: None,
             export_status: None,
             dashboards: None,
@@ -554,6 +626,16 @@ impl AppState {
             selected,
             original: self.theme.clone(),
         });
+        debug_assert!(
+            self.theme_picker_in_range(),
+            "the theme picker selects a theme of the list"
+        );
+        debug_assert!(
+            self.theme_picker
+                .as_ref()
+                .is_some_and(|picker| picker.original.name == self.theme.name),
+            "the theme picker keeps the theme to restore"
+        );
     }
 
     /// Moves the picker selection, clamped to the list, and previews it.
@@ -566,19 +648,36 @@ impl AppState {
         if let Some(theme) = self.themes.get(picker.selected) {
             self.theme = theme.clone();
         }
+        debug_assert!(
+            self.theme_picker_in_range(),
+            "the theme picker selects a theme of the list"
+        );
+        debug_assert!(
+            self.theme_picker
+                .as_ref()
+                .and_then(|picker| self.themes.get(picker.selected))
+                .is_some_and(|theme| theme.name == self.theme.name),
+            "the selected theme shows"
+        );
     }
 
-    /// Closes the picker, keeping the previewed theme or restoring the original.
+    /// Closes the picker. It keeps the previewed theme or restores the original.
     pub(crate) fn close_theme_picker(&mut self, keep: bool) {
+        debug_assert!(
+            self.theme_picker_in_range(),
+            "the theme picker selects a theme of the list"
+        );
         if let Some(picker) = self.theme_picker.take()
             && !keep
         {
             self.theme = picker.original;
         }
+        debug_assert!(self.theme_picker.is_none(), "the theme picker is closed");
     }
 
     /// Fill behind the dashboard: the theme's background unless transparent.
     pub(crate) fn background(&self) -> Color {
+        debug_assert!(self.is_consistent(), "the app state is consistent");
         if self.transparent_background {
             Color::Reset
         } else {
@@ -593,16 +692,25 @@ impl AppState {
 
     /// Zoom in: halve the time range.
     pub(crate) fn zoom_in(&mut self) {
+        let before = self.range;
         self.range /= 2;
         if self.range < Duration::from_secs(10) {
             self.range = Duration::from_secs(10);
         }
+        debug_assert!(
+            self.range >= Duration::from_secs(10),
+            "a zoom in keeps ten seconds or more"
+        );
+        debug_assert!(
+            self.range <= before.max(Duration::from_secs(10)),
+            "a zoom in does not make the range longer"
+        );
     }
 
     /// Zoom out: double the time range.
     pub(crate) fn zoom_out(&mut self) {
         self.range *= 2;
-        self.range = self.range.min(Duration::from_secs(7 * 24 * 3600));
+        self.range = self.range.min(MAX_ZOOM_RANGE);
     }
 
     /// Pan left: shift the time window backward.
@@ -612,8 +720,13 @@ impl AppState {
         self.time_offset = self.time_offset.saturating_add(shift);
     }
 
-    /// Automatically scroll to ensure the selected panel is visible.
+    /// Scrolls automatically so that the selected panel is visible.
     pub(crate) fn scroll_to_selected_panel(&mut self) {
+        debug_assert!(
+            self.selection_in_panels(),
+            "the selected panel is in the panel list"
+        );
+        let before = self.vertical_scroll;
         if let Some(panel) = self
             .selected_panel_index()
             .and_then(|index| self.panels.get(index))
@@ -621,13 +734,14 @@ impl AppState {
         {
             let py = grid.y;
             let ph = grid.h;
-            let scroll_y = self.vertical_scroll as i32;
+            let scroll_y = i32::try_from(self.vertical_scroll).unwrap_or(i32::MAX);
             let visible_height = 20;
 
             if py < scroll_y {
-                self.vertical_scroll = py as usize;
-            } else if py + ph > scroll_y + visible_height {
-                self.vertical_scroll = (py + ph - visible_height).max(0) as usize;
+                self.vertical_scroll = usize::try_from(py).unwrap_or(0);
+                debug_assert!(self.vertical_scroll <= before, "a scroll up moves up");
+            } else if py + ph > scroll_y.saturating_add(visible_height) {
+                self.vertical_scroll = usize::try_from(py + ph - visible_height).unwrap_or(0);
             }
         }
     }
@@ -639,19 +753,72 @@ impl AppState {
         self.scroll_to_selected_panel();
     }
 
-    /// Shows an imported dashboard, expanding repeats for the current variables.
+    /// Shows an imported dashboard and expands repeats for the current variables.
     pub(crate) fn apply_template(&mut self, template: DashboardTemplate) {
         self.template = Some(template);
         self.materialize_layout();
         self.selected_item = self.layout.first_visible();
         self.scroll_to_selected_panel();
+        debug_assert!(
+            self.layout_in_panels(),
+            "each shown panel is in the panel list"
+        );
+        debug_assert!(self.is_consistent(), "the app state is consistent");
+    }
+
+    /// Shows a footer message when MAX_LAYOUT_NODES stopped a repeat.
+    fn report_layout_cut(&mut self, truncated: bool) {
+        if truncated {
+            self.export_status = Some(format!(
+                "Repeats stopped at the limit of {} layout items",
+                crate::dashboard::MAX_LAYOUT_NODES
+            ));
+        }
+        debug_assert!(
+            !truncated || self.export_status.is_some(),
+            "a cut layout shows a message"
+        );
+    }
+
+    /// Puts the panel of `instance` at its index. A fresh copy starts from its template panel.
+    fn place_panel_instance(&mut self, instance: &PanelInstance) {
+        if instance.fresh || instance.index >= self.panels.len() {
+            debug_assert!(
+                instance.source < self.panels.len(),
+                "a repeat copies a template panel"
+            );
+            let Some(mut copy) = self.panels.get(instance.source).cloned() else {
+                return;
+            };
+            clear_panel_data(&mut copy);
+            if let Some(slot) = self.panels.get_mut(instance.index) {
+                *slot = copy;
+            } else {
+                self.panels.resize(instance.index + 1, copy);
+            }
+        }
+        if let Some(panel) = self.panels.get_mut(instance.index) {
+            panel.title.clone_from(&instance.title);
+            panel.grid = instance.grid;
+        }
+        debug_assert!(
+            instance.index < self.panels.len(),
+            "the panel instance has a slot"
+        );
+        debug_assert!(
+            self.panels
+                .get(instance.index)
+                .is_some_and(|panel| panel.title == instance.title),
+            "the slot shows the title of the instance"
+        );
     }
 
     /// Rebuilds `layout` from the template for the current variable values.
     ///
-    /// Repeat copies are appended to `panels` the first time they appear and keep
-    /// their index afterwards; rows and tab groups keep their open state, and the
-    /// selection moves to its nearest visible ancestor if it disappeared.
+    /// This function appends a repeat copy to `panels` the first time it appears,
+    /// and the copy keeps its index afterwards. Rows and tab groups keep their
+    /// open state. If the selection disappears, it moves to its nearest visible
+    /// ancestor.
     fn materialize_layout(&mut self) {
         let Some(template) = self.template.as_mut() else {
             return;
@@ -662,35 +829,23 @@ impl AppState {
             regex: &self.regex_vars,
             sections: &self.section_values,
         });
+        self.report_layout_cut(materialized.truncated);
 
         self.refreshes.layout_changed();
-        for &index in &materialized.reclaimed {
-            if let Some(panel) = self.panels.get_mut(index) {
-                clear_panel_data(panel);
-            }
-        }
-        for instance in &materialized.panels {
-            if instance.fresh || instance.index >= self.panels.len() {
-                let mut copy = self.panels[instance.source].clone();
-                clear_panel_data(&mut copy);
-                if instance.index < self.panels.len() {
-                    self.panels[instance.index] = copy;
-                } else {
-                    self.panels.resize(instance.index + 1, copy);
-                }
-            }
-            let panel = &mut self.panels[instance.index];
-            panel.title.clone_from(&instance.title);
-            panel.grid = instance.grid;
-        }
+        self.place_panels(&materialized);
         self.panel_scopes = materialized
             .panels
             .into_iter()
             .filter(|instance| !instance.scope.is_empty())
             .map(|instance| (instance.index, instance.scope))
             .collect();
+        debug_assert!(
+            self.panel_scopes
+                .keys()
+                .all(|&index| index < self.panels.len()),
+            "each panel with bound variables is in the panel list"
+        );
 
-        self.panels.truncate(materialized.panel_slots);
         self.unfiltered_layout
             .sync_state_from(&self.layout, &self.hidden_items);
         let mut layout = materialized.layout;
@@ -698,7 +853,45 @@ impl AppState {
         self.unfiltered_layout = layout;
         self.conditions = materialized.conditions;
         self.section_instances = materialized.sections;
-        // Resolved section values are kept only for section copies still shown.
+        self.retain_live_sections();
+        self.show_conditional_items();
+        debug_assert!(
+            self.layout_in_panels(),
+            "each shown panel is in the panel list"
+        );
+    }
+
+    /// Drops the data of the reclaimed slots, puts each panel instance at its
+    /// slot, and releases the slots past the last one in use.
+    fn place_panels(&mut self, materialized: &Materialized) {
+        for &index in &materialized.reclaimed {
+            if let Some(panel) = self.panels.get_mut(index) {
+                clear_panel_data(panel);
+            }
+        }
+        for instance in &materialized.panels {
+            self.place_panel_instance(instance);
+        }
+        self.panels.truncate(materialized.panel_slots);
+        debug_assert!(
+            materialized
+                .panels
+                .iter()
+                .all(|instance| instance.index < self.panels.len()),
+            "each panel instance has a slot"
+        );
+        debug_assert!(
+            materialized.reclaimed.iter().all(|&index| {
+                self.panels
+                    .get(index)
+                    .is_none_or(|panel| !panel.has_loaded())
+            }),
+            "a reclaimed slot has no data"
+        );
+    }
+
+    /// Keeps the resolved section values only for the section copies still shown.
+    fn retain_live_sections(&mut self) {
         let live_sections: HashSet<_> = self
             .section_instances
             .iter()
@@ -706,10 +899,17 @@ impl AppState {
             .collect();
         self.section_values
             .retain(|key, _| live_sections.contains(key));
-        self.show_conditional_items();
+        debug_assert!(
+            live_sections.len() <= self.section_instances.len(),
+            "each section copy gives one key or less"
+        );
+        debug_assert!(
+            self.section_values.len() <= live_sections.len(),
+            "only the shown section copies keep values"
+        );
     }
 
-    /// Re-evaluates conditional rendering, for example after new data or a
+    /// Evaluates the conditions again, for example after new data or a
     /// time range change.
     fn apply_conditions(&mut self) {
         if self.template.is_none() || self.conditions.is_empty() {
@@ -718,6 +918,15 @@ impl AppState {
         self.unfiltered_layout
             .sync_state_from(&self.layout, &self.hidden_items);
         self.show_conditional_items();
+        debug_assert!(
+            self.hidden_items.len() <= self.conditions.len(),
+            "each condition hides one item or less"
+        );
+        debug_assert!(self.is_consistent(), "the app state is consistent");
+        debug_assert!(
+            self.layout_in_panels(),
+            "each shown panel is in the panel list"
+        );
     }
 
     /// Shows `unfiltered_layout` without the items its conditions hide.
@@ -728,18 +937,43 @@ impl AppState {
             .selected_item
             .and_then(|id| self.layout.nearest_visible_ancestor(id))
             .or_else(|| self.layout.first_visible());
+        debug_assert_eq!(
+            self.selected_item.is_none(),
+            self.layout.first_visible().is_none(),
+            "a layout with items has a selection"
+        );
+        debug_assert!(
+            self.hidden_items.len() <= self.conditions.len(),
+            "each condition hides one item or less"
+        );
+        debug_assert!(
+            self.selection_in_panels(),
+            "the selected panel is in the panel list"
+        );
     }
 
     fn evaluate_hidden_items(&self) -> HashSet<ConditionTarget> {
-        let panel_has_data = |index: usize| {
-            let panel = self.panels.get(index)?;
-            panel.has_loaded().then(|| {
-                panel
-                    .series
-                    .iter()
-                    .any(|series| !series.points.is_empty() || series.value.is_some())
+        debug_assert!(
+            self.conditions
+                .iter()
+                .all(|condition| match condition.target {
+                    ConditionTarget::Panel(index) => index < self.panels.len(),
+                    ConditionTarget::Row(_) | ConditionTarget::Tab(..) => true,
+                }),
+            "each panel condition targets a panel of the list"
+        );
+        let panel_has_data: Vec<Option<bool>> = self
+            .panels
+            .iter()
+            .map(|panel| {
+                panel.has_loaded().then(|| {
+                    panel
+                        .series
+                        .iter()
+                        .any(|series| !series.points.is_empty() || series.value.is_some())
+                })
             })
-        };
+            .collect();
         let context = ConditionContext {
             values: &self.var_values,
             defined: &self.variable_names,
@@ -747,7 +981,8 @@ impl AppState {
             range_seconds: self.range.as_secs_f64(),
             panel_has_data: &panel_has_data,
         };
-        self.conditions
+        let hidden: HashSet<ConditionTarget> = self
+            .conditions
             .iter()
             .filter(|condition| {
                 let panel = match condition.target {
@@ -757,7 +992,12 @@ impl AppState {
                 !condition.group.shows(&context, &condition.scope, panel)
             })
             .map(|condition| condition.target)
-            .collect()
+            .collect();
+        debug_assert!(
+            hidden.len() <= self.conditions.len(),
+            "each condition hides one item or less"
+        );
+        hidden
     }
 
     /// Panels to query: the visible ones, plus panels hidden only by their own
@@ -771,20 +1011,31 @@ impl AppState {
             })
             .map(|condition| condition.target)
             .collect();
-        if data_hidden.is_empty() {
-            return self.visible_panel_indices();
-        }
-        let hidden = self
-            .hidden_items
-            .difference(&data_hidden)
-            .copied()
-            .collect();
-        self.unfiltered_layout
-            .without(&hidden)
-            .visible_panel_indices()
+        debug_assert!(
+            data_hidden.len() <= self.conditions.len(),
+            "each condition targets one item"
+        );
+        let indices = if data_hidden.is_empty() {
+            self.visible_panel_indices()
+        } else {
+            let hidden = self
+                .hidden_items
+                .difference(&data_hidden)
+                .copied()
+                .collect();
+            self.unfiltered_layout
+                .without(&hidden)
+                .visible_panel_indices()
+        };
+        debug_assert!(
+            indices.iter().all(|&index| index < self.panels.len()),
+            "each panel to fetch is in the panel list"
+        );
+        indices
     }
 
     pub(crate) fn selected_panel_index(&self) -> Option<usize> {
+        debug_assert!(self.one_dialog_or_less(), "one dialog or less is open");
         match self.selected_item {
             Some(DashboardItemId::Panel(index)) => Some(index),
             Some(DashboardItemId::Row(_) | DashboardItemId::Tabs(_)) | None => None,
@@ -792,6 +1043,7 @@ impl AppState {
     }
 
     pub(crate) fn selected_row_id(&self) -> Option<RowId> {
+        debug_assert!(self.is_consistent(), "the app state is consistent");
         match self.selected_item {
             Some(DashboardItemId::Row(id)) => Some(id),
             Some(DashboardItemId::Panel(_) | DashboardItemId::Tabs(_)) | None => None,
@@ -799,6 +1051,7 @@ impl AppState {
     }
 
     pub(crate) fn selected_tab_group_id(&self) -> Option<TabGroupId> {
+        debug_assert!(self.is_consistent(), "the app state is consistent");
         match self.selected_item {
             Some(DashboardItemId::Tabs(id)) => Some(id),
             Some(DashboardItemId::Panel(_) | DashboardItemId::Row(_)) | None => None,
@@ -809,30 +1062,44 @@ impl AppState {
         self.layout.visible_panel_indices()
     }
 
-    /// Panels the dashboard currently has, including ones in collapsed rows,
+    /// Panels the dashboard has now, also the ones in collapsed rows,
     /// inactive tabs, or hidden by conditions; with several dashboards, the
     /// shown one's. `panels` may also hold free slots for repeat copies, which
     /// are not part of the dashboard.
     pub(crate) fn dashboard_panel_indices(&self) -> Vec<usize> {
-        if let Some(panels) = self.active_dashboard_panel_indices() {
+        debug_assert!(
+            self.dashboards.is_none() || self.template.is_some(),
+            "several dashboards come from a template"
+        );
+        let indices = if let Some(panels) = self.active_dashboard_panel_indices() {
             panels
         } else if self.template.is_some() {
             self.unfiltered_layout.panel_indices()
         } else {
             (0..self.panels.len()).collect()
-        }
+        };
+        debug_assert!(
+            indices.iter().all(|&index| index < self.panels.len()),
+            "each dashboard panel is in the panel list"
+        );
+        indices
     }
 
-    /// Panels a layout of only panels shows. Without an imported template the
-    /// panel list is the dashboard, so panels added to it after the layout was
-    /// built are shown too; with one, the layout decides, since the list also
-    /// holds hidden panels and free repeat copy slots.
+    /// Panels a layout of only panels shows. Without an imported template, the
+    /// panel list is the dashboard. So the layout also shows panels that the
+    /// list got after the layout build. With a template, the layout decides,
+    /// because the list also holds hidden panels and free repeat copy slots.
     pub(crate) fn flat_panel_indices(&self) -> Vec<usize> {
-        if self.template.is_some() {
+        let indices = if self.template.is_some() {
             self.layout.visible_panel_indices()
         } else {
             (0..self.panels.len()).collect()
-        }
+        };
+        debug_assert!(
+            indices.iter().all(|&index| index < self.panels.len()),
+            "each flat panel is in the panel list"
+        );
+        indices
     }
 
     /// Panels the dashboard view renders, outside fullscreen.
@@ -842,16 +1109,26 @@ impl AppState {
             .items
             .iter()
             .all(|item| matches!(item, crate::dashboard::DashboardLayoutItem::Panel(_)));
-        if flat {
+        let indices = if flat {
             self.flat_panel_indices()
         } else {
             self.layout.visible_panel_indices()
-        }
+        };
+        debug_assert!(
+            indices.iter().all(|&index| index < self.panels.len()),
+            "each rendered panel is in the panel list"
+        );
+        indices
     }
 
-    /// The footer's panel count: `visible/total`, or just the total when all
+    /// The footer's panel count: `visible/total`, or only the total when all
     /// panels are visible.
     pub(crate) fn panel_count_label(&self) -> String {
+        debug_assert!(self.is_consistent(), "the app state is consistent");
+        debug_assert!(
+            self.dashboards.is_none() || self.template.is_some(),
+            "several dashboards come from a template"
+        );
         let total = self.dashboard_panel_indices().len();
         let visible = self.rendered_panel_indices().len();
         if visible == total {
@@ -872,6 +1149,7 @@ impl AppState {
     }
 
     fn move_selection(&mut self, direction: isize) {
+        debug_assert_eq!(direction.unsigned_abs(), 1, "the selection moves one item");
         let visible = self.layout.visible_items();
         let Some(first) = visible.first() else {
             self.selected_item = None;
@@ -890,8 +1168,13 @@ impl AppState {
         let next = current
             .saturating_add_signed(direction)
             .min(visible.len() - 1);
-        self.selected_item = Some(visible[next].id);
+        debug_assert!(next < visible.len(), "the next item is in range");
+        self.selected_item = Some(visible.get(next).map_or(first.id, |item| item.id));
         self.scroll_to_selected_panel();
+        debug_assert!(
+            self.selection_in_panels(),
+            "the selected panel is in the panel list"
+        );
     }
 
     fn ensure_selection_visible(&mut self) {
@@ -899,7 +1182,16 @@ impl AppState {
             .selected_item
             .and_then(|item| self.layout.nearest_visible_ancestor(item))
             .or_else(|| self.layout.first_visible());
+        debug_assert_eq!(
+            self.selected_item.is_none(),
+            self.layout.first_visible().is_none(),
+            "a layout with items has a selection"
+        );
         self.scroll_to_selected_panel();
+        debug_assert!(
+            self.selection_in_panels(),
+            "the selected panel is in the panel list"
+        );
     }
 
     pub(crate) fn set_selected_row_collapsed(&mut self, collapsed: bool) -> Result<()> {
@@ -909,11 +1201,25 @@ impl AppState {
         let Some(change) = self.layout.set_row_collapsed(row_id, collapsed) else {
             return Ok(());
         };
+        debug_assert!(
+            self.layout
+                .row(row_id)
+                .is_some_and(|row| row.collapsed == collapsed),
+            "the row has the new state"
+        );
+        debug_assert!(
+            change
+                .newly_visible_panels
+                .iter()
+                .all(|&index| index < self.panels.len()),
+            "each new visible panel is in the panel list"
+        );
         if !change.newly_visible_panels.is_empty() {
             self.fetch_panels(&change.newly_visible_panels);
         }
         self.reconcile_visible_annotation_targets();
         self.ensure_selection_visible();
+        debug_assert!(self.is_consistent(), "the app state is consistent");
         Ok(())
     }
 
@@ -921,14 +1227,27 @@ impl AppState {
         let Some(row_id) = self.selected_row_id() else {
             return Ok(());
         };
+        let before = self.layout.row(row_id).map(|row| row.collapsed);
         let Some(change) = self.layout.toggle_row(row_id) else {
             return Ok(());
         };
+        debug_assert!(
+            self.layout.row(row_id).map(|row| !row.collapsed) == before,
+            "the row changes its state"
+        );
+        debug_assert!(
+            change
+                .newly_visible_panels
+                .iter()
+                .all(|&index| index < self.panels.len()),
+            "each new visible panel is in the panel list"
+        );
         if !change.newly_visible_panels.is_empty() {
             self.fetch_panels(&change.newly_visible_panels);
         }
         self.reconcile_visible_annotation_targets();
         self.ensure_selection_visible();
+        debug_assert!(self.is_consistent(), "the app state is consistent");
         Ok(())
     }
 
@@ -939,12 +1258,26 @@ impl AppState {
         let Some(change) = self.layout.set_active_tab(id, index) else {
             return Ok(());
         };
+        debug_assert!(
+            self.layout
+                .tabs(id)
+                .is_some_and(|group| group.active == Some(index)),
+            "the tab is active"
+        );
+        debug_assert!(
+            change
+                .newly_visible_panels
+                .iter()
+                .all(|&index| index < self.panels.len()),
+            "each new visible panel is in the panel list"
+        );
         self.selected_item = Some(DashboardItemId::Tabs(id));
         if !change.newly_visible_panels.is_empty() {
             self.fetch_panels(&change.newly_visible_panels);
         }
         self.reconcile_visible_annotation_targets();
         self.ensure_selection_visible();
+        debug_assert!(self.is_consistent(), "the app state is consistent");
         Ok(())
     }
 
@@ -958,9 +1291,12 @@ impl AppState {
         let Some(active) = group.active else {
             return Ok(());
         };
+        debug_assert!(active < group.tabs.len(), "the active tab is in range");
+        debug_assert_eq!(direction.unsigned_abs(), 1, "the selection moves one tab");
         let next = active
             .saturating_add_signed(direction)
             .min(group.tabs.len().saturating_sub(1));
+        debug_assert!(next < group.tabs.len(), "the next tab is in range");
         self.activate_tab(id, next)
     }
 
@@ -971,19 +1307,21 @@ impl AppState {
         if let Some(item) = self.layout.first_tab_descendant(id) {
             self.selected_item = Some(item);
         }
+        debug_assert!(self.is_consistent(), "the app state is consistent");
     }
 
-    /// Compatibility wrapper for panel-only fullscreen navigation.
+    /// Selects the previous panel in fullscreen (a compatibility wrapper).
     pub(crate) fn select_previous_panel(&mut self) {
         self.move_panel_selection(-1);
     }
 
-    /// Compatibility wrapper for panel-only fullscreen navigation.
+    /// Selects the next panel in fullscreen (a compatibility wrapper).
     pub(crate) fn select_next_panel(&mut self) {
         self.move_panel_selection(1);
     }
 
     fn move_panel_selection(&mut self, direction: isize) {
+        debug_assert_eq!(direction.unsigned_abs(), 1, "the selection moves one panel");
         let panels = self.visible_panel_indices();
         let Some(&first) = panels.first() else {
             self.selected_item = None;
@@ -1000,19 +1338,31 @@ impl AppState {
             return;
         };
         let next = index.saturating_add_signed(direction).min(panels.len() - 1);
-        self.selected_item = Some(DashboardItemId::Panel(panels[next]));
+        debug_assert!(next < panels.len(), "the next panel is in range");
+        let panel = panels.get(next).copied().unwrap_or(first);
+        self.selected_item = Some(DashboardItemId::Panel(panel));
         self.scroll_to_selected_panel();
+        debug_assert!(
+            self.selection_in_panels(),
+            "the selected panel is in the panel list"
+        );
     }
 
     /// Pan right: shift the time window forward (toward "now").
     pub(crate) fn pan_right(&mut self) {
         // Shift by 25% of the current range
         let shift = self.range / 4;
+        let before = self.time_offset;
         if self.time_offset > shift {
             self.time_offset = self.time_offset.saturating_sub(shift);
         } else {
             self.time_offset = Duration::from_secs(0); // Back to live mode
         }
+        debug_assert!(self.time_offset <= before, "a pan right moves toward now");
+        debug_assert!(
+            !before.is_zero() || self.is_live(),
+            "a pan right in the live mode stays live"
+        );
     }
 
     /// Reset to live mode (time_offset = 0).
@@ -1027,11 +1377,11 @@ impl AppState {
 
     /// Returns the displayed time window bounds.
     pub(crate) fn time_bounds(&self) -> (f64, f64) {
-        let end_ts = self.view_end_ts as f64;
+        let end_ts = crate::num::i64_to_f64(self.view_end_ts);
         (end_ts - self.range.as_secs_f64(), end_ts)
     }
 
-    /// Moves the inspection cursor to the center of the displayed time window.
+    /// Moves the inspect cursor to the center of the displayed time window.
     pub(crate) fn center_cursor(&mut self) {
         let (start_ts, end_ts) = self.time_bounds();
         self.cursor_x = Some((start_ts + end_ts) / 2.0);
@@ -1040,29 +1390,78 @@ impl AppState {
     /// Move cursor left/right by one step.
     pub(crate) fn move_cursor(&mut self, direction: i32) {
         let (start_ts, end_ts) = self.time_bounds();
+        debug_assert!(start_ts <= end_ts, "the time window starts before it ends");
+        debug_assert_eq!(direction.unsigned_abs(), 1, "the cursor moves one step");
 
         if let Some(current_x) = self.cursor_x {
             let step_secs = self.default_intervals().step.as_secs_f64();
-            let new_x = current_x + (direction as f64 * step_secs);
+            let new_x = current_x + (f64::from(direction) * step_secs);
             self.cursor_x = Some(new_x.max(start_ts).min(end_ts));
         } else {
             self.cursor_x = Some((start_ts + end_ts) / 2.0);
         }
+        debug_assert!(
+            self.cursor_x.is_some_and(|x| x >= start_ts && x <= end_ts),
+            "the cursor is in the time window"
+        );
     }
 
     pub(crate) fn open_rendered_annotation_cluster(&mut self) {
+        debug_assert!(self.theme_picker.is_none(), "the theme picker is closed");
         let Some(events) = self.rendered_annotation_cluster.clone() else {
             return;
         };
         if let Some(modal) = crate::annotations::ClusterModalState::new(events) {
             self.annotation_modal = Some(crate::annotations::AnnotationModal::Cluster(modal));
         }
+        debug_assert!(self.one_dialog_or_less(), "one dialog or less is open");
     }
 
     pub(crate) fn open_tag_filter_modal(&mut self) {
         if let Some(modal) = self.annotations.new_tag_filter_modal() {
             self.annotation_modal = Some(crate::annotations::AnnotationModal::TagFilter(modal));
         }
+    }
+
+    /// Whether one dialog or less is open: the annotation modal or the theme picker.
+    pub(crate) fn one_dialog_or_less(&self) -> bool {
+        self.annotation_modal.is_none() || self.theme_picker.is_none()
+    }
+
+    /// Whether the theme picker, when open, selects a theme of the list.
+    pub(crate) fn theme_picker_in_range(&self) -> bool {
+        let selected = self.theme_picker.as_ref().map(|picker| picker.selected);
+        selected.is_none_or(|selected| selected < self.themes.len())
+    }
+
+    /// Whether the search text is in its limit, and results exist only in the search mode.
+    pub(crate) fn search_is_consistent(&self) -> bool {
+        self.search_query.chars().count() <= crate::limits::MAX_SEARCH_CHARS
+            && (self.search_results.is_empty() || self.mode == AppMode::Search)
+    }
+
+    /// Whether the selected panel, when there is one, is in the panel list.
+    pub(crate) fn selection_in_panels(&self) -> bool {
+        let selected = self.selected_panel_index();
+        selected.is_none_or(|index| index < self.panels.len())
+    }
+
+    /// Whether an active recording has no more frames than its limit.
+    pub(crate) fn recording_in_limit(&self) -> bool {
+        let recording = self.recording.as_ref();
+        recording.is_none_or(|recording| recording.frame_count <= recording.max_frames)
+    }
+
+    /// Whether the cheap invariants hold: dialogs, theme picker, selection and recording.
+    fn is_consistent(&self) -> bool {
+        let dialogs = self.one_dialog_or_less() && self.theme_picker_in_range();
+        dialogs && self.selection_in_panels() && self.recording_in_limit()
+    }
+
+    /// Whether each panel that the layout shows is in the panel list.
+    fn layout_in_panels(&self) -> bool {
+        let shown = self.layout.visible_panel_indices();
+        shown.iter().all(|&index| index < self.panels.len())
     }
 
     /// Intervals for queries without panel query options, such as variables.
@@ -1083,6 +1482,16 @@ impl AppState {
             .filter(|(_, panel)| panel.panel_type == PanelType::Graph)
             .map(|(_, panel)| panel.title.clone())
             .collect::<Vec<_>>();
+        debug_assert!(
+            visible_panels
+                .iter()
+                .all(|&index| index < self.panels.len()),
+            "each visible panel is in the panel list"
+        );
+        debug_assert!(
+            titles.len() <= visible_panels.len(),
+            "each visible panel gives one title or less"
+        );
         self.annotations.reconcile_targets(&titles);
     }
 }
@@ -1090,10 +1499,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::annotations::{
-        AnnotationProvider, AnnotationRefreshContext, AnnotationSnapshot, ProviderFuture,
-        ProviderPoll,
-    };
+    use crate::annotations::{AnnotationProvider, TestProvider};
     use crate::dashboard::{
         DashboardItemId, DashboardLayout, DashboardLayoutItem, DashboardRow, RowId,
     };
@@ -1262,7 +1668,7 @@ mod tests {
     }
 
     /// Serves Prometheus API requests from `respond` until the test ends,
-    /// recording each request target.
+    /// and records each request target.
     async fn mock_prometheus(
         respond: fn(&str) -> &'static str,
     ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
@@ -1499,7 +1905,7 @@ mod tests {
             DashboardTemplate::new(layout, crate::dashboard::Repeats::default(), &app.panels)
                 .with_conditions(conditions),
         );
-        // Before its data loads the condition is undecided and the panel shows.
+        // Before its data loads, the condition has no result and the panel shows.
         assert_eq!(app.visible_panel_indices(), [0, 1]);
 
         app.refresh().await.unwrap();
@@ -1620,8 +2026,33 @@ mod tests {
         }
     }
 
-    /// Rotates a repeated row's values the way a churning query variable (pods,
+    /// Rotates a repeated row's values the way a query variable that changes a lot (pods,
     /// for example) does over a long session.
+    #[test]
+    fn repeats_over_the_layout_limit_report_the_cut_in_the_footer() {
+        let mut app = create_test_app();
+        app.panels = vec![test_panel("CPU $pod", PanelType::Graph)];
+        let mut repeats = crate::dashboard::Repeats::default();
+        repeats
+            .panels
+            .insert(0, crate::dashboard::Repeat::new("pod"));
+        app.apply_template(DashboardTemplate::new(
+            DashboardLayout::flat(1),
+            repeats,
+            &app.panels,
+        ));
+        assert_eq!(app.export_status, None);
+
+        let pods = (0..crate::dashboard::MAX_LAYOUT_NODES + 1)
+            .map(|pod| format!("pod-{pod}"))
+            .collect();
+        app.var_values.insert("pod".to_string(), pods);
+        app.materialize_layout();
+
+        let status = app.export_status.as_deref().unwrap_or_default();
+        assert!(status.contains("limit of 4096 layout items"), "{status}");
+    }
+
     #[test]
     fn churning_repeat_values_keep_memory_bounded() {
         let mut app = create_test_app();
@@ -1677,7 +2108,7 @@ mod tests {
                     HashMap::from([("container".to_string(), vec!["c".to_string()])]),
                 );
             }
-            // Copies keep data while they are shown.
+            // Copies keep data while they show.
             for index in app.visible_panel_indices() {
                 app.panels[index].series = vec![SeriesView {
                     name: "up".to_string(),
@@ -1688,10 +2119,10 @@ mod tests {
             }
         }
 
-        // Three row copies, each showing its pod's panel, are on screen;
+        // Three row copies are on screen, each with the panel of its pod;
         // storage tracks them, not every value ever seen.
         assert_eq!(app.visible_panel_indices().len(), 3);
-        // Freed slots are reused on the next update, so storage peaks at twice
+        // The next update uses the freed slots again, so storage peaks at twice
         // the copies on screen (here the primary panel plus two copies, twice).
         assert!(
             app.panels.len() <= 5,
@@ -1935,40 +2366,6 @@ mod tests {
         assert_eq!(app.annotations.footer_status(), None);
     }
 
-    #[derive(Debug)]
-    struct RecordingProvider {
-        captured: Arc<Mutex<Option<AnnotationRefreshContext>>>,
-    }
-
-    impl AnnotationProvider for RecordingProvider {
-        fn refresh<'a>(&'a mut self, context: &'a AnnotationRefreshContext) -> ProviderFuture<'a> {
-            let captured = Arc::clone(&self.captured);
-            let context = context.clone();
-            Box::pin(async move {
-                *captured.lock().unwrap() = Some(context);
-                ProviderPoll::Loaded(AnnotationSnapshot::new(Vec::new()))
-            })
-        }
-    }
-
-    #[derive(Debug)]
-    struct HandshakeProvider {
-        provider_started: Arc<Notify>,
-        metrics_started: Arc<Notify>,
-    }
-
-    impl AnnotationProvider for HandshakeProvider {
-        fn refresh<'a>(&'a mut self, _context: &'a AnnotationRefreshContext) -> ProviderFuture<'a> {
-            let provider_started = Arc::clone(&self.provider_started);
-            let metrics_started = Arc::clone(&self.metrics_started);
-            Box::pin(async move {
-                provider_started.notify_one();
-                metrics_started.notified().await;
-                ProviderPoll::Loaded(AnnotationSnapshot::new(Vec::new()))
-            })
-        }
-    }
-
     #[tokio::test]
     async fn test_empty_panels() {
         let mut app = create_test_app();
@@ -2002,10 +2399,9 @@ mod tests {
     async fn refresh_uses_same_window_for_annotations_and_rendered_data() {
         let captured = Arc::new(Mutex::new(None));
         let mut app = create_test_app();
-        app.annotations =
-            crate::annotations::AnnotationState::from_provider(Some(Box::new(RecordingProvider {
-                captured: Arc::clone(&captured),
-            })));
+        app.annotations = crate::annotations::AnnotationState::from_provider(Some(
+            AnnotationProvider::Test(TestProvider::Recording(Arc::clone(&captured))),
+        ));
 
         app.refresh().await.unwrap();
 
@@ -2051,11 +2447,12 @@ mod tests {
         panel.query_modes = vec![QueryMode::Range];
         app.panels = vec![panel];
         app.apply_layout(DashboardLayout::flat(app.panels.len()));
-        app.annotations =
-            crate::annotations::AnnotationState::from_provider(Some(Box::new(HandshakeProvider {
+        app.annotations = crate::annotations::AnnotationState::from_provider(Some(
+            AnnotationProvider::Test(TestProvider::Handshake {
                 provider_started,
                 metrics_started,
-            })));
+            }),
+        ));
 
         tokio::time::timeout(Duration::from_secs(2), app.refresh())
             .await

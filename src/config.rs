@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-use anyhow::Result;
+use crate::limits::{MAX_CONFIG_BYTES, MAX_DASHBOARD_FILES, MAX_USER_VARS};
+use anyhow::{Context, Result, ensure};
 use directories::ProjectDirs;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
-use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -34,7 +34,6 @@ pub(crate) struct Config {
     #[serde(default, alias = "grafana_dashboard", deserialize_with = "one_or_many")]
     pub(crate) grafana_json: Vec<PathBuf>,
     pub(crate) annotations_file: Option<PathBuf>,
-    #[allow(dead_code)]
     pub(crate) annotations_command: Option<crate::annotations::AnnotationCommandConfig>,
     pub(crate) threshold_marker: Option<String>,
     pub(crate) export_dir: Option<PathBuf>,
@@ -59,35 +58,54 @@ impl Config {
         if let Some(path) = config_path
             && path.exists()
         {
-            let content = fs::read_to_string(path)?;
+            let content = crate::limits::read_text_capped(&path, MAX_CONFIG_BYTES)
+                .with_context(|| format!("reading config file: {}", path.display()))?;
+            debug_assert!(
+                u64::try_from(content.len()).is_ok_and(|len| len <= MAX_CONFIG_BYTES),
+                "the config text is not larger than its limit"
+            );
             let config: Config = toml::from_str(&content)?;
+            // The command line can replace the dashboard files of the config,
+            // but a config over a limit is not valid.
+            let files = config.grafana_json.len();
+            ensure!(
+                files <= MAX_DASHBOARD_FILES,
+                "{files} dashboard files are more than the limit of {MAX_DASHBOARD_FILES}"
+            );
+            let vars = config.vars.as_ref().map_or(0, HashMap::len);
+            ensure!(
+                vars <= MAX_USER_VARS,
+                "{vars} config vars are more than the limit of {MAX_USER_VARS}"
+            );
             return Ok(config);
         }
         Ok(Config::default())
     }
 
+    /// Returns the first config file that exists: `config.toml` or
+    /// `grafana-tui.toml` in the config directory, then `./grafana-tui.toml`.
     fn get_config_path() -> Option<PathBuf> {
+        let mut candidates = Vec::with_capacity(3);
         if let Some(base_dirs) = ProjectDirs::from("", "", "grafana-tui") {
-            let config_path = base_dirs.config_dir().join("config.toml");
-            if config_path.exists() {
-                return Some(config_path);
-            }
-            let config_path = base_dirs.config_dir().join("grafana-tui.toml");
-            if config_path.exists() {
-                return Some(config_path);
-            }
+            candidates.push(base_dirs.config_dir().join("config.toml"));
+            candidates.push(base_dirs.config_dir().join("grafana-tui.toml"));
         }
-
-        let cwd_path = PathBuf::from("./grafana-tui.toml");
-        if cwd_path.exists() {
-            return Some(cwd_path.to_path_buf());
-        }
-
-        None
+        candidates.push(PathBuf::from("./grafana-tui.toml"));
+        debug_assert!(
+            (1..=3).contains(&candidates.len()),
+            "the search has one to three candidate paths"
+        );
+        let found = candidates.into_iter().find(|path| path.exists());
+        debug_assert!(
+            found
+                .as_ref()
+                .is_none_or(|path| path.extension().is_some_and(|ext| ext == "toml")),
+            "a config path has the toml extension"
+        );
+        found
     }
 }
 
-/// Expands a path starting with `~` to the user's home directory.
 /// Reads a path, or a list of paths, as a list.
 fn one_or_many<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
@@ -98,23 +116,41 @@ fn one_or_many<'de, D: serde::Deserializer<'de>>(
         One(PathBuf),
         Many(Vec<PathBuf>),
     }
-    Ok(match OneOrMany::deserialize(deserializer)? {
-        OneOrMany::One(path) => vec![path],
-        OneOrMany::Many(paths) => paths,
-    })
+    let (paths, single) = match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(path) => (vec![path], true),
+        OneOrMany::Many(paths) => (paths, false),
+    };
+    debug_assert!(
+        !single || paths.len() == 1,
+        "one path in the config gives a list of one"
+    );
+    Ok(paths)
 }
 
+/// Expands a path that starts with `~` to the user's home directory.
 pub(crate) fn expand_path(path: &std::path::Path) -> PathBuf {
     let path_str = path.to_string_lossy();
     if path_str.starts_with("~")
         && let Some(dirs) = directories::UserDirs::new()
     {
         let home = dirs.home_dir();
+        debug_assert!(
+            !home.as_os_str().is_empty(),
+            "the home directory has a name"
+        );
         if path_str == "~" {
             return home.to_path_buf();
         }
-        if path_str.starts_with("~/") || path_str.starts_with("~\\") {
-            return home.join(&path_str[2..]);
+        if let Some(rest) = path_str
+            .strip_prefix("~/")
+            .or_else(|| path_str.strip_prefix("~\\"))
+        {
+            let expanded = home.join(rest);
+            debug_assert!(
+                expanded.as_os_str().len() >= rest.len(),
+                "the expanded path keeps the rest of the input path"
+            );
+            return expanded;
         }
     }
     path.to_path_buf()
@@ -124,6 +160,21 @@ pub(crate) fn expand_path(path: &std::path::Path) -> PathBuf {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn a_config_file_over_its_limit_names_the_file_and_the_limit() {
+        let limit = crate::limits::MAX_CONFIG_BYTES;
+        let path = crate::limits::tests::sparse_file("big.toml", limit + 1);
+        let error = Config::load(Some(path.clone())).unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            format!(
+                "reading config file: {}: the file is larger than the limit of {limit} bytes",
+                path.display()
+            )
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn test_config_deserializes_theme_tables() {

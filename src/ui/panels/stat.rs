@@ -14,26 +14,33 @@
  * limitations under the License.
  */
 
-use crate::app::{AppState, PanelState};
+use crate::app::{AppState, PanelState, PanelType};
+use crate::num;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph, Sparkline},
 };
 
 pub(super) fn render_stat(frame: &mut Frame, area: Rect, p: &PanelState, app: &AppState) {
+    debug_assert!(
+        matches!(p.panel_type, PanelType::Stat),
+        "the panel is a stat"
+    );
     let theme = &app.theme;
 
     let visible_series = p.series.iter().find(|s| s.visible);
     let value = visible_series.and_then(|s| s.value);
     let color = value
         .and_then(|value| p.get_color_for_value(value))
-        .unwrap_or(theme.palette[0]);
+        .unwrap_or(theme.palette_color(0));
 
     // Split area into value (top) and sparkline (bottom)
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(area);
+    let [value_area, sparkline_area] =
+        Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(area);
+    debug_assert!(
+        value_area.height + sparkline_area.height <= area.height,
+        "the value and the sparkline share the panel height"
+    );
 
     // Grafana's noValue stands in for a null value and for no series at all.
     let val_str = visible_series
@@ -44,7 +51,7 @@ pub(super) fn render_stat(frame: &mut Frame, area: Rect, p: &PanelState, app: &A
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::NONE));
 
-    frame.render_widget(big_value, chunks[0]);
+    frame.render_widget(big_value, value_area);
 
     // Render Sparkline
     if let Some(s) = visible_series {
@@ -54,15 +61,15 @@ pub(super) fn render_stat(frame: &mut Frame, area: Rect, p: &PanelState, app: &A
             .data(&data)
             .max(SPARKLINE_MAX)
             .style(Style::default().fg(color));
-        frame.render_widget(sparkline, chunks[1]);
+        frame.render_widget(sparkline, sparkline_area);
     }
 }
 
 const SPARKLINE_MAX: u64 = 100;
 
 /// Bar heights for a sparkline, scaled between the series' minimum and
-/// maximum. `Sparkline` takes unsigned integers, so casting the values would
-/// flatten fractions and negatives.
+/// maximum. `Sparkline` takes unsigned integers. A direct cast of the values
+/// flattens fractions and negatives.
 fn sparkline_heights(points: &[(f64, f64)]) -> Vec<u64> {
     let (min, max) = points
         .iter()
@@ -71,19 +78,26 @@ fn sparkline_heights(points: &[(f64, f64)]) -> Vec<u64> {
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
             (min.min(value), max.max(value))
         });
-    points
+    let heights: Vec<u64> = points
         .iter()
         .map(|(_, value)| {
             if !value.is_finite() {
                 0
             } else if max > min {
                 // The lowest point keeps a sliver, so the line stays visible.
-                1 + ((value - min) / (max - min) * (SPARKLINE_MAX - 1) as f64).round() as u64
+                let ratio = (value - min) / (max - min);
+                1 + num::f64_to_u64((ratio * num::u64_to_f64(SPARKLINE_MAX - 1)).round())
             } else {
                 SPARKLINE_MAX / 2
             }
         })
-        .collect()
+        .collect();
+    debug_assert!(heights.len() == points.len(), "each point has one bar");
+    debug_assert!(
+        heights.iter().all(|height| *height <= SPARKLINE_MAX),
+        "each bar is SPARKLINE_MAX high or less"
+    );
+    heights
 }
 
 #[cfg(test)]

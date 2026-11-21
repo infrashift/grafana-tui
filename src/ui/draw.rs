@@ -14,10 +14,14 @@
  * limitations under the License.
  */
 
-use super::layout::{DashboardRectKind, centered_rect, visible_dashboard_rects};
+use super::layout::{DashboardRect, DashboardRectKind, centered_rect, visible_dashboard_rects};
 use super::panels::render_panel;
+use crate::annotations::AnnotationEvent;
 use crate::app::{AppMode, AppState, BackendIndicator, BackendStatus, PanelState};
-use crate::{dashboard::DashboardRow, theme::Theme};
+use crate::{
+    dashboard::{DashboardItemId, DashboardRow},
+    theme::Theme,
+};
 use humantime::format_duration;
 use ratatui::{
     prelude::*,
@@ -25,6 +29,15 @@ use ratatui::{
 };
 
 pub(crate) fn draw_ui(frame: &mut Frame, app: &mut AppState) {
+    debug_assert!(app.one_dialog_or_less(), "one dialog is open at most");
+    debug_assert!(
+        app.selection_in_panels(),
+        "the selected panel is in the panel list"
+    );
+    debug_assert!(
+        app.search_is_consistent(),
+        "the search text is inside its limit"
+    );
     let size = frame.area();
     let theme = app.theme.clone();
     frame.render_widget(
@@ -33,16 +46,29 @@ pub(crate) fn draw_ui(frame: &mut Frame, app: &mut AppState) {
     );
 
     // Layout: title bar, charts area, footer
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(2),
-        ])
-        .split(size);
+    let [title_area, charts_area, footer_area] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(5),
+        Constraint::Length(2),
+    ])
+    .areas(size);
 
-    // Title
+    render_title_bar(frame, title_area, app, &theme);
+    let selected_rendered_cluster = render_charts_area(frame, charts_area, size, app, &theme);
+    app.rendered_annotation_cluster = selected_rendered_cluster;
+    render_footer(frame, footer_area, app, &theme);
+
+    if app.mode == AppMode::Search {
+        render_search_popup(frame, size, app, &theme);
+    }
+
+    super::render_annotation_modal(frame, app);
+    super::render_theme_picker(frame, app);
+}
+
+/// Draws the title bar with the range, the step and the backend state.
+fn render_title_bar(frame: &mut Frame, area: Rect, app: &AppState, theme: &Theme) {
+    debug_assert!(area.height <= 3, "the title bar is three rows high or less");
     let mut title_spans = vec![Span::raw(format!(
         "{} — range={} step={}  panels={}  ",
         app.title,
@@ -56,40 +82,67 @@ pub(crate) fn draw_ui(frame: &mut Frame, app: &mut AppState) {
             Style::default().fg(theme.warning),
         ));
     }
-    match app.backend_indicator() {
-        Some(BackendIndicator::Connecting) => {
-            title_spans.push(Span::styled(
-                "◌ connecting ",
-                Style::default().fg(theme.warning),
-            ));
-        }
-        Some(BackendIndicator::Refreshing) => {
-            title_spans.push(Span::styled(
-                "⟳ refreshing ",
-                Style::default().fg(theme.warning),
-            ));
-        }
-        Some(BackendIndicator::Unreachable) => {
-            let text = match app.unreachable_cause() {
-                Some(cause) => format!("✗ Prometheus unreachable ({cause}) "),
-                None => "✗ Prometheus unreachable ".to_string(),
-            };
-            title_spans.push(Span::styled(text, Style::default().fg(theme.error)));
-        }
-        None => {}
+    if let Some(span) = backend_indicator_span(app, theme) {
+        title_spans.push(span);
     }
     title_spans.push(Span::raw(
         "(r to refresh, +/- range, [] pan, 0 live, q quit)",
     ));
+    debug_assert!(
+        (2..=4).contains(&title_spans.len()),
+        "the title has the range, the key hints and two state marks at most"
+    );
     let title_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
         .title_style(Style::default().fg(theme.text))
         .title(Line::from(title_spans).alignment(Alignment::Center));
-    frame.render_widget(title_block, chunks[0]);
+    frame.render_widget(title_block, area);
+}
 
+/// Returns the title bar span for the backend indicator, if there is one.
+fn backend_indicator_span(app: &AppState, theme: &Theme) -> Option<Span<'static>> {
+    let span = match app.backend_indicator()? {
+        BackendIndicator::Connecting => {
+            Span::styled("◌ connecting ", Style::default().fg(theme.warning))
+        }
+        BackendIndicator::Refreshing => {
+            Span::styled("⟳ refreshing ", Style::default().fg(theme.warning))
+        }
+        BackendIndicator::Unreachable => {
+            let text = match app.unreachable_cause() {
+                Some(cause) => format!("✗ Prometheus unreachable ({cause}) "),
+                None => "✗ Prometheus unreachable ".to_string(),
+            };
+            Span::styled(text, Style::default().fg(theme.error))
+        }
+    };
+    debug_assert!(
+        span.content.ends_with(' '),
+        "the indicator ends with a space before the key hints"
+    );
+    debug_assert!(span.style.fg.is_some(), "the indicator has a color");
+    Some(span)
+}
+
+/// Returns true when the app shows one panel in fullscreen.
+fn is_fullscreen(app: &AppState) -> bool {
+    app.mode == AppMode::Fullscreen || app.mode == AppMode::FullscreenInspect
+}
+
+/// Draws the charts area and returns the annotation cluster of the selected panel.
+fn render_charts_area(
+    frame: &mut Frame,
+    area: Rect,
+    size: Rect,
+    app: &AppState,
+    theme: &Theme,
+) -> Option<Vec<AnnotationEvent>> {
+    debug_assert!(
+        super::layout::rect_inside(size, area),
+        "the charts area is inside the frame"
+    );
     // Charts area: use Grafana grid if any panel has it, else fallback to 2-column flow
-    let area = chunks[1];
     let charts_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border));
@@ -98,99 +151,138 @@ pub(crate) fn draw_ui(frame: &mut Frame, app: &mut AppState) {
         vertical: 1,
         horizontal: 1,
     });
+    debug_assert!(
+        super::layout::rect_inside(area, inner_area),
+        "the charts body is inside the charts border"
+    );
 
+    if is_fullscreen(app) {
+        return render_fullscreen_panel(frame, inner_area, app);
+    }
     let mut selected_rendered_cluster = None;
-    if app.mode == AppMode::Fullscreen || app.mode == AppMode::FullscreenInspect {
-        if let Some((panel_index, p)) = app
-            .selected_panel_index()
-            .and_then(|index| app.panels.get(index).map(|panel| (index, panel)))
-        {
-            selected_rendered_cluster =
-                render_panel(frame, inner_area, panel_index, p, app, true, app.cursor_x);
-        }
-    } else {
-        for item in visible_dashboard_rects(size, app) {
-            match item.kind {
-                DashboardRectKind::Panel { index } => {
-                    if let Some(panel) = app.panels.get(index) {
-                        let is_selected = app.selected_item == Some(item.id);
-                        let rendered_cluster = render_panel(
-                            frame,
-                            item.rect,
-                            index,
-                            panel,
-                            app,
-                            is_selected,
-                            app.cursor_x,
-                        );
-                        if is_selected {
-                            selected_rendered_cluster = rendered_cluster;
-                        }
-                    }
-                }
-                DashboardRectKind::Row { row_id, depth, .. } => {
-                    if let Some(row) = app.layout.row(row_id) {
-                        render_row_header(
-                            frame,
-                            item.rect,
-                            row,
-                            depth,
-                            app.selected_item == Some(item.id),
-                            &app.theme,
-                        );
-                    }
-                }
-                DashboardRectKind::Tabs { group_id, depth } => {
-                    if let Some(group) = app.layout.tabs(group_id) {
-                        let titles = group
-                            .tabs
-                            .iter()
-                            .map(|tab| tab.title.clone())
-                            .collect::<Vec<_>>();
-                        let geometry =
-                            super::tab_bar_geometry(item.rect, &titles, group.active, depth);
-                        super::render_tab_bar(
-                            frame,
-                            &geometry,
-                            &app.theme,
-                            app.selected_item == Some(item.id),
-                        );
-                    }
-                }
-                DashboardRectKind::TabEmpty { group_id } => frame.render_widget(
-                    Line::styled(
-                        format!("  {}", app.empty_tab_message(group_id)),
-                        Style::default().fg(app.theme.text),
-                    ),
-                    item.rect,
-                ),
-            }
+    for item in visible_dashboard_rects(size, app) {
+        if let Some(cluster) = render_dashboard_item(frame, &item, app) {
+            selected_rendered_cluster = cluster;
         }
     }
-    app.rendered_annotation_cluster = selected_rendered_cluster;
+    selected_rendered_cluster
+}
 
-    // Footer / Status bar
-    let errors = app
-        .dashboard_panel_indices()
-        .into_iter()
-        .filter(|&index| app.panels[index].last_error.is_some())
-        .count();
-    let panel_count_display =
-        if app.mode == AppMode::Fullscreen || app.mode == AppMode::FullscreenInspect {
-            "1 (Fullscreen)".to_string()
-        } else {
-            normal_panel_count(app)
-        };
+/// Draws the selected panel over the whole charts area.
+fn render_fullscreen_panel(
+    frame: &mut Frame,
+    inner_area: Rect,
+    app: &AppState,
+) -> Option<Vec<AnnotationEvent>> {
+    debug_assert!(is_fullscreen(app), "the app shows one panel in fullscreen");
+    debug_assert!(
+        app.cursor_x.is_none_or(f64::is_finite),
+        "the cursor is at a finite time"
+    );
+    let (panel_index, p) = app
+        .selected_panel_index()
+        .and_then(|index| app.panels.get(index).map(|panel| (index, panel)))?;
+    render_panel(frame, inner_area, panel_index, p, app, true, app.cursor_x)
+}
 
-    let mode_display = match app.mode {
+/// Draws one item. For the selected panel, it returns `Some` with its annotation cluster.
+fn render_dashboard_item(
+    frame: &mut Frame,
+    item: &DashboardRect,
+    app: &AppState,
+) -> Option<Option<Vec<AnnotationEvent>>> {
+    debug_assert!(!is_fullscreen(app), "the dashboard view draws each item");
+    debug_assert!(
+        item.disclosure_rect.is_none() || matches!(item.kind, DashboardRectKind::Row { .. }),
+        "only a row has a disclosure target"
+    );
+    let is_selected = app.selected_item == Some(item.id);
+    match item.kind {
+        DashboardRectKind::Panel { index } => {
+            let panel = app.panels.get(index)?;
+            let rendered_cluster = render_panel(
+                frame,
+                item.rect,
+                index,
+                panel,
+                app,
+                is_selected,
+                app.cursor_x,
+            );
+            is_selected.then_some(rendered_cluster)
+        }
+        DashboardRectKind::Row { row_id, depth, .. } => {
+            if let Some(row) = app.layout.row(row_id) {
+                render_row_header(frame, item.rect, row, depth, is_selected, &app.theme);
+            }
+            None
+        }
+        DashboardRectKind::Tabs { group_id, depth } => {
+            if let Some(group) = app.layout.tabs(group_id) {
+                let titles = group
+                    .tabs
+                    .iter()
+                    .map(|tab| tab.title.clone())
+                    .collect::<Vec<_>>();
+                let geometry = super::tab_bar_geometry(item.rect, &titles, group.active, depth);
+                super::render_tab_bar(frame, &geometry, &app.theme, is_selected);
+            }
+            None
+        }
+        DashboardRectKind::TabEmpty { group_id } => {
+            frame.render_widget(
+                Line::styled(
+                    format!("  {}", app.empty_tab_message(group_id)),
+                    Style::default().fg(app.theme.text),
+                ),
+                item.rect,
+            );
+            None
+        }
+    }
+}
+
+/// Draws the footer: the status details first, then the summary line.
+fn render_footer(frame: &mut Frame, area: Rect, app: &AppState, theme: &Theme) {
+    let summary = footer_summary(app, theme);
+    let detail = build_footer_detail(app);
+
+    // Statuses such as export results come first. The summary alone usually
+    // fills the two footer lines, so it hides the statuses that follow it.
+    let mut lines = Vec::new();
+    if !detail.is_empty() {
+        lines.extend(detail.lines().map(|line| Line::raw(line.to_string())));
+    }
+    lines.push(Line::from(summary));
+    debug_assert!(
+        lines.len() == detail.lines().count() + 1,
+        "the footer has the detail lines and the summary line"
+    );
+    debug_assert!(area.height <= 2, "the footer is two rows high or less");
+    let footer = Paragraph::new(lines).wrap(Wrap { trim: true });
+    frame.render_widget(footer, area);
+}
+
+/// Returns the footer label of an app mode.
+fn mode_label(mode: AppMode) -> &'static str {
+    let label = match mode {
         AppMode::Normal => "NORMAL",
         AppMode::Search => "SEARCH",
         AppMode::Fullscreen => "FULLSCREEN",
         AppMode::Inspect => "INSPECT",
         AppMode::FullscreenInspect => "FULLSCREEN INSPECT",
     };
+    debug_assert!(!label.is_empty(), "a mode label has text");
+    debug_assert!(
+        label.chars().all(|c| c.is_ascii_uppercase() || c == ' '),
+        "a mode label is in capital letters"
+    );
+    label
+}
 
-    let navigation_hint = match (
+/// Returns the keys that move the selection from the current item.
+fn navigation_hint(app: &AppState) -> &'static str {
+    let hint = match (
         app.selected_tab_group_id().is_some(),
         app.dashboards.is_some(),
     ) {
@@ -199,7 +291,35 @@ pub(crate) fn draw_ui(frame: &mut Frame, app: &mut AppState) {
         (false, true) => "Tab/⇧Tab dashboard, ↑/↓ navigate",
         (false, false) => "↑/↓ navigate",
     };
-    let mut summary = vec![Span::raw(format!("Mode: {mode_display}"))];
+    debug_assert!(
+        hint.ends_with("↑/↓ navigate"),
+        "each hint names the arrow keys"
+    );
+    debug_assert!(
+        hint.contains("Tab/⇧Tab") == app.dashboards.is_some(),
+        "the dashboard keys show only with several dashboards"
+    );
+    hint
+}
+
+/// Builds the spans of the footer summary line.
+fn footer_summary(app: &AppState, theme: &Theme) -> Vec<Span<'static>> {
+    let errors = app
+        .dashboard_panel_indices()
+        .into_iter()
+        .filter(|&index| {
+            app.panels
+                .get(index)
+                .is_some_and(|panel| panel.last_error.is_some())
+        })
+        .count();
+    let panel_count_display = if is_fullscreen(app) {
+        "1 (Fullscreen)".to_string()
+    } else {
+        normal_panel_count(app)
+    };
+
+    let mut summary = vec![Span::raw(format!("Mode: {}", mode_label(app.mode)))];
     if app.recording.is_some() {
         summary.push(Span::styled(" REC", Style::default().fg(theme.error)));
     }
@@ -223,94 +343,108 @@ pub(crate) fn draw_ui(frame: &mut Frame, app: &mut AppState) {
         },
     ));
     summary.push(Span::raw(format!(
-        " | keys: {navigation_hint}, r refresh, e export, Ctrl+E record, +/- range, T theme, q quit, ? debug:{}",
+        " | keys: {}, r refresh, e export, Ctrl+E record, +/- range, T theme, q quit, ? debug:{}",
+        navigation_hint(app),
         if app.debug_bar { "on" } else { "off" }
     )));
+    debug_assert!(
+        (4..=5).contains(&summary.len()),
+        "the summary has the mode, the state, the errors, the keys and the REC mark at most"
+    );
+    debug_assert!(
+        summary
+            .first()
+            .is_some_and(|span| span.content.starts_with("Mode: ")),
+        "the summary starts with the mode"
+    );
+    summary
+}
 
-    let detail = build_footer_detail(app);
+/// Draws the search popup with the query and the items that match it.
+fn render_search_popup(frame: &mut Frame, size: Rect, app: &AppState, theme: &Theme) {
+    debug_assert!(app.mode == AppMode::Search, "the app is in the search mode");
+    let area = centered_rect(60, 20, size);
+    debug_assert!(
+        super::layout::rect_inside(size, area),
+        "the search popup is inside the frame"
+    );
+    let block = Block::default()
+        .title(" Search Dashboard ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border_focused))
+        .style(Style::default().fg(theme.text).bg(theme.surface));
+    frame.render_widget(Clear, area); // Clear background
+    frame.render_widget(block, area);
 
-    // Statuses such as export results come first: the summary alone usually
-    // fills the two footer lines, which would hide them.
-    let mut lines = Vec::new();
-    if !detail.is_empty() {
-        lines.extend(detail.lines().map(|line| Line::raw(line.to_string())));
+    let inner_area = area.inner(Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+    let [input_area, results_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner_area);
+
+    // Input
+    let input = Paragraph::new(format!("> {}", app.search_query))
+        .style(Style::default().fg(app.theme.text));
+    frame.render_widget(input, input_area);
+
+    // Results
+    let results: Vec<ListItem> = app
+        .search_results
+        .iter()
+        .filter_map(|item| search_result_item(app, item))
+        .collect();
+    debug_assert!(
+        results.len() <= app.search_results.len(),
+        "each search result has one row or none"
+    );
+    let list = List::new(results)
+        .highlight_style(
+            Style::default()
+                .fg(theme.selection_fg)
+                .bg(theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(">> ");
+
+    let mut list_state = ratatui::widgets::ListState::default();
+    if !app.search_results.is_empty() {
+        list_state.select(Some(0));
     }
-    lines.push(Line::from(summary));
-    let footer = Paragraph::new(lines).wrap(Wrap { trim: true });
-    frame.render_widget(footer, chunks[2]);
+    frame.render_stateful_widget(list, results_area, &mut list_state);
+}
 
-    // Search Popup
-    if app.mode == AppMode::Search {
-        let area = centered_rect(60, 20, size);
-        let block = Block::default()
-            .title(" Search Dashboard ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border_focused))
-            .style(Style::default().fg(theme.text).bg(theme.surface));
-        frame.render_widget(Clear, area); // Clear background
-        frame.render_widget(block, area);
-
-        let inner_area = area.inner(Margin {
-            vertical: 1,
-            horizontal: 1,
-        });
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(1)])
-            .split(inner_area);
-
-        // Input
-        let input = Paragraph::new(format!("> {}", app.search_query))
-            .style(Style::default().fg(app.theme.text));
-        frame.render_widget(input, chunks[0]);
-
-        // Results
-        let results: Vec<ListItem> = app
-            .search_results
-            .iter()
-            .filter_map(|item| match item {
-                crate::dashboard::DashboardItemId::Row(row_id) => {
-                    let row = app.layout.row(*row_id)?;
-                    let marker = if row.collapsed { '▶' } else { '▼' };
-                    Some(ListItem::new(format!("{marker} {}", row.title)))
-                }
-                crate::dashboard::DashboardItemId::Panel(index) => {
-                    let panel = app.panels.get(*index)?;
-                    Some(ListItem::new(format!("• {}", panel.title)))
-                }
-                crate::dashboard::DashboardItemId::Tabs(group_id) => {
-                    let group = app.layout.tabs(*group_id)?;
-                    let title = group
-                        .active
-                        .and_then(|index| {
-                            group
-                                .tabs
-                                .get(index)
-                                .map(|tab| super::tab_title(&tab.title, index))
-                        })
-                        .unwrap_or_else(|| "No tabs".to_string());
-                    Some(ListItem::new(format!("▰ {title}")))
-                }
-            })
-            .collect();
-        let list = List::new(results)
-            .highlight_style(
-                Style::default()
-                    .fg(theme.selection_fg)
-                    .bg(theme.selection_bg)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol(">> ");
-
-        let mut list_state = ratatui::widgets::ListState::default();
-        if !app.search_results.is_empty() {
-            list_state.select(Some(0));
+/// Builds the list item for one search result.
+fn search_result_item(app: &AppState, item: &DashboardItemId) -> Option<ListItem<'static>> {
+    let row = match item {
+        DashboardItemId::Row(row_id) => {
+            let row = app.layout.row(*row_id)?;
+            let marker = if row.collapsed { '▶' } else { '▼' };
+            Some(ListItem::new(format!("{marker} {}", row.title)))
         }
-        frame.render_stateful_widget(list, chunks[1], &mut list_state);
-    }
-
-    super::render_annotation_modal(frame, app);
-    super::render_theme_picker(frame, app);
+        DashboardItemId::Panel(index) => {
+            let panel = app.panels.get(*index)?;
+            Some(ListItem::new(format!("• {}", panel.title)))
+        }
+        DashboardItemId::Tabs(group_id) => {
+            let group = app.layout.tabs(*group_id)?;
+            let title = group
+                .active
+                .and_then(|index| {
+                    group
+                        .tabs
+                        .get(index)
+                        .map(|tab| super::tab_title(&tab.title, index))
+                })
+                .unwrap_or_else(|| "No tabs".to_string());
+            Some(ListItem::new(format!("▰ {title}")))
+        }
+    };
+    debug_assert!(
+        row.as_ref().is_none_or(|row| row.width() >= 2),
+        "a result row has a marker and a space"
+    );
+    row
 }
 
 fn normal_panel_count(app: &AppState) -> String {
@@ -325,6 +459,11 @@ pub(crate) fn render_row_header(
     selected: bool,
     theme: &Theme,
 ) {
+    debug_assert!(rect.height <= 1, "a row header is one row high");
+    debug_assert!(
+        depth <= crate::dashboard::MAX_LAYOUT_DEPTH,
+        "the row is not deeper than MAX_LAYOUT_DEPTH"
+    );
     let marker = if row.collapsed { '▶' } else { '▼' };
     let text = format!("{marker} {}{}", "  ".repeat(depth), row.title);
     let style = Style::default()
@@ -342,16 +481,25 @@ pub(crate) fn render_row_header(
 }
 
 fn backend_status_label(status: BackendStatus) -> String {
-    match status {
+    let label = match status {
         BackendStatus::Connecting => "connecting".to_string(),
         BackendStatus::Live => "live".to_string(),
         BackendStatus::Unreachable { failures: 1 } => "unreachable".to_string(),
         BackendStatus::Unreachable { failures } => format!("unreachable for {failures} refreshes"),
-    }
+    };
+    debug_assert!(
+        label.starts_with(char::is_lowercase),
+        "a status label starts with a small letter"
+    );
+    debug_assert!(
+        label.starts_with("unreachable") == matches!(status, BackendStatus::Unreachable { .. }),
+        "only an unreachable backend has an unreachable label"
+    );
+    label
 }
 
 /// Details behind the selected panel's title marker: a failed query of a
-/// panel still showing data, or Prometheus warnings. Without either, the
+/// panel that still shows data, or Prometheus warnings. Without either, the
 /// Prometheus infos, which have no marker.
 fn selected_panel_notice(app: &AppState) -> Option<String> {
     let panel = app.panels.get(app.selected_panel_index()?)?;
@@ -365,12 +513,37 @@ fn selected_panel_notice(app: &AppState) -> Option<String> {
         ),
         None => ("info: ", notices.infos.iter().map(String::as_str).collect()),
     };
+    debug_assert!(
+        panel.last_error.is_none() || !panel.series.is_empty(),
+        "only a failed panel that still shows data has an error notice"
+    );
     let first = messages.first()?;
     let more = match messages.len() {
         1 => String::new(),
         count => format!(" (+{} more)", count - 1),
     };
-    Some(format!("{}: {kind}{first}{more}", panel.title))
+    let notice = format!("{}: {kind}{first}{more}", panel.title);
+    debug_assert!(
+        notice.starts_with(&panel.title),
+        "the notice starts with the panel title"
+    );
+    Some(notice)
+}
+
+/// The first `(name, text)` of `entries`, and a count of the others for the footer.
+fn first_and_more<'a>(
+    mut entries: impl Iterator<Item = (&'a str, &'a str)>,
+) -> Option<(&'a str, &'a str, String)> {
+    let (name, text) = entries.next()?;
+    let more = match entries.count() {
+        0 => String::new(),
+        count => format!(" (+{count} more)"),
+    };
+    debug_assert!(
+        more.is_empty() || (more.starts_with(" (+") && more.ends_with(" more)")),
+        "the count of the other entries is empty or in parentheses"
+    );
+    Some((name, text, more))
 }
 
 fn build_footer_detail(app: &AppState) -> String {
@@ -379,7 +552,7 @@ fn build_footer_detail(app: &AppState) -> String {
     if matches!(app.mode, AppMode::Inspect | AppMode::FullscreenInspect)
         && let Some(cx) = app.cursor_x
     {
-        let cursor_time = chrono::DateTime::from_timestamp(cx as i64, 0)
+        let cursor_time = chrono::DateTime::from_timestamp(crate::num::f64_to_i64(cx), 0)
             .map(|dt| dt.format("%H:%M:%S").to_string())
             .unwrap_or_default();
         parts.push(format!("Cursor: {cursor_time}"));
@@ -393,49 +566,63 @@ fn build_footer_detail(app: &AppState) -> String {
         parts.push(notice);
     }
 
-    let mut variable_errors = app.variable_errors();
-    if let Some((name, error)) = variable_errors.next() {
-        let more = match variable_errors.count() {
-            0 => String::new(),
-            count => format!(" (+{count} more)"),
-        };
+    if let Some((name, error, more)) = first_and_more(app.variable_errors()) {
         parts.push(format!("Variable {name} failed: {error}{more}"));
+    }
+    if let Some((name, notice, more)) = first_and_more(app.variable_notices()) {
+        parts.push(format!("Variable {name}: {notice}{more}"));
     }
 
     if let Some(status) = &app.export_status {
         parts.push(status.clone());
     }
 
-    if app.debug_bar {
-        // Choose a debug panel: if we have grid, pick the top-left grid panel; otherwise pick the first panel
-        let shown: Vec<&PanelState> = app
-            .rendered_panel_indices()
-            .into_iter()
-            .map(|index| &app.panels[index])
-            .collect();
-        let debug_panel: Option<&PanelState> = if shown.iter().any(|p| p.grid.is_some()) {
-            shown
-                .iter()
-                .copied()
-                .filter(|p| p.grid.is_some())
-                .min_by_key(|p| {
-                    let g = p.grid.unwrap();
-                    (g.y, g.x)
-                })
-        } else {
-            shown.first().copied()
-        };
-
-        if let Some(p) = debug_panel {
-            let url = p.last_url.as_deref().unwrap_or("-");
-            parts.push(format!(
-                "last panel: {} | samples={} | url={}",
-                p.title, p.last_samples, url
-            ));
-        }
+    if app.debug_bar
+        && let Some(p) = debug_panel(app)
+    {
+        let url = p.last_url.as_deref().unwrap_or("-");
+        parts.push(format!(
+            "last panel: {} | samples={} | url={}",
+            p.title, p.last_samples, url
+        ));
     }
 
-    parts.join(" | ")
+    debug_assert!(parts.len() <= 7, "the detail has seven parts at most");
+    let detail = parts.join(" | ");
+    debug_assert!(
+        detail.matches(" | ").count() >= parts.len().saturating_sub(1),
+        "a separator goes between each two parts"
+    );
+    detail
+}
+
+/// Chooses the debug bar panel: the top-left grid panel, or else the first panel.
+fn debug_panel(app: &AppState) -> Option<&PanelState> {
+    let shown: Vec<&PanelState> = app
+        .rendered_panel_indices()
+        .into_iter()
+        .filter_map(|index| app.panels.get(index))
+        .collect();
+    let gridded = shown.iter().any(|p| p.grid.is_some());
+    let panel = if gridded {
+        shown
+            .iter()
+            .copied()
+            .filter_map(|p| p.grid.map(|g| ((g.y, g.x), p)))
+            .min_by_key(|(key, _)| *key)
+            .map(|(_, p)| p)
+    } else {
+        shown.first().copied()
+    };
+    debug_assert!(
+        panel.is_some() == !shown.is_empty(),
+        "a debug panel exists when a panel shows"
+    );
+    debug_assert!(
+        !gridded || panel.is_some_and(|p| p.grid.is_some()),
+        "on a grid, the debug panel has a grid position"
+    );
+    panel
 }
 
 #[cfg(test)]

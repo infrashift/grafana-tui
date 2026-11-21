@@ -15,17 +15,34 @@
  */
 
 use super::labels::{PlotBounds, value_to_plot_x};
-use super::overlay::overlay_cell_if_blank_or_weak_area_fill;
-use crate::annotations::{AnnotationCluster, AnnotationEvent, cluster_events_by};
+use super::overlay::{is_blank_cell, overlay_cell_if_blank_or_weak_area_fill};
+use crate::annotations::{AnnotationCluster, AnnotationEvent, cluster_projected_events};
 use ratatui::prelude::*;
 
-pub(super) fn cluster_badge(count: usize) -> char {
-    match count {
+/// The marker for a cluster of `count` annotations: a dot, a digit, or `+` for 10 or more.
+pub(crate) fn cluster_badge(count: usize) -> char {
+    let badge = match count {
         0 => ' ',
         1 => '•',
-        2..=9 => char::from_digit(count as u32, 10).unwrap(),
+        2 => '2',
+        3 => '3',
+        4 => '4',
+        5 => '5',
+        6 => '6',
+        7 => '7',
+        8 => '8',
+        9 => '9',
         _ => '+',
-    }
+    };
+    debug_assert!(
+        count == 0 || !badge.is_whitespace(),
+        "a cluster with events has a visible badge"
+    );
+    debug_assert!(
+        !(2..=9).contains(&count) || badge.to_digit(10) == u32::try_from(count).ok(),
+        "a digit badge shows the event count"
+    );
+    badge
 }
 
 pub(super) fn terminal_clusters<'a>(
@@ -33,9 +50,10 @@ pub(super) fn terminal_clusters<'a>(
     x_bounds: [f64; 2],
     plot: PlotBounds,
 ) -> Vec<AnnotationCluster<'a>> {
-    cluster_events_by(events, |timestamp| {
-        value_to_plot_x(timestamp, x_bounds, plot).map(u32::from)
-    })
+    cluster_projected_events(events.into_iter().map(|event| {
+        let x = value_to_plot_x(event.timestamp_secs(), x_bounds, plot);
+        (x.map(u32::from), event)
+    }))
 }
 
 pub(super) fn render_annotation_clusters(
@@ -45,6 +63,17 @@ pub(super) fn render_annotation_clusters(
     strong_data: Option<&ratatui::buffer::Buffer>,
     color: Color,
 ) {
+    debug_assert!(
+        clusters.iter().all(|cluster| !cluster.events.is_empty()),
+        "each cluster has an event"
+    );
+    debug_assert!(
+        clusters
+            .iter()
+            .zip(clusters.iter().skip(1))
+            .all(|(a, b)| a.coordinate < b.coordinate),
+        "the clusters are in increasing column order"
+    );
     for cluster in clusters {
         let Ok(x) = u16::try_from(cluster.coordinate) else {
             continue;
@@ -75,6 +104,14 @@ fn render_marker_cell(
     marker: char,
     color: Color,
 ) {
+    debug_assert!(
+        frame.area().contains(Position::new(x, y)),
+        "the frame has each marker cell"
+    );
+    debug_assert!(
+        strong_data.is_none_or(|buffer| buffer.cell((x, y)).is_some()),
+        "the data mask covers each marker cell"
+    );
     let Some(destination) = frame.buffer_mut().cell_mut((x, y)) else {
         return;
     };
@@ -91,11 +128,16 @@ fn overlay_marker_cell(
     marker: char,
     color: Color,
 ) {
+    debug_assert!(!marker.is_whitespace(), "the marker is visible");
     let mut source = ratatui::buffer::Cell::default();
     source
         .set_char(marker)
         .set_style(Style::default().fg(color));
     overlay_cell_if_blank_or_weak_area_fill(destination, &source, strong_data);
+    debug_assert!(
+        !is_blank_cell(destination),
+        "the cell is not blank after the marker overlay"
+    );
 }
 
 pub(super) fn active_cluster<'a>(
@@ -121,6 +163,8 @@ mod tests {
         assert_eq!(cluster_badge(2), '2');
         assert_eq!(cluster_badge(9), '9');
         assert_eq!(cluster_badge(10), '+');
+        let digits: String = (2..=9).map(cluster_badge).collect();
+        assert_eq!(digits, "23456789");
     }
 
     #[test]
