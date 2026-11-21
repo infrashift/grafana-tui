@@ -27,13 +27,15 @@ pub(crate) fn events_for_panel<'a>(
         .collect()
 }
 
-pub(crate) fn cluster_events_by<'a>(
-    events: impl IntoIterator<Item = &'a AnnotationEvent>,
-    mut project: impl FnMut(f64) -> Option<u32>,
+/// Groups events by their projected coordinate, in coordinate order.
+///
+/// Each item is an event and its coordinate, or `None` when the event is off the plot.
+pub(crate) fn cluster_projected_events<'a>(
+    projected: impl IntoIterator<Item = (Option<u32>, &'a AnnotationEvent)>,
 ) -> Vec<AnnotationCluster<'a>> {
     let mut grouped: BTreeMap<u32, Vec<&'a AnnotationEvent>> = BTreeMap::new();
-    for event in events {
-        if let Some(coordinate) = project(event.timestamp_secs()) {
+    for (coordinate, event) in projected {
+        if let Some(coordinate) = coordinate {
             grouped.entry(coordinate).or_default().push(event);
         }
     }
@@ -45,7 +47,7 @@ pub(crate) fn cluster_events_by<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{cluster_events_by, events_for_panel};
+    use super::{cluster_projected_events, events_for_panel};
     use crate::annotations::{
         AnnotationEvent, AnnotationPanelContext, AnnotationSnapshot, AnnotationTarget,
         TagCatalogueEntry, TagFilter, tag_catalogue,
@@ -147,9 +149,10 @@ mod tests {
             [0.0, 100.0],
         );
 
-        let clusters = cluster_events_by(events, |timestamp| {
-            Some(if timestamp < 50.0 { 4 } else { 9 })
-        });
+        let clusters = cluster_projected_events(events.into_iter().map(|event| {
+            let timestamp = event.timestamp_secs();
+            (Some(if timestamp < 50.0 { 4 } else { 9 }), event)
+        }));
 
         assert_eq!(clusters.len(), 2);
         assert_eq!(clusters[0].coordinate, 4);

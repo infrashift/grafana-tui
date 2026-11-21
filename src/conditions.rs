@@ -86,8 +86,8 @@ pub(crate) struct ConditionContext<'a> {
     pub(crate) all_selected: &'a HashSet<String>,
     /// Width of the dashboard time range.
     pub(crate) range_seconds: f64,
-    /// Whether a panel returned data, or `None` before it has loaded.
-    pub(crate) panel_has_data: &'a dyn Fn(usize) -> Option<bool>,
+    /// Whether each panel returned data, by panel index, or `None` before it has loaded.
+    pub(crate) panel_has_data: &'a [Option<bool>],
 }
 
 impl ConditionGroup {
@@ -138,7 +138,7 @@ impl Condition {
             } => evaluate_variable(context, scope, name, *operator, value),
             Condition::Data { has_data } => {
                 // Grafana only evaluates data conditions on panels.
-                let loaded = (context.panel_has_data)(panel?)?;
+                let loaded = context.panel_has_data.get(panel?).copied().flatten()?;
                 Some(loaded == *has_data)
             }
             Condition::TimeRangeAtMost(seconds) => Some(context.range_seconds <= (*seconds)?),
@@ -248,7 +248,7 @@ mod tests {
         fn context<'a>(
             &'a self,
             range_seconds: f64,
-            panel_has_data: &'a dyn Fn(usize) -> Option<bool>,
+            panel_has_data: &'a [Option<bool>],
         ) -> ConditionContext<'a> {
             ConditionContext {
                 values: &self.values,
@@ -276,7 +276,7 @@ mod tests {
         }
     }
 
-    const NO_DATA: &dyn Fn(usize) -> Option<bool> = &|_| None;
+    const NO_DATA: &[Option<bool>] = &[];
 
     #[test]
     fn variable_conditions_compare_any_selected_value() {
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn groups_combine_ignore_undecided_conditions_and_may_hide() {
         let fixture = Fixture::new(&[("env", &["prod"])]);
-        let has_data = |panel: usize| (panel == 1).then_some(true);
+        let has_data = [None, Some(true)];
         let context = fixture.context(3600.0, &has_data);
         let prod = variable("env", VariableOperator::Equals, "prod");
         let dev = variable("env", VariableOperator::Equals, "dev");

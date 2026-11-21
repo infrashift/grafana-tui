@@ -24,15 +24,24 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::Duration;
 
+/// A source of variable values for `substitute_variables`.
+pub(crate) trait VariableLookup {
+    /// The value of the variable `name`, or `None` to keep the reference unchanged.
+    fn lookup(&mut self, name: &str) -> Option<Cow<'_, str>>;
+}
+
+impl VariableLookup for &HashMap<String, String> {
+    fn lookup(&mut self, name: &str) -> Option<Cow<'_, str>> {
+        self.get(name).map(|value| Cow::Borrowed(value.as_str()))
+    }
+}
+
 /// Replaces `$name` and `${name}` references whose name `lookup` resolves.
 ///
 /// Names are read greedily, as Grafana's `\$(\w+)` does, so `$job_name` never
 /// matches a variable called `job`. Unresolved references, and `${name:format}`
 /// references, are copied unchanged. Substituted values are not scanned again.
-pub(crate) fn substitute_variables<'a>(
-    text: &str,
-    mut lookup: impl FnMut(&str) -> Option<Cow<'a, str>>,
-) -> String {
+pub(crate) fn substitute_variables<L: VariableLookup>(text: &str, mut lookup: L) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     // Each pass reads one `$` or more, so the text length bounds the loop.
@@ -50,7 +59,7 @@ pub(crate) fn substitute_variables<'a>(
             after.split_at_checked(end).unwrap_or((after, ""))
         };
         let value = (!name.is_empty() && name.chars().all(is_variable_name_char))
-            .then(|| lookup(name))
+            .then(|| lookup.lookup(name))
             .flatten();
         match value {
             Some(value) => {
@@ -295,16 +304,31 @@ fn select_values(
     Some(selected)
 }
 
+/// A lookup that resolves no variable and records whether a reference names one of `names`.
+struct ReferenceProbe<'n> {
+    /// The variable names to look for.
+    names: &'n [&'n str],
+    /// Whether the text references one of `names`.
+    found: bool,
+}
+
+impl VariableLookup for &mut ReferenceProbe<'_> {
+    fn lookup(&mut self, name: &str) -> Option<Cow<'_, str>> {
+        self.found |= self.names.contains(&name);
+        None
+    }
+}
+
 /// Whether `query` references any of `names`.
 fn references_any(query: &str, names: &[&str]) -> bool {
-    let mut found = false;
+    let mut probe = ReferenceProbe {
+        names,
+        found: false,
+    };
     if !names.is_empty() {
-        substitute_variables(query, |name| {
-            found |= names.contains(&name);
-            None
-        });
+        substitute_variables(query, &mut probe);
     }
-    found
+    probe.found
 }
 
 async fn resolve_query_variable(
@@ -421,11 +445,11 @@ mod tests {
 
     #[test]
     fn substitution_keeps_unclosed_braces_formats_and_non_ascii_text() {
-        let out = substitute_variables("a $x ${y} ${z:fmt} ${open $é$", |name| match name {
-            "x" => Some(Cow::Borrowed("1")),
-            "y" => Some(Cow::Borrowed("2")),
-            _ => None,
-        });
+        let values = HashMap::from([
+            ("x".to_string(), "1".to_string()),
+            ("y".to_string(), "2".to_string()),
+        ]);
+        let out = substitute_variables("a $x ${y} ${z:fmt} ${open $é$", &values);
         assert_eq!(out, "a 1 2 ${z:fmt} ${open $é$");
     }
 

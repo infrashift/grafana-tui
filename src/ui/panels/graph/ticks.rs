@@ -66,20 +66,33 @@ fn interior_ticks(start: f64, end: f64, step: f64, limit: usize) -> Vec<f64> {
     ticks
 }
 
-/// Returns `step`, made coarser with `next` until `max_ticks` or fewer fit
+/// How `coarse_step` makes a time step coarser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepGrowth {
+    /// The next TUI time step, then double the step.
+    TuiTimeSteps,
+    /// Double the step.
+    Double,
+}
+
+impl StepGrowth {
+    /// The step after `step` for this growth.
+    fn next(self, step: f64) -> f64 {
+        match self {
+            Self::TuiTimeSteps => next_time_grid_step(step),
+            Self::Double => step * 2.0,
+        }
+    }
+}
+
+/// Returns `step`, made coarser with `growth` until `max_ticks` or fewer fit
 /// between `start` and `end`.
-fn coarse_step(
-    start: f64,
-    end: f64,
-    mut step: f64,
-    max_ticks: usize,
-    next: impl Fn(f64) -> f64,
-) -> f64 {
+fn coarse_step(start: f64, end: f64, mut step: f64, max_ticks: usize, growth: StepGrowth) -> f64 {
     for _ in 0..MAX_STEP_CHANGES {
         if interior_ticks(start, end, step, max_ticks + 1).len() <= max_ticks {
             break;
         }
-        step = next(step);
+        step = growth.next(step);
     }
     step
 }
@@ -104,7 +117,7 @@ pub(super) fn calculate_time_grid_ticks(start: f64, end: f64, chart_width: u16) 
 
     let max_ticks = (usize::from(chart_width) / 20).clamp(3, 8);
     let base = base_time_grid_step(end - start);
-    let step = coarse_step(start, end, base, max_ticks, next_time_grid_step);
+    let step = coarse_step(start, end, base, max_ticks, StepGrowth::TuiTimeSteps);
     interior_ticks(start, end, step, MAX_TICKS)
 }
 
@@ -173,7 +186,7 @@ pub(crate) fn svg_time_ticks(start: f64, end: f64) -> Vec<f64> {
     } else {
         DAY
     };
-    let step = coarse_step(start, end, base, MAX_TICKS, |step| step * 2.0);
+    let step = coarse_step(start, end, base, MAX_TICKS, StepGrowth::Double);
     interior_ticks(start, end, step, MAX_TICKS)
 }
 

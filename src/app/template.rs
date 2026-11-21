@@ -21,7 +21,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::state::{GridUnit, PanelState};
-use super::variables::{format_prometheus_values, substitute_variables};
+use super::variables::{VariableLookup, format_prometheus_values, substitute_variables};
 use crate::conditions::{ConditionGroup, ConditionTarget, Conditions};
 use crate::dashboard::{
     DashboardAutoGrid, DashboardLayout, DashboardLayoutItem, DashboardRow, DashboardTab,
@@ -90,6 +90,30 @@ pub(crate) fn find_binding<'s>(scope: &'s [ScopeBinding], name: &str) -> Option<
     scope.iter().rev().find(|binding| binding.name == name)
 }
 
+/// The variable values that a title shows: scope bindings first, then the selected values.
+struct TitleVariables<'s, 'v> {
+    /// The dashboard's variables.
+    variables: &'s Variables<'v>,
+    /// The bindings of the enclosing repeats and sections.
+    scope: &'s Scope,
+}
+
+impl VariableLookup for TitleVariables<'_, '_> {
+    fn lookup(&mut self, name: &str) -> Option<Cow<'_, str>> {
+        if let Some(binding) = find_binding(self.scope, name) {
+            return Some(Cow::Owned(binding.text()));
+        }
+        match self.variables.values.get(name) {
+            Some(values) if !values.is_empty() => Some(Cow::Owned(values.join(" + "))),
+            _ => self
+                .variables
+                .formatted
+                .get(name)
+                .map(|value| Cow::Owned(value.clone())),
+        }
+    }
+}
+
 /// The dashboard's variables, as repeats and titles see them.
 pub(crate) struct Variables<'a> {
     /// Values formatted for queries.
@@ -106,18 +130,13 @@ impl Variables<'_> {
     /// Interpolates `$name` references in a title. Variables bound in `scope`
     /// win; other variables show their selected values joined like Grafana's text.
     pub(crate) fn title(&self, title: &str, scope: &Scope) -> String {
-        substitute_variables(title, |name| {
-            if let Some(binding) = find_binding(scope, name) {
-                return Some(Cow::Owned(binding.text()));
-            }
-            match self.values.get(name) {
-                Some(values) if !values.is_empty() => Some(Cow::Owned(values.join(" + "))),
-                _ => self
-                    .formatted
-                    .get(name)
-                    .map(|value| Cow::Owned(value.clone())),
-            }
-        })
+        substitute_variables(
+            title,
+            TitleVariables {
+                variables: self,
+                scope,
+            },
+        )
     }
 
     /// The values a repeat over `name` iterates, and whether they are regex-escaped.
