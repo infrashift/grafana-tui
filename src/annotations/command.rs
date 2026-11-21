@@ -9,8 +9,8 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use super::{
-    AnnotationCommandConfig, AnnotationProvider, AnnotationProviderError, AnnotationRefreshContext,
-    AnnotationSnapshot, ProviderFuture, ProviderPoll, jsonl::parse_jsonl,
+    AnnotationCommandConfig, AnnotationProviderError, AnnotationRefreshContext, AnnotationSnapshot,
+    ProviderPoll, jsonl::parse_jsonl,
 };
 
 #[derive(Debug)]
@@ -430,9 +430,10 @@ async fn join_or_abort_tasks(mut tasks: ProcessTasks) {
     .await;
 }
 
-impl AnnotationProvider for CommandProvider {
-    fn refresh<'a>(&'a mut self, context: &'a AnnotationRefreshContext) -> ProviderFuture<'a> {
-        Box::pin(self.run(context))
+impl CommandProvider {
+    /// Runs the command for the `context` window. A drop of the future kills the command.
+    pub(crate) async fn refresh(&mut self, context: &AnnotationRefreshContext) -> ProviderPoll {
+        self.run(context).await
     }
 }
 
@@ -488,9 +489,7 @@ mod tests {
         CommandProvider, MAX_STDERR_BYTES, MAX_STDERR_DRAIN_BYTES, MAX_STDOUT_BYTES,
         encode_request, parse_stdout, request_delivered,
     };
-    use crate::annotations::{
-        AnnotationCommandConfig, AnnotationProvider, AnnotationRefreshContext, ProviderPoll,
-    };
+    use crate::annotations::{AnnotationCommandConfig, AnnotationRefreshContext, ProviderPoll};
 
     fn compiled_fixture() -> PathBuf {
         static FIXTURE: OnceLock<PathBuf> = OnceLock::new();

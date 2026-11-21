@@ -1138,10 +1138,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::annotations::{
-        AnnotationProvider, AnnotationRefreshContext, AnnotationSnapshot, ProviderFuture,
-        ProviderPoll,
-    };
+    use crate::annotations::{AnnotationProvider, TestProvider};
     use crate::dashboard::{
         DashboardItemId, DashboardLayout, DashboardLayoutItem, DashboardRow, RowId,
     };
@@ -2008,40 +2005,6 @@ mod tests {
         assert_eq!(app.annotations.footer_status(), None);
     }
 
-    #[derive(Debug)]
-    struct RecordingProvider {
-        captured: Arc<Mutex<Option<AnnotationRefreshContext>>>,
-    }
-
-    impl AnnotationProvider for RecordingProvider {
-        fn refresh<'a>(&'a mut self, context: &'a AnnotationRefreshContext) -> ProviderFuture<'a> {
-            let captured = Arc::clone(&self.captured);
-            let context = context.clone();
-            Box::pin(async move {
-                *captured.lock().unwrap() = Some(context);
-                ProviderPoll::Loaded(AnnotationSnapshot::new(Vec::new()))
-            })
-        }
-    }
-
-    #[derive(Debug)]
-    struct HandshakeProvider {
-        provider_started: Arc<Notify>,
-        metrics_started: Arc<Notify>,
-    }
-
-    impl AnnotationProvider for HandshakeProvider {
-        fn refresh<'a>(&'a mut self, _context: &'a AnnotationRefreshContext) -> ProviderFuture<'a> {
-            let provider_started = Arc::clone(&self.provider_started);
-            let metrics_started = Arc::clone(&self.metrics_started);
-            Box::pin(async move {
-                provider_started.notify_one();
-                metrics_started.notified().await;
-                ProviderPoll::Loaded(AnnotationSnapshot::new(Vec::new()))
-            })
-        }
-    }
-
     #[tokio::test]
     async fn test_empty_panels() {
         let mut app = create_test_app();
@@ -2075,10 +2038,9 @@ mod tests {
     async fn refresh_uses_same_window_for_annotations_and_rendered_data() {
         let captured = Arc::new(Mutex::new(None));
         let mut app = create_test_app();
-        app.annotations =
-            crate::annotations::AnnotationState::from_provider(Some(Box::new(RecordingProvider {
-                captured: Arc::clone(&captured),
-            })));
+        app.annotations = crate::annotations::AnnotationState::from_provider(Some(
+            AnnotationProvider::Test(TestProvider::Recording(Arc::clone(&captured))),
+        ));
 
         app.refresh().await.unwrap();
 
@@ -2124,11 +2086,12 @@ mod tests {
         panel.query_modes = vec![QueryMode::Range];
         app.panels = vec![panel];
         app.apply_layout(DashboardLayout::flat(app.panels.len()));
-        app.annotations =
-            crate::annotations::AnnotationState::from_provider(Some(Box::new(HandshakeProvider {
+        app.annotations = crate::annotations::AnnotationState::from_provider(Some(
+            AnnotationProvider::Test(TestProvider::Handshake {
                 provider_started,
                 metrics_started,
-            })));
+            }),
+        ));
 
         tokio::time::timeout(Duration::from_secs(2), app.refresh())
             .await
