@@ -29,6 +29,15 @@ use ratatui::{
 };
 
 pub(crate) fn draw_ui(frame: &mut Frame, app: &mut AppState) {
+    debug_assert!(app.one_dialog_or_less(), "one dialog is open at most");
+    debug_assert!(
+        app.selection_in_panels(),
+        "the selected panel is in the panel list"
+    );
+    debug_assert!(
+        app.search_is_consistent(),
+        "the search text is inside its limit"
+    );
     let size = frame.area();
     let theme = app.theme.clone();
     frame.render_widget(
@@ -59,6 +68,7 @@ pub(crate) fn draw_ui(frame: &mut Frame, app: &mut AppState) {
 
 /// Draws the title bar with the range, the step and the backend state.
 fn render_title_bar(frame: &mut Frame, area: Rect, app: &AppState, theme: &Theme) {
+    debug_assert!(area.height <= 3, "the title bar is three rows high or less");
     let mut title_spans = vec![Span::raw(format!(
         "{} — range={} step={}  panels={}  ",
         app.title,
@@ -78,6 +88,10 @@ fn render_title_bar(frame: &mut Frame, area: Rect, app: &AppState, theme: &Theme
     title_spans.push(Span::raw(
         "(r to refresh, +/- range, [] pan, 0 live, q quit)",
     ));
+    debug_assert!(
+        (2..=4).contains(&title_spans.len()),
+        "the title has the range, the key hints and two state marks at most"
+    );
     let title_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
@@ -88,23 +102,27 @@ fn render_title_bar(frame: &mut Frame, area: Rect, app: &AppState, theme: &Theme
 
 /// Returns the title bar span for the backend indicator, if there is one.
 fn backend_indicator_span(app: &AppState, theme: &Theme) -> Option<Span<'static>> {
-    match app.backend_indicator()? {
-        BackendIndicator::Connecting => Some(Span::styled(
-            "◌ connecting ",
-            Style::default().fg(theme.warning),
-        )),
-        BackendIndicator::Refreshing => Some(Span::styled(
-            "⟳ refreshing ",
-            Style::default().fg(theme.warning),
-        )),
+    let span = match app.backend_indicator()? {
+        BackendIndicator::Connecting => {
+            Span::styled("◌ connecting ", Style::default().fg(theme.warning))
+        }
+        BackendIndicator::Refreshing => {
+            Span::styled("⟳ refreshing ", Style::default().fg(theme.warning))
+        }
         BackendIndicator::Unreachable => {
             let text = match app.unreachable_cause() {
                 Some(cause) => format!("✗ Prometheus unreachable ({cause}) "),
                 None => "✗ Prometheus unreachable ".to_string(),
             };
-            Some(Span::styled(text, Style::default().fg(theme.error)))
+            Span::styled(text, Style::default().fg(theme.error))
         }
-    }
+    };
+    debug_assert!(
+        span.content.ends_with(' '),
+        "the indicator ends with a space before the key hints"
+    );
+    debug_assert!(span.style.fg.is_some(), "the indicator has a color");
+    Some(span)
 }
 
 /// Returns true when the app shows one panel in fullscreen.
@@ -120,6 +138,10 @@ fn render_charts_area(
     app: &AppState,
     theme: &Theme,
 ) -> Option<Vec<AnnotationEvent>> {
+    debug_assert!(
+        super::layout::rect_inside(size, area),
+        "the charts area is inside the frame"
+    );
     // Charts area: use Grafana grid if any panel has it, else fallback to 2-column flow
     let charts_block = Block::default()
         .borders(Borders::ALL)
@@ -129,6 +151,10 @@ fn render_charts_area(
         vertical: 1,
         horizontal: 1,
     });
+    debug_assert!(
+        super::layout::rect_inside(area, inner_area),
+        "the charts body is inside the charts border"
+    );
 
     if is_fullscreen(app) {
         return render_fullscreen_panel(frame, inner_area, app);
@@ -148,6 +174,11 @@ fn render_fullscreen_panel(
     inner_area: Rect,
     app: &AppState,
 ) -> Option<Vec<AnnotationEvent>> {
+    debug_assert!(is_fullscreen(app), "the app shows one panel in fullscreen");
+    debug_assert!(
+        app.cursor_x.is_none_or(f64::is_finite),
+        "the cursor is at a finite time"
+    );
     let (panel_index, p) = app
         .selected_panel_index()
         .and_then(|index| app.panels.get(index).map(|panel| (index, panel)))?;
@@ -160,6 +191,11 @@ fn render_dashboard_item(
     item: &DashboardRect,
     app: &AppState,
 ) -> Option<Option<Vec<AnnotationEvent>>> {
+    debug_assert!(!is_fullscreen(app), "the dashboard view draws each item");
+    debug_assert!(
+        item.disclosure_rect.is_none() || matches!(item.kind, DashboardRectKind::Row { .. }),
+        "only a row has a disclosure target"
+    );
     let is_selected = app.selected_item == Some(item.id);
     match item.kind {
         DashboardRectKind::Panel { index } => {
@@ -218,24 +254,35 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &AppState, theme: &Theme) {
         lines.extend(detail.lines().map(|line| Line::raw(line.to_string())));
     }
     lines.push(Line::from(summary));
+    debug_assert!(
+        lines.len() == detail.lines().count() + 1,
+        "the footer has the detail lines and the summary line"
+    );
+    debug_assert!(area.height <= 2, "the footer is two rows high or less");
     let footer = Paragraph::new(lines).wrap(Wrap { trim: true });
     frame.render_widget(footer, area);
 }
 
 /// Returns the footer label of an app mode.
 fn mode_label(mode: AppMode) -> &'static str {
-    match mode {
+    let label = match mode {
         AppMode::Normal => "NORMAL",
         AppMode::Search => "SEARCH",
         AppMode::Fullscreen => "FULLSCREEN",
         AppMode::Inspect => "INSPECT",
         AppMode::FullscreenInspect => "FULLSCREEN INSPECT",
-    }
+    };
+    debug_assert!(!label.is_empty(), "a mode label has text");
+    debug_assert!(
+        label.chars().all(|c| c.is_ascii_uppercase() || c == ' '),
+        "a mode label is in capital letters"
+    );
+    label
 }
 
 /// Returns the navigation keys that apply to the current selection.
 fn navigation_hint(app: &AppState) -> &'static str {
-    match (
+    let hint = match (
         app.selected_tab_group_id().is_some(),
         app.dashboards.is_some(),
     ) {
@@ -243,7 +290,16 @@ fn navigation_hint(app: &AppState) -> &'static str {
         (true, false) => "←/→ switch tab, Enter enter, ↑/↓ navigate",
         (false, true) => "Tab/⇧Tab dashboard, ↑/↓ navigate",
         (false, false) => "↑/↓ navigate",
-    }
+    };
+    debug_assert!(
+        hint.ends_with("↑/↓ navigate"),
+        "each hint names the arrow keys"
+    );
+    debug_assert!(
+        hint.contains("Tab/⇧Tab") == app.dashboards.is_some(),
+        "the dashboard keys show only with several dashboards"
+    );
+    hint
 }
 
 /// Builds the spans of the footer summary line.
@@ -291,12 +347,27 @@ fn footer_summary(app: &AppState, theme: &Theme) -> Vec<Span<'static>> {
         navigation_hint(app),
         if app.debug_bar { "on" } else { "off" }
     )));
+    debug_assert!(
+        (4..=5).contains(&summary.len()),
+        "the summary has the mode, the state, the errors, the keys and the REC mark at most"
+    );
+    debug_assert!(
+        summary
+            .first()
+            .is_some_and(|span| span.content.starts_with("Mode: ")),
+        "the summary starts with the mode"
+    );
     summary
 }
 
 /// Draws the search popup with the query and the matching items.
 fn render_search_popup(frame: &mut Frame, size: Rect, app: &AppState, theme: &Theme) {
+    debug_assert!(app.mode == AppMode::Search, "the app is in the search mode");
     let area = centered_rect(60, 20, size);
+    debug_assert!(
+        super::layout::rect_inside(size, area),
+        "the search popup is inside the frame"
+    );
     let block = Block::default()
         .title(" Search Dashboard ")
         .borders(Borders::ALL)
@@ -323,6 +394,10 @@ fn render_search_popup(frame: &mut Frame, size: Rect, app: &AppState, theme: &Th
         .iter()
         .filter_map(|item| search_result_item(app, item))
         .collect();
+    debug_assert!(
+        results.len() <= app.search_results.len(),
+        "each search result has one row or none"
+    );
     let list = List::new(results)
         .highlight_style(
             Style::default()
@@ -341,7 +416,7 @@ fn render_search_popup(frame: &mut Frame, size: Rect, app: &AppState, theme: &Th
 
 /// Builds the list item for one search result.
 fn search_result_item(app: &AppState, item: &DashboardItemId) -> Option<ListItem<'static>> {
-    match item {
+    let row = match item {
         DashboardItemId::Row(row_id) => {
             let row = app.layout.row(*row_id)?;
             let marker = if row.collapsed { '▶' } else { '▼' };
@@ -364,7 +439,12 @@ fn search_result_item(app: &AppState, item: &DashboardItemId) -> Option<ListItem
                 .unwrap_or_else(|| "No tabs".to_string());
             Some(ListItem::new(format!("▰ {title}")))
         }
-    }
+    };
+    debug_assert!(
+        row.as_ref().is_none_or(|row| row.width() >= 2),
+        "a result row has a marker and a space"
+    );
+    row
 }
 
 fn normal_panel_count(app: &AppState) -> String {
@@ -379,6 +459,11 @@ pub(crate) fn render_row_header(
     selected: bool,
     theme: &Theme,
 ) {
+    debug_assert!(rect.height <= 1, "a row header is one row high");
+    debug_assert!(
+        depth <= crate::dashboard::MAX_LAYOUT_DEPTH,
+        "the row is not deeper than MAX_LAYOUT_DEPTH"
+    );
     let marker = if row.collapsed { '▶' } else { '▼' };
     let text = format!("{marker} {}{}", "  ".repeat(depth), row.title);
     let style = Style::default()
@@ -396,12 +481,21 @@ pub(crate) fn render_row_header(
 }
 
 fn backend_status_label(status: BackendStatus) -> String {
-    match status {
+    let label = match status {
         BackendStatus::Connecting => "connecting".to_string(),
         BackendStatus::Live => "live".to_string(),
         BackendStatus::Unreachable { failures: 1 } => "unreachable".to_string(),
         BackendStatus::Unreachable { failures } => format!("unreachable for {failures} refreshes"),
-    }
+    };
+    debug_assert!(
+        label.starts_with(char::is_lowercase),
+        "a status label starts with a small letter"
+    );
+    debug_assert!(
+        label.starts_with("unreachable") == matches!(status, BackendStatus::Unreachable { .. }),
+        "only an unreachable backend has an unreachable label"
+    );
+    label
 }
 
 /// Details behind the selected panel's title marker: a failed query of a
@@ -419,12 +513,21 @@ fn selected_panel_notice(app: &AppState) -> Option<String> {
         ),
         None => ("info: ", notices.infos.iter().map(String::as_str).collect()),
     };
+    debug_assert!(
+        panel.last_error.is_none() || !panel.series.is_empty(),
+        "only a failed panel that still shows data has an error notice"
+    );
     let first = messages.first()?;
     let more = match messages.len() {
         1 => String::new(),
         count => format!(" (+{} more)", count - 1),
     };
-    Some(format!("{}: {kind}{first}{more}", panel.title))
+    let notice = format!("{}: {kind}{first}{more}", panel.title);
+    debug_assert!(
+        notice.starts_with(&panel.title),
+        "the notice starts with the panel title"
+    );
+    Some(notice)
 }
 
 /// The first `(name, text)` of `entries`, and a count of the others for the footer.
@@ -436,6 +539,10 @@ fn first_and_more<'a>(
         0 => String::new(),
         count => format!(" (+{count} more)"),
     };
+    debug_assert!(
+        more.is_empty() || (more.starts_with(" (+") && more.ends_with(" more)")),
+        "the count of the other entries is empty or in parentheses"
+    );
     Some((name, text, more))
 }
 
@@ -480,7 +587,13 @@ fn build_footer_detail(app: &AppState) -> String {
         ));
     }
 
-    parts.join(" | ")
+    debug_assert!(parts.len() <= 7, "the detail has seven parts at most");
+    let detail = parts.join(" | ");
+    debug_assert!(
+        detail.matches(" | ").count() >= parts.len().saturating_sub(1),
+        "a separator goes between each two parts"
+    );
+    detail
 }
 
 /// Chooses the debug bar panel: the top-left grid panel, or else the first panel.
@@ -490,7 +603,8 @@ fn debug_panel(app: &AppState) -> Option<&PanelState> {
         .into_iter()
         .filter_map(|index| app.panels.get(index))
         .collect();
-    if shown.iter().any(|p| p.grid.is_some()) {
+    let gridded = shown.iter().any(|p| p.grid.is_some());
+    let panel = if gridded {
         shown
             .iter()
             .copied()
@@ -499,7 +613,16 @@ fn debug_panel(app: &AppState) -> Option<&PanelState> {
             .map(|(_, p)| p)
     } else {
         shown.first().copied()
-    }
+    };
+    debug_assert!(
+        panel.is_some() == !shown.is_empty(),
+        "a debug panel exists when a panel shows"
+    );
+    debug_assert!(
+        !gridded || panel.is_some_and(|p| p.grid.is_some()),
+        "on a grid, the debug panel has a grid position"
+    );
+    panel
 }
 
 #[cfg(test)]
