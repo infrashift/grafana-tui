@@ -271,7 +271,7 @@ impl FirstStage {
         )
         .await;
         let (fetches, counts) =
-            fetch_panels(&self.prometheus, self.window, &self.vars, self.jobs).await;
+            query_panel_jobs(&self.prometheus, self.window, &self.vars, self.jobs).await;
         RefreshMessage::Data {
             generation: self.generation,
             vars: self.vars,
@@ -650,7 +650,7 @@ impl AppState {
         let vars = self.vars.clone();
         let window = self.query_window(end_ts);
         let fetch = self.refreshes.tasks.spawn(async move {
-            let (fetches, counts) = fetch_panels(&prometheus, window, &vars, jobs).await;
+            let (fetches, counts) = query_panel_jobs(&prometheus, window, &vars, jobs).await;
             RefreshMessage::Panels(PanelBatch {
                 seq,
                 epoch,
@@ -773,7 +773,8 @@ async fn resolve_sections(
     report
 }
 
-async fn fetch_panels(
+/// Runs the queries of `jobs`, some at a time, and counts the results.
+async fn query_panel_jobs(
     prometheus: &prom::PromClient,
     window: QueryWindow,
     vars: &HashMap<String, String>,

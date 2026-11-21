@@ -119,7 +119,8 @@ impl InflightGuard {
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        drop(self.take_waiters());
+        // The waiters go out of scope here, so each caller sees a closed channel.
+        let _waiters = self.take_waiters();
     }
 }
 
