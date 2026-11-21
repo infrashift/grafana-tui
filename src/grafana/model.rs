@@ -147,6 +147,14 @@ pub(super) fn reduce_options_are_custom(options: &Value) -> bool {
                 .iter()
                 .any(|calc| !matches!(calc.as_str(), Some("last" | "lastNotNull")))
         });
+    debug_assert!(
+        !fields || options.get("fields").is_some_and(Value::is_string),
+        "a custom field list comes from a string"
+    );
+    debug_assert!(
+        !calcs || options.get("calcs").is_some_and(Value::is_array),
+        "a custom calculation comes from a list"
+    );
     all_values || fields || calcs
 }
 
@@ -157,7 +165,16 @@ pub(super) fn max_data_points(value: Option<&Value>) -> Option<u32> {
         Value::String(text) => text.trim().parse().ok()?,
         _ => return None,
     };
-    (points >= 1.0).then(|| crate::num::f64_to_u32(points.min(f64::from(u32::MAX))))
+    let result = (points >= 1.0).then(|| crate::num::f64_to_u32(points.min(f64::from(u32::MAX))));
+    debug_assert!(
+        result.is_none_or(|count| count >= 1),
+        "a max data points value is positive"
+    );
+    debug_assert!(
+        !points.is_nan() || result.is_none(),
+        "a value that is not a number gives no limit"
+    );
+    result
 }
 
 #[derive(Debug)]
