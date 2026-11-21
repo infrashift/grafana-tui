@@ -1,4 +1,5 @@
-//! Characterization snapshots for the Power of 10 refactor (ISSUE-001).
+//! Snapshot tests that record the current behavior for the Power of 10
+//! refactor (ISSUE-001).
 //!
 //! Each test loads an example dashboard on the same path as `main`. Then it
 //! fills each panel with fixed synthetic series and draws the dashboard to a
@@ -113,8 +114,8 @@ mod tests {
         text
     }
 
-    /// Compares `actual` with the snapshot file, or writes the file when
-    /// `UPDATE_SNAPSHOTS` is set.
+    /// Compares `actual` with the snapshot file. When the environment has
+    /// `UPDATE_SNAPSHOTS`, this function writes the file.
     fn check_snapshot(name: &str, actual: &str) {
         let path = root().join("tests/snapshots").join(name);
         if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {

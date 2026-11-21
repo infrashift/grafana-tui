@@ -253,7 +253,7 @@ struct SegmentWriter {
 }
 
 impl SegmentWriter {
-    /// Adds one segment, cut short to the remaining width of the bar.
+    /// Adds one segment, cut short to the free width of the bar.
     fn push(&mut self, text: String, selected: bool, activate: Option<usize>) {
         debug_assert!(
             self.x >= self.area.x && self.x <= self.area.right(),

@@ -78,8 +78,8 @@ const MIN_TITLE_COLUMNS: usize = 6;
 const NOTICE_ICON: &str = "⚠";
 
 /// Fits a panel title and its notice in `columns`, with a space between
-/// them. The title is cut short first, then the notice shrinks to its icon,
-/// so the notice stays in view in narrow panels.
+/// them. This function first cuts the title short, then shrinks the notice to
+/// its icon, so the notice stays in view in narrow panels.
 pub(crate) fn fit_panel_title(
     title: &str,
     notice: Option<&'static str>,
@@ -110,12 +110,12 @@ pub(crate) fn fit_panel_title(
 
 /// Renders a single panel.
 ///
-/// This function handles:
-/// - Drawing the panel border and title.
-/// - Rendering the chart with data series.
-/// - Drawing the legend (if space permits).
-/// - Handling inspection mode (cursor line and values).
-/// - Displaying error messages if the panel has an error.
+/// This function:
+/// - Draws the panel border and title.
+/// - Draws the chart with the data series.
+/// - Draws the legend if there is space for it.
+/// - Shows the cursor line and values in the inspect mode.
+/// - Shows error messages if the panel has an error.
 pub(crate) fn render_panel(
     frame: &mut Frame,
     area: Rect,

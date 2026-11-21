@@ -83,7 +83,7 @@ pub(crate) fn builtin_family(name: &str) -> Option<&'static str> {
     family
 }
 
-/// The built-in theme an alias points at, ignoring case.
+/// The built-in theme that an alias points at. The lookup ignores case.
 pub(super) fn alias_target(name: &str) -> Option<&'static str> {
     let target = ALIASES
         .iter()
@@ -100,7 +100,7 @@ pub(super) fn alias_target(name: &str) -> Option<&'static str> {
     target
 }
 
-/// Looks up a built-in theme or alias, ignoring case.
+/// Looks up a built-in theme or alias. The lookup ignores case.
 pub(crate) fn builtin(name: &str) -> Option<Theme> {
     let name = alias_target(name).unwrap_or(name);
     let theme = BUILTINS

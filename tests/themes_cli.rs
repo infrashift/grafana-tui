@@ -1,4 +1,4 @@
-// The Power of 10 rules apply to production code only (ADR-0002).
+// The Power of 10 rules apply only to the code outside the tests (ADR-0002).
 #![allow(
     clippy::unwrap_used,
     reason = "P10-R7: the rules apply to production code only"

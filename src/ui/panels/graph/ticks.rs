@@ -26,8 +26,8 @@ use super::autogrid::nice_grid_step;
 /// so more grid lines add nothing.
 pub(crate) const MAX_TICKS: usize = 4096;
 
-/// The most step changes in the search for a coarse time step. Doubling one
-/// day goes past `f64::MAX` in fewer than 1024 changes.
+/// The most step changes in the search for a coarse time step. A one-day step
+/// that doubles at each change goes past `f64::MAX` in fewer than 1024 changes.
 const MAX_STEP_CHANGES: usize = 1100;
 
 /// One minute in seconds.
@@ -74,7 +74,7 @@ fn interior_ticks(start: f64, end: f64, step: f64, limit: usize) -> Vec<f64> {
     ticks
 }
 
-/// Tells if `ticks` has `limit` or fewer values, each in increasing order.
+/// Tells if `ticks` has `limit` or fewer values, each larger than the one before it.
 fn ticks_are_sorted(ticks: &[f64], limit: usize) -> bool {
     ticks.len() <= limit && ticks.iter().zip(ticks.iter().skip(1)).all(|(a, b)| a < b)
 }

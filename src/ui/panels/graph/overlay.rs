@@ -110,7 +110,7 @@ pub(super) fn overlay_cell_if_blank_or_weak_area_fill(
 }
 
 /// Copies the symbol and foreground only. Overlay buffers start with a reset
-/// background, which would otherwise erase the theme's background fill.
+/// background. A full copy erases the theme's background fill.
 pub(super) fn copy_foreground(dst: &mut ratatui::buffer::Cell, src: &ratatui::buffer::Cell) {
     dst.set_symbol(src.symbol())
         .set_fg(src.fg)

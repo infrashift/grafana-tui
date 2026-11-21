@@ -247,8 +247,8 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &AppState, theme: &Theme) {
     let summary = footer_summary(app, theme);
     let detail = build_footer_detail(app);
 
-    // Statuses such as export results come first: the summary alone usually
-    // fills the two footer lines, which would hide them.
+    // Statuses such as export results come first. The summary alone usually
+    // fills the two footer lines, so it hides the statuses that follow it.
     let mut lines = Vec::new();
     if !detail.is_empty() {
         lines.extend(detail.lines().map(|line| Line::raw(line.to_string())));
@@ -280,7 +280,7 @@ fn mode_label(mode: AppMode) -> &'static str {
     label
 }
 
-/// Returns the navigation keys that apply to the current selection.
+/// Returns the keys that move the selection from the current item.
 fn navigation_hint(app: &AppState) -> &'static str {
     let hint = match (
         app.selected_tab_group_id().is_some(),
@@ -360,7 +360,7 @@ fn footer_summary(app: &AppState, theme: &Theme) -> Vec<Span<'static>> {
     summary
 }
 
-/// Draws the search popup with the query and the matching items.
+/// Draws the search popup with the query and the items that match it.
 fn render_search_popup(frame: &mut Frame, size: Rect, app: &AppState, theme: &Theme) {
     debug_assert!(app.mode == AppMode::Search, "the app is in the search mode");
     let area = centered_rect(60, 20, size);
@@ -499,7 +499,7 @@ fn backend_status_label(status: BackendStatus) -> String {
 }
 
 /// Details behind the selected panel's title marker: a failed query of a
-/// panel still showing data, or Prometheus warnings. Without either, the
+/// panel that still shows data, or Prometheus warnings. Without either, the
 /// Prometheus infos, which have no marker.
 fn selected_panel_notice(app: &AppState) -> Option<String> {
     let panel = app.panels.get(app.selected_panel_index()?)?;

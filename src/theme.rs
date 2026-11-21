@@ -66,8 +66,8 @@ impl Default for Theme {
     }
 }
 
-/// Every selectable theme: the built-ins in display order, each replaced by a
-/// user theme of the same name, followed by the remaining user themes.
+/// Every theme that the user can select: the built-ins in display order, then
+/// the other user themes. A user theme replaces the built-in of the same name.
 pub(crate) fn catalog(custom: &[Theme]) -> Vec<Theme> {
     let find_custom = |name: &str| {
         custom
@@ -98,7 +98,7 @@ pub(crate) fn catalog(custom: &[Theme]) -> Vec<Theme> {
     themes
 }
 
-/// Finds a theme in `catalog` by name or built-in alias, ignoring case.
+/// Finds a theme in `catalog` by name or built-in alias. The search ignores case.
 pub(crate) fn resolve(name: &str, catalog: &[Theme]) -> Result<Theme> {
     let find = |name: &str| {
         catalog
@@ -204,7 +204,7 @@ fn has_distinct_colors(palette: &[Color]) -> bool {
         .all(|(index, color)| first(color) == Some(index))
 }
 
-/// The handful of colors a palette-based theme is built from.
+/// The few colors that a palette-based theme starts from.
 #[derive(Debug, Clone, Copy)]
 struct Base {
     bg: u32,

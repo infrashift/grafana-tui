@@ -58,8 +58,8 @@ pub(super) fn y_label_width(
             .all(|(a, b)| a < b),
         "the grid ticks are in increasing order"
     );
-    // Reserve space using the same unit formatter that will draw the labels;
-    // otherwise bytes/percent suffixes can clip or push into the plot area.
+    // Reserve space with the same unit formatter that draws the labels.
+    // Otherwise bytes/percent suffixes can clip or push into the plot area.
     let axis_width = axis_labels
         .iter()
         .map(|label| num::usize_to_u16(label.width()))
@@ -259,8 +259,8 @@ fn centered_label_start(center: u16, label_width: u16, min_x: u16, max_x: u16) -
     }
 
     let half_width = label_width / 2;
-    // For even-length labels, bias one cell right so the visual midpoint better matches
-    // the target chart column instead of consistently leaning left.
+    // Move an even-length label one cell right. Then its visual midpoint is nearer
+    // the target chart column, and the labels do not always lean left.
     let mut start_x = center.checked_sub(half_width)?;
     if label_width.is_multiple_of(2) {
         start_x = start_x.saturating_add(1);

@@ -66,7 +66,7 @@ impl DisplayFormat {
             Some("d") => format_duration_seconds(value * 86_400.0, decimals),
             Some("percent") => format_suffix(value, decimals, "%"),
             // Grafana's percentunit stores ratios as 0.0-1.0, so scale to the
-            // user-facing percent text dashboards expect.
+            // percent text that dashboards show to the user.
             Some("percentunit") => format_suffix(value * 100.0, decimals, "%"),
             Some("ops") => format_rate(value, decimals, " ops/s"),
             Some("reqps" | "rps") => format_rate(value, decimals, " req/s"),
@@ -78,7 +78,7 @@ impl DisplayFormat {
         text
     }
 
-    /// The unit, ignoring case except where Grafana units differ only by
+    /// The unit in lowercase, except for Grafana units that differ only by
     /// case: `bps` is bits and `Bps` bytes per second.
     fn unit_key(&self) -> Option<String> {
         let unit = self
@@ -254,8 +254,8 @@ pub(crate) fn format_axis_time(ts: f64, range_secs: f64) -> String {
     label
 }
 
-/// Generate a color from a string using hash-based approach.
-/// Uses HSL color space to ensure visually distinct, vibrant colors.
+/// Makes a color from a hash of a string.
+/// The HSL color space gives bright colors that look clearly different.
 pub(crate) fn get_hash_color(name: &str) -> Color {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -264,11 +264,11 @@ pub(crate) fn get_hash_color(name: &str) -> Color {
     name.hash(&mut hasher);
     let hash = hasher.finish();
 
-    // Use HSL color space for better color distribution
+    // The HSL color space spreads the colors better
     // Hue: use the hash to get different hues (0-360 degrees)
     let hue = num::u64_to_f32(hash % 360);
 
-    // Saturation: keep high for vibrant colors (60-90%)
+    // `saturation`: keep it high for bright colors (60-90%)
     let saturation = 60.0 + num::u64_to_f32((hash >> 8) % 30);
 
     // Lightness: keep in a range that's visible on both light and dark backgrounds (45-65%)
@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(unit("Bps").format_number(1_500_000.0), "1.5MB/s");
         assert_eq!(unit("binbps").format_number(2_048.0), "2.0Kib/s");
         assert_eq!(unit("binBps").format_number(2_048.0), "2.0KiB/s");
-        // Units that differ only by case elsewhere are matched case-insensitively.
+        // The match ignores case for units that differ only by case in other places.
         assert_eq!(unit("Bytes").format_number(2_048.0), "2.0KiB");
         assert_eq!(unit("bytes/sec").format_number(1_500.0), "1.5kB/s");
     }
