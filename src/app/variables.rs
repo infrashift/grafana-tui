@@ -16,6 +16,7 @@
 
 use super::data::{QueryIntervals, expand_expr};
 use crate::grafana::{TemplateQueryVar, VariableRefresh};
+use crate::limits::MAX_VARIABLE_VALUES;
 use crate::prom;
 use anyhow::{Result, anyhow};
 use regex::Regex;
@@ -191,6 +192,8 @@ pub(crate) struct VariableReport {
     pub(crate) queried: Vec<String>,
     /// Variable name and error, for variables that keep their previous value.
     pub(crate) errors: Vec<(String, String)>,
+    /// Variable name and notice, for variables that lost values at a limit.
+    pub(crate) notices: Vec<(String, String)>,
 }
 
 /// The Prometheus client and the time window that query variables resolve in.
@@ -228,6 +231,7 @@ pub(crate) async fn refresh_query_variables(
                 continue;
             }
         };
+        let values = cap_values(&query_var.name, values, &mut report);
         let Some(selected) = select_values(query_var, values, var_values) else {
             continue;
         };
@@ -242,6 +246,19 @@ pub(crate) async fn refresh_query_variables(
         var_values.insert(query_var.name.clone(), selected);
     }
     report
+}
+
+/// Keeps the first `MAX_VARIABLE_VALUES` of `values`, and reports a cut in `report`.
+fn cap_values(name: &str, mut values: Vec<String>, report: &mut VariableReport) -> Vec<String> {
+    let count = values.len();
+    if count > MAX_VARIABLE_VALUES {
+        values.truncate(MAX_VARIABLE_VALUES);
+        report.notices.push((
+            name.to_string(),
+            format!("kept the first {MAX_VARIABLE_VALUES} of {count} values (the value limit)"),
+        ));
+    }
+    values
 }
 
 /// Whether `update` queries `query_var` for its own sake.

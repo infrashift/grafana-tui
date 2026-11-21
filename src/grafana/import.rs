@@ -6,6 +6,8 @@ use super::{
 };
 use anyhow::ensure;
 
+use crate::limits::MAX_DASHBOARD_VARIABLES;
+
 use crate::dashboard::{
     DashboardLayoutItem, MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES, MAX_LAYOUT_STEPS, SectionId,
 };
@@ -31,11 +33,12 @@ pub(super) fn finish(dashboard: model::Dashboard) -> Result<DashboardImport> {
         .map(|variable| variable.name.clone())
         .collect();
     out.variable_names.clone_from(&variable_names);
-    import_variables(&mut out, variables);
     let mut ids = LayoutIds {
         variable_names,
         ..LayoutIds::default()
     };
+    ids.count_variables(variables.len())?;
+    import_variables(&mut out, variables);
     out.layout =
         crate::dashboard::DashboardLayout::new(import_layout_nodes(layout, &mut out, &mut ids, 1)?);
     Ok(out)
@@ -61,6 +64,8 @@ pub(super) fn finish_many(
             .iter()
             .map(|variable| variable.name.clone())
             .collect();
+        ids.variables = 0;
+        ids.count_variables(dashboard.variables.len())?;
         if !dashboard.variables.is_empty() {
             out.sections.insert(
                 SectionId::Tab(root, index),
@@ -505,6 +510,7 @@ fn import_node(
         }
         model::LayoutNode::Row(mut row) => {
             check_depth(child_level, &row.source_path)?;
+            ids.count_variables(row.variables.len())?;
             let id = register_row(&mut row, out, ids);
             let header = RowHeader {
                 id,
@@ -593,6 +599,7 @@ fn open_next_tab(
     };
     check_depth(child_level, &tab.source_path)?;
     ids.count(1)?;
+    ids.count_variables(tab.variables.len())?;
     register_tab(&mut tab, (open.id, index), out, ids);
     open.title = tab.title;
     let children = tab.children;
@@ -790,6 +797,8 @@ struct LayoutIds {
     variable_names: std::collections::HashSet<String>,
     /// The layout items imported so far, across every dashboard of a set.
     nodes: usize,
+    /// The variables of the dashboard so far, with those of its rows and tabs.
+    variables: usize,
 }
 
 impl LayoutIds {
@@ -800,6 +809,16 @@ impl LayoutIds {
             self.nodes <= MAX_LAYOUT_NODES,
             "the dashboard layout holds more than the limit of {MAX_LAYOUT_NODES} rows, tabs \
              and panels"
+        );
+        Ok(())
+    }
+
+    /// Adds `added` variables to the count, and fails over `MAX_DASHBOARD_VARIABLES`.
+    fn count_variables(&mut self, added: usize) -> Result<()> {
+        self.variables = self.variables.saturating_add(added);
+        ensure!(
+            self.variables <= MAX_DASHBOARD_VARIABLES,
+            "the dashboard holds more than the limit of {MAX_DASHBOARD_VARIABLES} variables"
         );
         Ok(())
     }

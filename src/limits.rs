@@ -22,6 +22,12 @@ pub(crate) const MAX_DASHBOARD_FILES: usize = 64;
 /// Most user variables from `--var` or from the config: a dashboard seldom has more than 30.
 pub(crate) const MAX_USER_VARS: usize = 256;
 
+/// Most variables in one dashboard, with those of its rows and tabs: the examples have 4 or fewer.
+pub(crate) const MAX_DASHBOARD_VARIABLES: usize = 256;
+
+/// Most values that a query variable keeps: a large cluster has some thousand instances.
+pub(crate) const MAX_VARIABLE_VALUES: usize = 10_000;
+
 /// Most series that one query or one panel keeps: a terminal cannot show more as separate lines.
 pub(crate) const MAX_PANEL_SERIES: usize = 2_000;
 
