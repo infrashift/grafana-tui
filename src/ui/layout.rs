@@ -15,8 +15,10 @@
  */
 
 use crate::{
-    app::{AppMode, AppState, PanelState},
-    dashboard::{DashboardAutoGrid, DashboardItemId, DashboardLayoutItem, RowId, TabGroupId},
+    app::{AppMode, AppState, GridUnit, PanelState},
+    dashboard::{
+        DashboardAutoGrid, DashboardItemId, DashboardLayoutItem, DashboardTabs, RowId, TabGroupId,
+    },
 };
 use ratatui::prelude::*;
 
@@ -75,85 +77,115 @@ pub(crate) fn calculate_grid_layout(area: Rect, app: &AppState) -> Vec<(Rect, us
 
     // Render grid-backed panels with scroll offset
     let scroll_offset = app.vertical_scroll as u16 * cell_h;
+    let cells = GridCells {
+        area,
+        cell_w,
+        cell_h,
+        scroll_offset,
+    };
 
     let shown = app.flat_panel_indices();
     for &i in &shown {
         let p = &app.panels[i];
-        if let Some(g) = p.grid {
-            if g.x < 0 || g.y < 0 || g.w <= 0 || g.h <= 0 {
-                continue;
-            }
-            let x = area.x.saturating_add((g.x as u16).saturating_mul(cell_w));
-            let y_absolute = (g.y as u16).saturating_mul(cell_h);
-
-            // Apply scroll offset
-            if y_absolute < scroll_offset {
-                // Panel is scrolled out of view at the top
-                continue;
-            }
-            let y = area
-                .y
-                .saturating_add(y_absolute.saturating_sub(scroll_offset));
-
-            let w = (g.w as u16).saturating_mul(cell_w);
-            let h = (g.h as u16).saturating_mul(cell_h);
-
-            // Skip panels that are completely below the visible area
-            if y >= area.bottom() {
-                continue;
-            }
-
-            // Clamp to area
-            let rect = Rect {
-                x,
-                y,
-                width: w.min(area.right().saturating_sub(x)),
-                height: h.min(area.bottom().saturating_sub(y)),
-            };
-            if rect.width >= 8 && rect.height >= 4 {
-                results.push((rect, i));
-            }
+        if let Some(rect) = p.grid.and_then(|g| scrolled_grid_rect(&cells, g)) {
+            results.push((rect, i));
         }
     }
 
+    results.extend(grid_extras_layout(area, app, &shown, cell_h));
+    results
+}
+
+/// The cell size and the scroll offset of a scrolled Grafana grid.
+struct GridCells {
+    area: Rect,
+    cell_w: u16,
+    cell_h: u16,
+    scroll_offset: u16,
+}
+
+/// Returns the clamped rect of a grid panel, or `None` when the panel is not in view.
+fn scrolled_grid_rect(cells: &GridCells, g: GridUnit) -> Option<Rect> {
+    let area = cells.area;
+    if g.x < 0 || g.y < 0 || g.w <= 0 || g.h <= 0 {
+        return None;
+    }
+    let x = area
+        .x
+        .saturating_add((g.x as u16).saturating_mul(cells.cell_w));
+    let y_absolute = (g.y as u16).saturating_mul(cells.cell_h);
+
+    // Apply scroll offset
+    if y_absolute < cells.scroll_offset {
+        // Panel is scrolled out of view at the top
+        return None;
+    }
+    let y = area
+        .y
+        .saturating_add(y_absolute.saturating_sub(cells.scroll_offset));
+
+    let w = (g.w as u16).saturating_mul(cells.cell_w);
+    let h = (g.h as u16).saturating_mul(cells.cell_h);
+
+    // Skip panels that are completely below the visible area
+    if y >= area.bottom() {
+        return None;
+    }
+
+    // Clamp to area
+    let rect = Rect {
+        x,
+        y,
+        width: w.min(area.right().saturating_sub(x)),
+        height: h.min(area.bottom().saturating_sub(y)),
+    };
+    (rect.width >= 8 && rect.height >= 4).then_some(rect)
+}
+
+/// Lays out the panels without a grid position in two columns below the grid.
+fn grid_extras_layout(
+    area: Rect,
+    app: &AppState,
+    shown: &[usize],
+    cell_h: u16,
+) -> Vec<(Rect, usize)> {
     // Extras (panels without grid)
     let extras: Vec<(usize, &PanelState)> = shown
         .iter()
         .map(|&i| (i, &app.panels[i]))
         .filter(|(_, p)| p.grid.is_none())
         .collect();
-    if !extras.is_empty() {
-        // Place extras in a vertical stack under the grid.
-        let max_y_h = shown
-            .iter()
-            .filter_map(|&i| {
-                let g = app.panels[i].grid?;
-                Some(g.y + g.h)
-            })
-            .max()
-            .unwrap_or(0);
-
-        let start_y_px = area
-            .y
-            .saturating_add((max_y_h as u16).saturating_mul(cell_h));
-
-        if start_y_px < area.bottom() {
-            let extras_area = Rect {
-                x: area.x,
-                y: start_y_px,
-                width: area.width,
-                height: area.bottom().saturating_sub(start_y_px),
-            };
-
-            // Reuse two-column layout for extras
-            // We need to pass the subset of panels but keep their original indices.
-            let extra_indices: Vec<usize> = extras.iter().map(|(i, _)| *i).collect();
-            let extra_rects = calculate_two_column_layout_subset(extras_area, app, &extra_indices);
-            results.extend(extra_rects);
-        }
+    if extras.is_empty() {
+        return Vec::new();
     }
+    // Place extras in a vertical stack under the grid.
+    let max_y_h = shown
+        .iter()
+        .filter_map(|&i| {
+            let g = app.panels[i].grid?;
+            Some(g.y + g.h)
+        })
+        .max()
+        .unwrap_or(0);
 
-    results
+    let start_y_px = area
+        .y
+        .saturating_add((max_y_h as u16).saturating_mul(cell_h));
+
+    if start_y_px >= area.bottom() {
+        return Vec::new();
+    }
+    let extras_area = Rect {
+        x: area.x,
+        y: start_y_px,
+        width: area.width,
+        height: area.bottom().saturating_sub(start_y_px),
+    };
+
+    // Reuse two-column layout for extras
+    // We need to pass the subset of panels but keep their original indices.
+    let extra_indices: Vec<usize> = extras.iter().map(|(i, _)| *i).collect();
+    calculate_two_column_layout_subset(extras_area, app, &extra_indices)
 }
 
 pub(crate) fn calculate_two_column_layout(area: Rect, app: &AppState) -> Vec<(Rect, usize)> {
@@ -202,24 +234,26 @@ pub(crate) fn calculate_two_column_layout_subset(
         }
     }
 
-    let left_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Length(panel_height); left_indices.len()])
-        .split(cols[0]);
-
-    let right_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Length(panel_height); right_indices.len()])
-        .split(cols[1]);
-
-    for (rect, &idx) in left_chunks.iter().zip(left_indices.iter()) {
-        results.push((*rect, idx));
-    }
-    for (rect, &idx) in right_chunks.iter().zip(right_indices.iter()) {
-        results.push((*rect, idx));
-    }
+    stack_column(cols[0], &left_indices, panel_height, &mut results);
+    stack_column(cols[1], &right_indices, panel_height, &mut results);
 
     results
+}
+
+/// Stacks panels of `panel_height` rows from the top of `column`.
+fn stack_column(
+    column: Rect,
+    indices: &[usize],
+    panel_height: u16,
+    results: &mut Vec<(Rect, usize)>,
+) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![Constraint::Length(panel_height); indices.len()])
+        .split(column);
+    for (rect, &idx) in chunks.iter().zip(indices.iter()) {
+        results.push((*rect, idx));
+    }
 }
 
 fn dashboard_inner_area(area: Rect) -> Rect {
@@ -443,81 +477,102 @@ fn project_layout_items(
                 output,
             );
         }
-        match item {
-            DashboardLayoutItem::Panel(_) => unreachable!(),
-            DashboardLayoutItem::AutoGrid(grid) => {
-                cursor_y = project_auto_grid(area, cursor_y, cell_h, grid, output);
-            }
-            DashboardLayoutItem::Row(row) if row.hidden_header => {
-                cursor_y =
-                    project_layout_items(&row.children, depth, area, cursor_y, cell_h, app, output);
-            }
-            DashboardLayoutItem::Row(row) => {
-                let rect = Rect::new(area.x, cursor_y, area.width, 1);
-                output.push(DashboardRect {
-                    id: DashboardItemId::Row(row.id),
-                    rect,
-                    disclosure_rect: Some(Rect::new(rect.x, rect.y, rect.width.min(1), 1)),
-                    kind: DashboardRectKind::Row {
-                        row_id: row.id,
-                        depth,
-                        collapsed: row.collapsed,
-                    },
-                });
-                cursor_y = cursor_y.saturating_add(1);
-                if !row.collapsed {
-                    cursor_y = project_layout_items(
-                        &row.children,
-                        depth + 1,
-                        area,
-                        cursor_y,
-                        cell_h,
-                        app,
-                        output,
-                    );
-                }
-            }
-            DashboardLayoutItem::Tabs(group) => {
-                let rect = Rect::new(area.x, cursor_y, area.width, 1);
-                output.push(DashboardRect {
-                    id: DashboardItemId::Tabs(group.id),
-                    rect,
-                    disclosure_rect: None,
-                    kind: DashboardRectKind::Tabs {
-                        group_id: group.id,
-                        depth,
-                    },
-                });
-                cursor_y = cursor_y.saturating_add(1);
-                if let Some(tab) = group.active.and_then(|index| group.tabs.get(index)) {
-                    if tab.children.is_empty() {
-                        let rect = Rect::new(area.x, cursor_y, area.width, 1);
-                        output.push(DashboardRect {
-                            id: DashboardItemId::Tabs(group.id),
-                            rect,
-                            disclosure_rect: None,
-                            kind: DashboardRectKind::TabEmpty { group_id: group.id },
-                        });
-                        cursor_y = cursor_y.saturating_add(1);
-                    } else {
-                        cursor_y = project_layout_items(
-                            &tab.children,
-                            depth + 1,
-                            area,
-                            cursor_y,
-                            cell_h,
-                            app,
-                            output,
-                        );
-                    }
-                }
-            }
+        let header = ItemCursor {
+            depth,
+            area,
+            cursor_y,
+            cell_h,
+        };
+        let (next_y, nested) = project_item_header(item, &header, output);
+        cursor_y = next_y;
+        if let Some((children, child_depth)) = nested {
+            cursor_y =
+                project_layout_items(children, child_depth, area, cursor_y, cell_h, app, output);
         }
     }
     if !panels.is_empty() {
         cursor_y = project_panel_group(area, cursor_y, cell_h, app, &panels, output);
     }
     cursor_y
+}
+
+/// The position of the next item in a dashboard projection.
+struct ItemCursor {
+    depth: usize,
+    area: Rect,
+    cursor_y: u16,
+    cell_h: u16,
+}
+
+/// Child items to lay out below a header, and the depth for them.
+type NestedItems<'a> = Option<(&'a [DashboardLayoutItem], usize)>;
+
+/// Lays out a non-panel item and returns the next y and the child items to lay out.
+fn project_item_header<'a>(
+    item: &'a DashboardLayoutItem,
+    at: &ItemCursor,
+    output: &mut Vec<DashboardRect>,
+) -> (u16, NestedItems<'a>) {
+    match item {
+        DashboardLayoutItem::Panel(_) => (at.cursor_y, None),
+        DashboardLayoutItem::AutoGrid(grid) => (
+            project_auto_grid(at.area, at.cursor_y, at.cell_h, grid, output),
+            None,
+        ),
+        DashboardLayoutItem::Row(row) if row.hidden_header => {
+            (at.cursor_y, Some((row.children.as_slice(), at.depth)))
+        }
+        DashboardLayoutItem::Row(row) => {
+            let rect = Rect::new(at.area.x, at.cursor_y, at.area.width, 1);
+            output.push(DashboardRect {
+                id: DashboardItemId::Row(row.id),
+                rect,
+                disclosure_rect: Some(Rect::new(rect.x, rect.y, rect.width.min(1), 1)),
+                kind: DashboardRectKind::Row {
+                    row_id: row.id,
+                    depth: at.depth,
+                    collapsed: row.collapsed,
+                },
+            });
+            let nested = (!row.collapsed).then_some((row.children.as_slice(), at.depth + 1));
+            (at.cursor_y.saturating_add(1), nested)
+        }
+        DashboardLayoutItem::Tabs(group) => project_tabs_header(group, at, output),
+    }
+}
+
+/// Lays out a tab group bar, and the empty tab message when the active tab is empty.
+fn project_tabs_header<'a>(
+    group: &'a DashboardTabs,
+    at: &ItemCursor,
+    output: &mut Vec<DashboardRect>,
+) -> (u16, NestedItems<'a>) {
+    let mut cursor_y = at.cursor_y;
+    let rect = Rect::new(at.area.x, cursor_y, at.area.width, 1);
+    output.push(DashboardRect {
+        id: DashboardItemId::Tabs(group.id),
+        rect,
+        disclosure_rect: None,
+        kind: DashboardRectKind::Tabs {
+            group_id: group.id,
+            depth: at.depth,
+        },
+    });
+    cursor_y = cursor_y.saturating_add(1);
+    let Some(tab) = group.active.and_then(|index| group.tabs.get(index)) else {
+        return (cursor_y, None);
+    };
+    if !tab.children.is_empty() {
+        return (cursor_y, Some((tab.children.as_slice(), at.depth + 1)));
+    }
+    let rect = Rect::new(at.area.x, cursor_y, at.area.width, 1);
+    output.push(DashboardRect {
+        id: DashboardItemId::Tabs(group.id),
+        rect,
+        disclosure_rect: None,
+        kind: DashboardRectKind::TabEmpty { group_id: group.id },
+    });
+    (cursor_y.saturating_add(1), None)
 }
 
 fn project_panel_group(
@@ -534,21 +589,7 @@ fn project_panel_group(
             .is_some_and(|panel| panel.grid.is_some())
     });
     if !has_grid {
-        let columns = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(Rect::new(area.x, origin_y, area.width, u16::MAX - origin_y));
-        for (position, &index) in panel_indices.iter().enumerate() {
-            let row = (position / 2) as u16;
-            let column = position % 2;
-            let rect = Rect::new(
-                columns[column].x,
-                origin_y.saturating_add(row.saturating_mul(12)),
-                columns[column].width,
-                12,
-            );
-            output.push(panel_rect(index, rect));
-        }
-        let rows = panel_indices.len().div_ceil(2) as u16;
-        return origin_y.saturating_add(rows.saturating_mul(12));
+        return project_panel_columns(area, origin_y, panel_indices, output);
     }
 
     let cell_w = std::cmp::max(1, area.width / 24);
@@ -565,19 +606,7 @@ fn project_panel_group(
         if grid.x < 0 || grid.y < 0 || grid.w <= 0 || grid.h <= 0 {
             continue;
         }
-        let x = area
-            .x
-            .saturating_add((grid.x as u16).saturating_mul(cell_w));
-        let y = origin_y.saturating_add((grid.y as u16).saturating_mul(cell_h));
-        let rect = Rect::new(
-            x,
-            y,
-            (grid.w as u16)
-                .saturating_mul(cell_w)
-                .min(area.right().saturating_sub(x)),
-            (grid.h as u16).saturating_mul(cell_h),
-        );
-        if rect.width >= 8 && rect.height >= 4 {
+        if let Some(rect) = project_grid_rect(area, origin_y, cell_w, cell_h, grid) {
             output.push(panel_rect(index, rect));
         }
         grid_height = grid_height.max(
@@ -588,26 +617,54 @@ fn project_panel_group(
     }
 
     let extras_origin = origin_y.saturating_add(grid_height);
-    let columns =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(
-            Rect::new(area.x, extras_origin, area.width, u16::MAX - extras_origin),
-        );
-    for (position, index) in extras.iter().copied().enumerate() {
+    project_panel_columns(area, extras_origin, &extras, output)
+}
+
+/// Returns the rect of a grid panel, or `None` when it is too small to draw.
+fn project_grid_rect(
+    area: Rect,
+    origin_y: u16,
+    cell_w: u16,
+    cell_h: u16,
+    grid: GridUnit,
+) -> Option<Rect> {
+    let x = area
+        .x
+        .saturating_add((grid.x as u16).saturating_mul(cell_w));
+    let y = origin_y.saturating_add((grid.y as u16).saturating_mul(cell_h));
+    let rect = Rect::new(
+        x,
+        y,
+        (grid.w as u16)
+            .saturating_mul(cell_w)
+            .min(area.right().saturating_sub(x)),
+        (grid.h as u16).saturating_mul(cell_h),
+    );
+    (rect.width >= 8 && rect.height >= 4).then_some(rect)
+}
+
+/// Lays out panels in two columns from `origin_y` and returns the y below the last row.
+fn project_panel_columns(
+    area: Rect,
+    origin_y: u16,
+    panel_indices: &[usize],
+    output: &mut Vec<DashboardRect>,
+) -> u16 {
+    let columns = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(Rect::new(area.x, origin_y, area.width, u16::MAX - origin_y));
+    for (position, &index) in panel_indices.iter().enumerate() {
         let row = (position / 2) as u16;
         let column = position % 2;
-        output.push(panel_rect(
-            index,
-            Rect::new(
-                columns[column].x,
-                extras_origin.saturating_add(row.saturating_mul(12)),
-                columns[column].width,
-                12,
-            ),
-        ));
+        let rect = Rect::new(
+            columns[column].x,
+            origin_y.saturating_add(row.saturating_mul(12)),
+            columns[column].width,
+            12,
+        );
+        output.push(panel_rect(index, rect));
     }
-    origin_y
-        .saturating_add(grid_height)
-        .saturating_add((extras.len().div_ceil(2) as u16).saturating_mul(12))
+    let rows = panel_indices.len().div_ceil(2) as u16;
+    origin_y.saturating_add(rows.saturating_mul(12))
 }
 
 /// Lays out auto grid panels row-major in equal-width columns of `row_height` grid

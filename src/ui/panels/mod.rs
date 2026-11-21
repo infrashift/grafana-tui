@@ -23,6 +23,7 @@ mod table;
 
 use super::tabs::truncate_title;
 use crate::app::{AppState, PanelState, PanelType};
+use crate::theme::Theme;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph, Wrap},
@@ -115,37 +116,75 @@ pub(crate) fn render_panel(
     if let Some(err) = &p.last_error
         && p.series.is_empty()
     {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(border_style)
-            .title(Span::styled(
-                format!("{} — ERROR", p.title),
-                Style::default().fg(theme.error),
-            ));
-        let para = Paragraph::new(err.clone())
-            .block(block)
-            .wrap(Wrap { trim: true })
-            .style(Style::default().fg(theme.text));
-        frame.render_widget(para, area);
+        render_error_panel(frame, area, p, err, border_style, theme);
         return None;
     }
 
     if !p.has_loaded() && !p.exprs.is_empty() {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(border_style)
-            .title(Span::styled(
-                p.title.clone(),
-                Style::default().fg(theme.title),
-            ));
-        let para = Paragraph::new("Loading…")
-            .block(block)
-            .style(Style::default().fg(theme.text));
-        frame.render_widget(para, area);
+        render_loading_panel(frame, area, p, border_style, theme);
         return None;
     }
 
     // Render the outer block (Panel container)
+    let block = panel_block(p, area, border_style, theme);
+    frame.render_widget(block.clone(), area);
+
+    let inner_area = block.inner(area);
+    let body = PanelBody {
+        area: inner_area,
+        panel_index,
+        is_selected,
+        cursor_x,
+    };
+    render_panel_body(frame, &body, p, app)
+}
+
+/// Draws a panel that has an error and no data to show.
+fn render_error_panel(
+    frame: &mut Frame,
+    area: Rect,
+    p: &PanelState,
+    err: &str,
+    border_style: Style,
+    theme: &Theme,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(Span::styled(
+            format!("{} — ERROR", p.title),
+            Style::default().fg(theme.error),
+        ));
+    let para = Paragraph::new(err.to_string())
+        .block(block)
+        .wrap(Wrap { trim: true })
+        .style(Style::default().fg(theme.text));
+    frame.render_widget(para, area);
+}
+
+/// Draws a panel whose first fetch is not complete.
+fn render_loading_panel(
+    frame: &mut Frame,
+    area: Rect,
+    p: &PanelState,
+    border_style: Style,
+    theme: &Theme,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(Span::styled(
+            p.title.clone(),
+            Style::default().fg(theme.title),
+        ));
+    let para = Paragraph::new("Loading…")
+        .block(block)
+        .style(Style::default().fg(theme.text));
+    frame.render_widget(para, area);
+}
+
+/// Builds the bordered panel block with the title and the notice badge.
+fn panel_block(p: &PanelState, area: Rect, border_style: Style, theme: &Theme) -> Block<'static> {
     let notice = data_notice(p);
     let (title_text, badge) = fit_panel_title(
         &p.title,
@@ -163,26 +202,48 @@ pub(crate) fn render_panel(
             Style::default().fg(color),
         ));
     }
-    let block = Block::default()
+    Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
-        .title(Line::from(title));
-    frame.render_widget(block.clone(), area);
+        .title(Line::from(title))
+}
 
-    let inner_area = block.inner(area);
+/// The inner area of a panel and the state that its body renderer uses.
+struct PanelBody {
+    area: Rect,
+    panel_index: usize,
+    is_selected: bool,
+    cursor_x: Option<f64>,
+}
 
+/// Draws the body of a panel with the renderer for its panel type.
+fn render_panel_body(
+    frame: &mut Frame,
+    body: &PanelBody,
+    p: &PanelState,
+    app: &AppState,
+) -> Option<Vec<crate::annotations::AnnotationEvent>> {
+    let inner_area = body.area;
     match p.panel_type {
         PanelType::Graph => render_graph_panel(
             frame,
             inner_area,
-            panel_index,
+            body.panel_index,
             p,
             app,
-            cursor_x,
-            is_selected,
+            body.cursor_x,
+            body.is_selected,
         ),
         PanelType::Unknown => {
-            render_graph_panel(frame, inner_area, panel_index, p, app, cursor_x, false);
+            render_graph_panel(
+                frame,
+                inner_area,
+                body.panel_index,
+                p,
+                app,
+                body.cursor_x,
+                false,
+            );
             None
         }
         PanelType::Gauge => {

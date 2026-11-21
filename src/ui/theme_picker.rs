@@ -94,45 +94,63 @@ pub(crate) fn render_theme_picker(frame: &mut Frame, app: &AppState) {
         .unwrap_or_default();
     let visible = visible_range(rows.len(), selected_row, list_height(area));
     let name_width = usize::from(list_area.width).saturating_sub(SWATCH_WIDTH + 3);
+    let marks = PickerMarks {
+        selected: picker.selected,
+        original: &picker.original.name,
+        name_width,
+    };
     let lines: Vec<Line> = rows[visible]
         .iter()
-        .map(|row| match row {
-            PickerRow::Family(family) => Line::styled(
-                *family,
-                Style::default()
-                    .fg(theme.title)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            PickerRow::Theme(index, candidate) => {
-                let selected = *index == picker.selected;
-                let style = if selected {
-                    Style::default()
-                        .fg(theme.selection_fg)
-                        .bg(theme.selection_bg)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.text)
-                };
-                let marker = if selected { "▶ " } else { "  " };
-                let original = if candidate.name == picker.original.name {
-                    "•"
-                } else {
-                    " "
-                };
-                let mut spans = vec![Span::styled(
-                    format!("{marker}{:<name_width$}{original} ", candidate.name),
-                    style,
-                )];
-                spans.extend(swatch(candidate));
-                Line::from(spans)
-            }
-        })
+        .map(|row| picker_line(row, &marks, theme))
         .collect();
     frame.render_widget(Paragraph::new(lines), list_area);
     frame.render_widget(
         Paragraph::new(HINT).style(Style::default().fg(theme.text_muted)),
         hint_area,
     );
+}
+
+/// The picker state that a theme row shows.
+struct PickerMarks<'a> {
+    selected: usize,
+    original: &'a str,
+    name_width: usize,
+}
+
+/// Builds the line for one picker row.
+fn picker_line<'a>(row: &PickerRow<'a>, marks: &PickerMarks, theme: &Theme) -> Line<'a> {
+    match row {
+        PickerRow::Family(family) => Line::styled(
+            *family,
+            Style::default()
+                .fg(theme.title)
+                .add_modifier(Modifier::BOLD),
+        ),
+        PickerRow::Theme(index, candidate) => {
+            let selected = *index == marks.selected;
+            let style = if selected {
+                Style::default()
+                    .fg(theme.selection_fg)
+                    .bg(theme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text)
+            };
+            let marker = if selected { "▶ " } else { "  " };
+            let original = if candidate.name == marks.original {
+                "•"
+            } else {
+                " "
+            };
+            let name_width = marks.name_width;
+            let mut spans = vec![Span::styled(
+                format!("{marker}{:<name_width$}{original} ", candidate.name),
+                style,
+            )];
+            spans.extend(swatch(candidate));
+            Line::from(spans)
+        }
+    }
 }
 
 /// The theme's background followed by its leading series colors.
