@@ -39,10 +39,22 @@ pub(crate) fn cluster_projected_events<'a>(
             grouped.entry(coordinate).or_default().push(event);
         }
     }
-    grouped
+    let clusters: Vec<AnnotationCluster<'a>> = grouped
         .into_iter()
         .map(|(coordinate, events)| AnnotationCluster { coordinate, events })
-        .collect()
+        .collect();
+    debug_assert!(
+        clusters
+            .iter()
+            .zip(clusters.iter().skip(1))
+            .all(|(left, right)| left.coordinate < right.coordinate),
+        "the clusters are in coordinate order, one for each coordinate"
+    );
+    debug_assert!(
+        clusters.iter().all(|cluster| !cluster.events.is_empty()),
+        "each cluster holds one event or more"
+    );
+    clusters
 }
 
 #[cfg(test)]

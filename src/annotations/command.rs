@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 
 use super::{
     AnnotationCommandConfig, AnnotationProviderError, AnnotationRefreshContext, AnnotationSnapshot,
-    ProviderPoll, jsonl::parse_jsonl,
+    ProviderPoll, jsonl::parse_jsonl, model::MAX_EVENTS,
 };
 
 #[derive(Debug)]
@@ -70,14 +70,20 @@ struct ProcessGroup {
 
 impl ProcessGroup {
     fn led_by(child: &Child) -> Self {
+        debug_assert!(child.id().is_some(), "the child is not reaped yet");
         #[cfg(unix)]
         {
-            Self {
+            let group = Self {
                 leader: child
                     .id()
                     .and_then(|id| i32::try_from(id).ok())
                     .map(nix::unistd::Pid::from_raw),
-            }
+            };
+            debug_assert!(
+                group.leader.is_some_and(|leader| leader.as_raw() > 0),
+                "the group leader has a positive process id"
+            );
+            group
         }
         #[cfg(not(unix))]
         {
@@ -90,6 +96,11 @@ impl ProcessGroup {
     fn kill(&self) {
         #[cfg(unix)]
         if let Some(leader) = self.leader {
+            // A process id of 0 or less names the group of the caller or all processes.
+            debug_assert!(
+                leader.as_raw() > 0,
+                "the signal goes to the group of the provider only"
+            );
             // The signal fails with ESRCH when the group is already empty. `kill_and_reap`
             // reports the failures of the direct child, so this result does not matter.
             let _signalled: nix::Result<()> =
@@ -110,16 +121,30 @@ impl CommandProvider {
     }
 
     async fn run(&self, context: &AnnotationRefreshContext) -> ProviderPoll {
-        match self.run_inner(context).await {
+        let poll = match self.run_inner(context).await {
             Ok(snapshot) => ProviderPoll::Loaded(snapshot),
             Err(error) => ProviderPoll::Failed(error),
-        }
+        };
+        debug_assert!(
+            !matches!(poll, ProviderPoll::Unchanged),
+            "each command refresh loads events or fails"
+        );
+        poll
     }
 
     async fn run_inner(
         &self,
         context: &AnnotationRefreshContext,
     ) -> Result<AnnotationSnapshot, AnnotationProviderError> {
+        debug_assert!(
+            context.from <= context.to,
+            "the refresh window starts before it ends"
+        );
+        // The command-line and config checks reject a zero timeout.
+        debug_assert!(
+            !self.config.timeout.is_zero(),
+            "the command timeout is not zero"
+        );
         let request = encode_request(context).map_err(|error| self.error(error))?;
         let mut child = self.spawn_command()?;
         let group = ProcessGroup::led_by(&child);
@@ -139,6 +164,7 @@ impl CommandProvider {
                 humantime::format_duration(self.config.timeout)
             ),
         };
+        debug_assert!(!reason.is_empty(), "the failure has a reason");
         let cleanup = kill_and_reap(&mut child, &group).await;
         drop(tasks);
         Err(self.error(append_cleanup(reason, cleanup)))
@@ -155,9 +181,15 @@ impl CommandProvider {
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
-        command
+        let child = command
             .spawn()
-            .map_err(|error| self.error(format!("could not start: {error}")))
+            .map_err(|error| self.error(format!("could not start: {error}")))?;
+        debug_assert!(
+            child.stdin.is_some() && child.stdout.is_some() && child.stderr.is_some(),
+            "the child has piped standard streams"
+        );
+        debug_assert!(child.id().is_some(), "a new child has a process id");
+        Ok(child)
     }
 
     /// Turns the outcome of a process that ended in time into a snapshot or an error.
@@ -168,7 +200,17 @@ impl CommandProvider {
         group: &ProcessGroup,
         tasks: ProcessTasks,
     ) -> Result<AnnotationSnapshot, AnnotationProviderError> {
-        match outcome {
+        debug_assert!(
+            !matches!(
+                &outcome,
+                ProtocolOutcome::Complete(CollectedProcess {
+                    stdout: Ok(CapturedStdout::LimitExceeded),
+                    ..
+                })
+            ),
+            "a complete outcome holds the full stdout"
+        );
+        let settled = match outcome {
             ProtocolOutcome::StdoutLimitExceeded => {
                 let cleanup = kill_and_reap(child, group).await;
                 join_or_abort_tasks(tasks).await;
@@ -181,7 +223,15 @@ impl CommandProvider {
                 Err(self.error(failure_reason(collected)))
             }
             ProtocolOutcome::Complete(collected) => self.parse_collected(collected),
-        }
+        };
+        debug_assert!(
+            settled
+                .as_ref()
+                .ok()
+                .is_none_or(|snapshot| snapshot.len() <= MAX_EVENTS),
+            "the snapshot holds MAX_EVENTS events or fewer"
+        );
+        settled
     }
 
     /// Parses the stdout of a process that exited with success.
@@ -189,6 +239,10 @@ impl CommandProvider {
         &self,
         collected: CollectedProcess,
     ) -> Result<AnnotationSnapshot, AnnotationProviderError> {
+        debug_assert!(
+            collected.status.success(),
+            "only a process that exited with success gives events"
+        );
         request_delivered(collected.stdin)
             .map_err(|error| self.error(format!("could not write request: {error}")))?;
         let stdout = collected
@@ -197,10 +251,18 @@ impl CommandProvider {
         collected
             .stderr
             .map_err(|error| self.error(format!("could not read stderr: {error}")))?;
-        match stdout {
+        let parsed = match stdout {
             CapturedStdout::Complete(stdout) => parse_stdout(&self.config.program, &stdout),
             CapturedStdout::LimitExceeded => Err(self.error("exceeded 10 MiB stdout limit")),
-        }
+        };
+        debug_assert!(
+            parsed
+                .as_ref()
+                .err()
+                .is_none_or(|error| !error.to_string().is_empty()),
+            "a parse error has a message"
+        );
+        parsed
     }
 
     fn error(&self, reason: impl std::fmt::Display) -> AnnotationProviderError {
@@ -219,6 +281,7 @@ fn start_pipe_tasks(child: &mut Child, request: Vec<u8>) -> Result<PipeTasks, St
     else {
         return Err("could not open the standard streams".to_string());
     };
+    debug_assert!(request.ends_with(b"\n"), "the request is one full line");
 
     let (stdout_sender, stdout_receiver) = oneshot::channel();
     let tasks = ProcessTasks {
@@ -231,19 +294,32 @@ fn start_pipe_tasks(child: &mut Child, request: Vec<u8>) -> Result<PipeTasks, St
         }),
         stderr: tokio::spawn(read_stderr_capped(stderr)),
     };
+    debug_assert!(
+        child.stdin.is_none() && child.stdout.is_none() && child.stderr.is_none(),
+        "the pipe tasks own the standard streams"
+    );
     Ok((tasks, stdout_receiver))
 }
 
 /// Why a process that exited without success failed, with its stderr.
 fn failure_reason(collected: CollectedProcess) -> String {
+    debug_assert!(
+        !collected.status.success(),
+        "only a process that failed has a failure reason"
+    );
     let reason = match collected.status.code() {
         Some(code) => format!("exited with status {code}"),
         None => "terminated by signal".to_string(),
     };
-    match collected.stderr {
+    let message = match collected.stderr {
         Ok(stderr) => append_stderr(reason, &stderr),
         Err(error) => format!("{reason}; could not read stderr: {error}"),
-    }
+    };
+    debug_assert!(
+        message.starts_with("exited with status") || message.starts_with("terminated by signal"),
+        "the reason starts with how the process ended"
+    );
+    message
 }
 
 async fn write_request(mut stdin: tokio::process::ChildStdin, request: Vec<u8>) -> io::Result<()> {
@@ -259,6 +335,10 @@ async fn read_stdout_limited(mut stdout: ChildStdout) -> io::Result<CapturedStdo
     for _ in 0..=MAX_STDOUT_BYTES {
         let read = stdout.read(&mut chunk).await?;
         if read == 0 {
+            debug_assert!(
+                captured.len() <= MAX_STDOUT_BYTES,
+                "the captured stdout is inside the stdout limit"
+            );
             return Ok(CapturedStdout::Complete(captured));
         }
         if captured.len() + read > MAX_STDOUT_BYTES {
@@ -268,6 +348,10 @@ async fn read_stdout_limited(mut stdout: ChildStdout) -> io::Result<CapturedStdo
         debug_assert!(read <= chunk.len(), "a read overran the stdout buffer");
         captured.extend_from_slice(chunk.get(..read).unwrap_or(&chunk));
     }
+    debug_assert!(
+        captured.len() <= MAX_STDOUT_BYTES,
+        "the reader stops before it passes the stdout limit"
+    );
     Ok(CapturedStdout::LimitExceeded)
 }
 
@@ -281,9 +365,17 @@ async fn read_stderr_capped(mut stderr: ChildStderr) -> io::Result<Vec<u8>> {
     while drained <= MAX_STDERR_DRAIN_BYTES {
         let read = stderr.read(&mut chunk).await?;
         if read == 0 {
+            debug_assert!(
+                captured.len() <= drained,
+                "the reader keeps only bytes that it drained"
+            );
             return Ok(captured);
         }
         drained += read;
+        debug_assert!(
+            captured.len() <= MAX_STDERR_BYTES,
+            "the captured stderr is inside the stderr limit"
+        );
         let retained = (MAX_STDERR_BYTES - captured.len()).min(read);
         debug_assert!(retained <= chunk.len(), "a read overran the stderr buffer");
         captured.extend_from_slice(chunk.get(..retained).unwrap_or(&chunk));
@@ -320,14 +412,29 @@ fn stderr_excerpt(bytes: &[u8]) -> Option<String> {
         characters += 1;
     }
 
+    debug_assert!(
+        excerpt.chars().count() <= 512,
+        "the excerpt has 512 characters or fewer"
+    );
+    debug_assert!(
+        !excerpt.starts_with(' ') && !excerpt.chars().any(char::is_control),
+        "the excerpt has no leading space and no control characters"
+    );
     (!excerpt.is_empty()).then_some(excerpt)
 }
 
 fn append_stderr(reason: String, stderr: &[u8]) -> String {
-    match stderr_excerpt(stderr) {
+    debug_assert!(!reason.is_empty(), "the failure has a reason");
+    let reason_len = reason.len();
+    let message = match stderr_excerpt(stderr) {
         Some(excerpt) => format!("{reason}; stderr: {excerpt}"),
         None => reason,
-    }
+    };
+    debug_assert!(
+        message.len() >= reason_len,
+        "the message keeps the full reason"
+    );
+    message
 }
 
 async fn collect_process(
@@ -361,6 +468,10 @@ async fn collect_process(
             (status, stdout)
         }
     };
+    debug_assert!(
+        !matches!(stdout, Ok(CapturedStdout::LimitExceeded)),
+        "the stdout is inside the stdout limit"
+    );
 
     let stdin = (&mut tasks.stdin)
         .await
@@ -371,6 +482,10 @@ async fn collect_process(
     let stderr = (&mut tasks.stderr)
         .await
         .map_err(|error| format!("stderr reader task failed: {error}"))?;
+    debug_assert!(
+        tasks.stdin.is_finished() && tasks.stdout.is_finished() && tasks.stderr.is_finished(),
+        "each pipe task has finished"
+    );
 
     Ok(ProtocolOutcome::Complete(CollectedProcess {
         status,
@@ -384,10 +499,18 @@ async fn collect_process(
 /// A provider may exit without reading the request, closing the pipe before
 /// it was written; its output still stands.
 fn request_delivered(result: io::Result<()>) -> io::Result<()> {
-    match result {
+    let delivered = match result {
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         result => result,
-    }
+    };
+    debug_assert!(
+        delivered
+            .as_ref()
+            .err()
+            .is_none_or(|error| error.kind() != io::ErrorKind::BrokenPipe),
+        "a broken pipe counts as a delivered request"
+    );
+    delivered
 }
 
 /// Kills the provider's whole process group, then the child, and reaps it.
@@ -397,7 +520,11 @@ async fn kill_and_reap(child: &mut Child, group: &ProcessGroup) -> Result<(), St
     group.kill();
     let kill_error = child.kill().await.err();
     let wait_error = child.wait().await.err();
-    match (kill_error, wait_error) {
+    debug_assert!(
+        wait_error.is_some() || child.id().is_none(),
+        "a reaped child has no process id"
+    );
+    let cleanup = match (kill_error, wait_error) {
         (None, None) => Ok(()),
         (Some(kill), None) if kill.kind() == io::ErrorKind::InvalidInput => Ok(()),
         (Some(kill), None) => Err(format!("could not kill child: {kill}")),
@@ -405,14 +532,29 @@ async fn kill_and_reap(child: &mut Child, group: &ProcessGroup) -> Result<(), St
         (Some(kill), Some(wait)) => Err(format!(
             "could not kill child: {kill}; could not reap child: {wait}"
         )),
-    }
+    };
+    debug_assert!(
+        cleanup
+            .as_ref()
+            .err()
+            .is_none_or(|error| error.starts_with("could not")),
+        "a cleanup error says what failed"
+    );
+    cleanup
 }
 
 fn append_cleanup(reason: String, cleanup: Result<(), String>) -> String {
-    match cleanup {
+    debug_assert!(!reason.is_empty(), "the failure has a reason");
+    let reason_len = reason.len();
+    let message = match cleanup {
         Ok(()) => reason,
         Err(error) => format!("{reason}; cleanup failed: {error}"),
-    }
+    };
+    debug_assert!(
+        message.len() >= reason_len,
+        "the message keeps the full reason"
+    );
+    message
 }
 
 /// Gives the pipe tasks a moment to finish; dropping `tasks` then aborts any
@@ -420,14 +562,22 @@ fn append_cleanup(reason: String, cleanup: Result<(), String>) -> String {
 async fn join_or_abort_tasks(mut tasks: ProcessTasks) {
     // The refresh already fails on the stdout limit, so the task results add
     // nothing to the report. After a timeout, the drop of `tasks` aborts them.
-    let _joined = tokio::time::timeout(Duration::from_millis(100), async {
-        (
-            (&mut tasks.stdin).await,
-            (&mut tasks.stdout).await,
-            (&mut tasks.stderr).await,
-        )
-    })
-    .await;
+    let joined: Result<_, tokio::time::error::Elapsed> =
+        tokio::time::timeout(Duration::from_millis(100), async {
+            (
+                (&mut tasks.stdin).await,
+                (&mut tasks.stdout).await,
+                (&mut tasks.stderr).await,
+            )
+        })
+        .await;
+    debug_assert!(
+        joined.is_err()
+            || (tasks.stdin.is_finished()
+                && tasks.stdout.is_finished()
+                && tasks.stderr.is_finished()),
+        "a join in time finishes each pipe task"
+    );
 }
 
 impl CommandProvider {
@@ -450,6 +600,10 @@ struct CommandRange {
 }
 
 fn encode_request(context: &AnnotationRefreshContext) -> Result<Vec<u8>, AnnotationProviderError> {
+    debug_assert!(
+        context.from <= context.to,
+        "the request window starts before it ends"
+    );
     let mut encoded = serde_json::to_vec(&CommandRequest {
         version: 1,
         range: CommandRange {
@@ -461,6 +615,16 @@ fn encode_request(context: &AnnotationRefreshContext) -> Result<Vec<u8>, Annotat
         AnnotationProviderError::new(format!("could not encode annotation request: {error}"))
     })?;
     encoded.push(b'\n');
+    debug_assert!(
+        encoded.starts_with(b"{") && encoded.ends_with(b"}\n"),
+        "the request is one JSON object on one line"
+    );
+    debug_assert!(
+        encoded
+            .split_last()
+            .is_some_and(|(_, line)| !line.contains(&b'\n')),
+        "the request has one newline, at its end"
+    );
     Ok(encoded)
 }
 
@@ -468,13 +632,22 @@ fn parse_stdout(
     program: &str,
     stdout: &[u8],
 ) -> Result<AnnotationSnapshot, AnnotationProviderError> {
+    debug_assert!(
+        stdout.len() <= MAX_STDOUT_BYTES,
+        "the stdout is inside the stdout limit"
+    );
     let input = std::str::from_utf8(stdout).map_err(|error| {
         AnnotationProviderError::new(format!(
             "annotation command {program}: stdout must be valid UTF-8: {error}"
         ))
     })?;
-    parse_jsonl(&format!("annotation command {program}"), input)
-        .map_err(|error| AnnotationProviderError::new(error.to_string()))
+    let snapshot = parse_jsonl(&format!("annotation command {program}"), input)
+        .map_err(|error| AnnotationProviderError::new(error.to_string()))?;
+    debug_assert!(
+        snapshot.len() <= MAX_EVENTS,
+        "the snapshot holds MAX_EVENTS events or fewer"
+    );
+    Ok(snapshot)
 }
 
 #[cfg(test)]

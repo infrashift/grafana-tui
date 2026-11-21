@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use super::{AnnotationEvent, TagCatalogueEntry, TagFilter};
+use super::{AnnotationEvent, TagCatalogueEntry, TagFilter, model::MAX_EVENTS};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AnnotationModal {
@@ -16,10 +16,21 @@ pub(crate) struct ClusterModalState {
 
 impl ClusterModalState {
     pub(crate) fn new(events: Vec<AnnotationEvent>) -> Option<Self> {
-        (!events.is_empty()).then_some(Self {
+        debug_assert!(
+            events.len() <= MAX_EVENTS,
+            "the cluster holds MAX_EVENTS events or fewer"
+        );
+        let modal = (!events.is_empty()).then_some(Self {
             events,
             selected: 0,
-        })
+        });
+        debug_assert!(
+            modal
+                .as_ref()
+                .is_none_or(|modal| modal.selected < modal.events.len()),
+            "the selected event is in the list"
+        );
+        modal
     }
 
     pub(crate) fn move_by(&mut self, delta: isize) {
@@ -27,6 +38,10 @@ impl ClusterModalState {
     }
 
     pub(crate) fn move_page(&mut self, direction: isize, rows: usize) {
+        debug_assert!(
+            self.selected < self.events.len(),
+            "the selected event is in the list"
+        );
         let page_delta = direction.unsigned_abs().saturating_mul(rows);
         if direction < 0 {
             self.selected = self.selected.saturating_sub(page_delta);
@@ -36,6 +51,10 @@ impl ClusterModalState {
                 .saturating_add(page_delta)
                 .min(self.events.len().saturating_sub(1));
         }
+        debug_assert!(
+            self.selected < self.events.len(),
+            "the selected event stays in the list"
+        );
     }
 
     pub(crate) fn events(&self) -> &[AnnotationEvent] {
@@ -60,6 +79,17 @@ pub(crate) struct TagFilterModalState {
 
 impl TagFilterModalState {
     pub(crate) fn new(entries: Vec<TagCatalogueEntry>, draft: TagFilter) -> Self {
+        debug_assert!(
+            entries
+                .iter()
+                .zip(entries.iter().skip(1))
+                .all(|(left, right)| left.tag < right.tag),
+            "the catalogue lists each tag one time, in tag order"
+        );
+        debug_assert!(
+            entries.iter().all(|entry| !entry.tag.is_empty()),
+            "each catalogue tag has text"
+        );
         Self {
             entries,
             selected: 0,
@@ -100,18 +130,38 @@ pub(crate) fn visible_range(total: usize, selected: usize, rows: usize) -> Range
     }
     let selected = selected.min(total - 1);
     let start = (selected / rows) * rows;
-    start..start.saturating_add(rows).min(total)
+    let range = start..start.saturating_add(rows).min(total);
+    debug_assert!(
+        range.contains(&selected),
+        "the visible rows include the selected row"
+    );
+    debug_assert!(
+        range.end <= total && range.len() <= rows,
+        "the visible rows are a page of the list or less"
+    );
+    range
 }
 
 fn moved_index(current: usize, len: usize, delta: isize) -> usize {
     if len == 0 {
         return 0;
     }
-    if delta < 0 {
+    let moved = if delta < 0 {
         current.saturating_sub(delta.unsigned_abs())
     } else {
         current.saturating_add(delta.unsigned_abs()).min(len - 1)
-    }
+    };
+    debug_assert!(current < len, "the current index is in the list");
+    debug_assert!(moved < len, "the move stays in the list");
+    debug_assert!(
+        if delta < 0 {
+            moved <= current
+        } else {
+            moved >= current.min(len - 1)
+        },
+        "the move goes in the direction of delta"
+    );
+    moved
 }
 
 #[cfg(test)]
