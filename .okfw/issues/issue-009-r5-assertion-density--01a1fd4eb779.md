@@ -5,18 +5,18 @@ type: "Issue"
 kind: "issue"
 tags:
   - "issue"
-  - "open"
   - "phase-8"
   - "power-of-10"
   - "r5"
+  - "in-progress"
 created: "2026-11-21T02:52:36-06:00"
-timestamp: "2026-11-21T02:52:36-06:00"
+timestamp: "2026-11-21T08:43:42-06:00"
 description: "Add checks on external data and invariant assertions until the average is 2 or more for each function."
 ---
 
 # ISSUE-009: R5: assertion density
 
-**Status/Phase:** Open · Phase 8
+**Status/Phase:** In progress · Phase 8
 
 ## Description
 semscope found 1 assertion in 683 functions. This phase comes last in the code work, because the splits add functions.
