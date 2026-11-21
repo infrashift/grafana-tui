@@ -17,6 +17,7 @@
 use super::state::{AppMode, AppState, YAxisMode};
 use crate::annotations::AnnotationModal;
 use crate::dashboard::{DashboardItemId, TabGroupId};
+use crate::limits::MAX_SEARCH_CHARS;
 use crate::ui;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -272,7 +273,8 @@ fn handle_search_key(key: KeyEvent, terminal_size: Size, app: &mut AppState) -> 
             app.search_query.pop();
             update_search_results(app);
         }
-        KeyCode::Char(c) => {
+        // The search text stops growing at its limit.
+        KeyCode::Char(c) if app.search_query.chars().count() < MAX_SEARCH_CHARS => {
             app.search_query.push(c);
             update_search_results(app);
         }
@@ -1138,6 +1140,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(app.theme.name, "catppuccin-mocha");
+    }
+
+    #[tokio::test]
+    async fn the_search_text_stops_growing_at_its_limit() {
+        let mut app = test_app();
+        app.mode = AppMode::Search;
+        for _ in 0..MAX_SEARCH_CHARS + 3 {
+            handle_key(key(KeyCode::Char('é')), size(), &mut app)
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.search_query.chars().count(), MAX_SEARCH_CHARS);
+        handle_key(key(KeyCode::Backspace), size(), &mut app)
+            .await
+            .unwrap();
+        handle_key(key(KeyCode::Char('x')), size(), &mut app)
+            .await
+            .unwrap();
+        assert!(app.search_query.ends_with('x'));
+        assert_eq!(app.search_query.chars().count(), MAX_SEARCH_CHARS);
     }
 
     #[tokio::test]

@@ -16,6 +16,7 @@
 
 use crate::annotations::{AnnotationCluster, cluster_events_by, format_cluster_detail_lines};
 use crate::app::{AppMode, AppState, PanelState, PanelType, SeriesView};
+use crate::limits::MAX_RECORD_FRAMES;
 #[cfg(test)]
 use crate::theme::Theme;
 use crate::ui;
@@ -86,6 +87,11 @@ impl ExportOptions {
         if self.record_max_frames == 0 {
             return Err(anyhow!("record_max_frames must be greater than 0"));
         }
+        anyhow::ensure!(
+            self.record_max_frames <= MAX_RECORD_FRAMES,
+            "record_max_frames is {}, more than the limit of {MAX_RECORD_FRAMES}",
+            self.record_max_frames
+        );
         Ok(self)
     }
 }
@@ -3577,6 +3583,20 @@ mod tests {
         assert!(
             err.to_string().contains("record_max_frames"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn export_options_reject_recording_frames_over_the_limit() {
+        let options = |record_max_frames| ExportOptions {
+            record_max_frames,
+            ..ExportOptions::default()
+        };
+        assert!(options(MAX_RECORD_FRAMES).validate().is_ok());
+        let err = options(MAX_RECORD_FRAMES + 1).validate().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "record_max_frames is 100001, more than the limit of 100000"
         );
     }
 

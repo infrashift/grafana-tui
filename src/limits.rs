@@ -40,6 +40,12 @@ pub(crate) const MAX_QUERY_MESSAGES: usize = 32;
 /// Longest query sent to Prometheus: its request line has 1 MiB, and URL encoding can triple a byte.
 pub(crate) const MAX_QUERY_BYTES: usize = 256 * 1024;
 
+/// Longest search text in the TUI: a panel title is seldom longer than 100 characters.
+pub(crate) const MAX_SEARCH_CHARS: usize = 256;
+
+/// Highest `record_max_frames`: the frame list then stays below about 20 MiB.
+pub(crate) const MAX_RECORD_FRAMES: usize = 100_000;
+
 /// Reads the file at `path`, and fails when it has more than `limit` bytes.
 ///
 /// The check uses the length in the metadata first. The read stops after
