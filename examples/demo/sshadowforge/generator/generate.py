@@ -48,11 +48,11 @@ PARENT = 'label_replace({0}, "parent", "$1", "exported_job", "([^/]+)(/.*)?")'
 RUNNERS = 'exported_job=~"sshadowforge-(runner-.+|challenge|scan|advise)/dispatch-.+"'
 
 
-# YOUNG COUNTERS. A labelled counter is created at its first increment, so Prometheus's first sample of
-# it is already 1 and increase() -- last minus first -- never counts that increment. On a forge this
-# quiet MOST per-repository series are young: the first live render showed "Commands refused 0" an hour
-# after six refusals. Every windowed count below is therefore rewritten (young_counters) so a series
-# born inside the window also contributes its first sample:
+# YOUNG COUNTERS. The client library makes a labelled counter at its first increment. So the first
+# Prometheus sample of the counter is already 1, and increase() -- last minus first -- never counts
+# that increment. On a quiet forge, MOST per-repository series are young: the first live render showed
+# "Commands refused 0" an hour after six refusals. So young_counters rewrites each windowed count below,
+# and a series that starts inside the window also adds its first sample:
 #
 #     increase(x[w]) + (min_over_time(x[w]) unless x offset w)     for a series absent w ago
 #     increase(x[w])                                               otherwise (resets handled as usual)
@@ -68,9 +68,9 @@ def _young(m):
     return f"((increase({sel}[{w}]) + (min_over_time({sel}[{w}]) unless {sel} offset {w})) or increase({sel}[{w}]))"
 
 
-# The same for the per-repository build-time histogram: a repository's buckets are born at its first
-# build, so rate() over them is 0 and histogram_quantile() says nothing until its SECOND build. The
-# quantile needs only the buckets' ratio, so the young-aware increase stands in for rate().
+# The same applies to the per-repository build-time histogram. The buckets of a repository start at its
+# first build. So rate() over them is 0, and histogram_quantile() gives nothing until its SECOND build.
+# The quantile needs only the ratio of the buckets, so the young-aware increase replaces rate().
 _HIST = re.compile(r"\brate\((sfd_build_duration_seconds_bucket)(\{[^}]*\})?\[(\w+)\]\)")
 
 

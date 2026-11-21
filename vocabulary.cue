@@ -13,8 +13,10 @@ vocabulary: {
 	deviation:   true // a Power of 10 rule that grafana-tui adapts
 	suppression: true // a semscope allow comment
 	assertion:   true // Power of 10 rule R5
+	production:  true // production code: the code that the rules cover, not the tests
 
 	// Grafana and Prometheus concepts.
 	annotation: true // a Grafana annotation: an event on the time axis
 	resolution: true // the query resolution (step) of a Prometheus range query
+	recording:  true // the grafana-tui feature that saves changed frames (Ctrl+E)
 }
