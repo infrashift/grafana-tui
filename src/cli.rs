@@ -175,19 +175,21 @@ pub(crate) enum ValidateFormat {
 }
 
 /// Helper to parse key=value pairs for CLI arguments.
-pub(crate) fn parse_key_val<T, U>(
-    s: &str,
-) -> Result<(T, U), Box<dyn std::error::Error + Send + Sync + 'static>>
+///
+/// The error is the message that clap shows, so the function returns it as text.
+pub(crate) fn parse_key_val<T, U>(s: &str) -> Result<(T, U), String>
 where
     T: std::str::FromStr,
-    T::Err: std::error::Error + Send + Sync + 'static,
+    T::Err: std::fmt::Display,
     U: std::str::FromStr,
-    U::Err: std::error::Error + Send + Sync + 'static,
+    U::Err: std::fmt::Display,
 {
     let (key, value) = s
         .split_once('=')
         .ok_or_else(|| format!("invalid KEY=value: no `=` found in `{}`", s))?;
-    Ok((key.parse()?, value.parse()?))
+    let key = key.parse().map_err(|error: T::Err| error.to_string())?;
+    let value = value.parse().map_err(|error: U::Err| error.to_string())?;
+    Ok((key, value))
 }
 
 #[cfg(test)]
