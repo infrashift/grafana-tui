@@ -46,6 +46,16 @@ impl DashboardSet {
         dashboards: Vec<DashboardInfo>,
         section_owner: HashMap<SectionId, usize>,
     ) -> Self {
+        debug_assert!(
+            dashboards.len() <= crate::limits::MAX_DASHBOARD_FILES,
+            "the dashboards are in the file limit"
+        );
+        debug_assert!(
+            section_owner
+                .values()
+                .all(|&owner| owner < dashboards.len()),
+            "each section belongs to a loaded dashboard"
+        );
         let views = vec![DashboardView::default(); dashboards.len()];
         Self {
             group,
@@ -77,7 +87,11 @@ pub(crate) fn dashboard_tab_labels(titles: &[String]) -> Vec<String> {
             .all(|title| title.len() > prefix.len() && title.starts_with(prefix))
             .then_some(prefix)
     });
-    titles
+    debug_assert!(
+        prefix.is_none_or(|prefix| prefix.ends_with(" / ")),
+        "the shared prefix ends with the separator"
+    );
+    let labels: Vec<String> = titles
         .iter()
         .map(|title| {
             prefix
@@ -85,18 +99,34 @@ pub(crate) fn dashboard_tab_labels(titles: &[String]) -> Vec<String> {
                 .unwrap_or(title)
         })
         .map(str::to_string)
-        .collect()
+        .collect();
+    debug_assert_eq!(labels.len(), titles.len(), "each title has one label");
+    debug_assert!(
+        labels
+            .iter()
+            .zip(titles)
+            .all(|(label, title)| title.ends_with(label.as_str())
+                && (title.is_empty() || !label.is_empty())),
+        "each label is the end of its title, and is not empty"
+    );
+    labels
 }
 
 /// Returns `active` moved by `direction` and wrapped to `count`, or `None` when `count` is 0.
 fn wrapped_index(active: usize, direction: isize, count: usize) -> Option<usize> {
     let step = direction.unsigned_abs().checked_rem(count)?;
     let active = active % count;
-    Some(if direction < 0 {
+    debug_assert!(
+        step < count && active < count,
+        "the step and the start are in range"
+    );
+    let next = if direction < 0 {
         (active + count - step) % count
     } else {
         (active + step) % count
-    })
+    };
+    debug_assert!(next < count, "the wrapped index is in range");
+    Some(next)
 }
 
 impl AppState {
@@ -105,7 +135,13 @@ impl AppState {
     pub(crate) fn set_dashboards(&mut self, set: DashboardSet) {
         debug_assert_eq!(
             self.layout.tabs(set.group).map(|group| group.tabs.len()),
-            Some(set.dashboards.len())
+            Some(set.dashboards.len()),
+            "the tab group has one tab for each dashboard"
+        );
+        debug_assert_eq!(
+            set.views.len(),
+            set.dashboards.len(),
+            "each dashboard has a view"
         );
         let group = set.group;
         self.dashboards = Some(set);
@@ -115,6 +151,11 @@ impl AppState {
             .first_tab_descendant(group)
             .or(Some(DashboardItemId::Tabs(group)));
         self.vertical_scroll = 0;
+        debug_assert_eq!(
+            self.active_dashboard(),
+            Some(0),
+            "the first dashboard is active"
+        );
     }
 
     /// The tab group holding one tab per dashboard, with several dashboards.
@@ -142,9 +183,17 @@ impl AppState {
         let (Some(set), Some(active)) = (&self.dashboards, self.active_dashboard()) else {
             return Ok(());
         };
+        debug_assert!(
+            active < set.dashboards.len(),
+            "the active dashboard is in range"
+        );
         let Some(next) = wrapped_index(active, direction, set.dashboards.len()) else {
             return Ok(());
         };
+        debug_assert!(
+            next < set.dashboards.len(),
+            "the next dashboard is in range"
+        );
         self.activate_dashboard(next, DashboardFocus::Content)
     }
 
@@ -165,17 +214,8 @@ impl AppState {
             }
             return Ok(());
         }
-        let view = DashboardView {
-            selected_item: self.selected_item,
-            vertical_scroll: self.vertical_scroll,
-        };
-        if let Some(slot) = self
-            .dashboards
-            .as_mut()
-            .and_then(|set| set.views.get_mut(previous))
-        {
-            *slot = view;
-        }
+        debug_assert!(previous < count, "the previous dashboard is in range");
+        self.save_dashboard_view(previous);
         self.layout.set_active_tab(group, index);
         // Panels kept fetching by data conditions are found in the
         // unfiltered layout, so it must show the same dashboard.
@@ -203,11 +243,48 @@ impl AppState {
         self.ensure_selection_visible();
         self.start_refresh();
         self.reconcile_visible_annotation_targets();
+        debug_assert_eq!(
+            self.active_dashboard(),
+            Some(index),
+            "the dashboard is active"
+        );
         Ok(())
+    }
+
+    /// Keeps the selection and the scroll of dashboard `previous`, to return there.
+    fn save_dashboard_view(&mut self, previous: usize) {
+        let view = DashboardView {
+            selected_item: self.selected_item,
+            vertical_scroll: self.vertical_scroll,
+        };
+        debug_assert!(
+            self.dashboards
+                .as_ref()
+                .is_some_and(|set| previous < set.views.len()),
+            "the previous dashboard has a view"
+        );
+        if let Some(slot) = self
+            .dashboards
+            .as_mut()
+            .and_then(|set| set.views.get_mut(previous))
+        {
+            *slot = view;
+        }
+        debug_assert!(
+            self.dashboards
+                .as_ref()
+                .and_then(|set| set.views.get(previous))
+                .is_some_and(|saved| saved.selected_item == view.selected_item),
+            "the view of the previous dashboard is saved"
+        );
     }
 
     /// Shows dashboard `index`'s title and refreshes at its interval.
     fn apply_dashboard_info(&mut self, index: usize) {
+        debug_assert!(
+            self.active_dashboard().is_none_or(|active| active == index),
+            "the dashboard at the index is the active one"
+        );
         let Some(info) = self
             .dashboards
             .as_ref()
@@ -218,6 +295,12 @@ impl AppState {
         self.title = format!("{} (imported)", info.title);
         self.skipped_panels = info.skipped_panels;
         self.refresh_every = info.refresh_every;
+        debug_assert!(
+            self.dashboards
+                .as_ref()
+                .is_some_and(|set| index < set.dashboards.len()),
+            "the dashboard index is in range"
+        );
     }
 
     /// The row and tab copies whose variables are queried: all of them, except
@@ -227,7 +310,14 @@ impl AppState {
             return self.section_instances.clone();
         };
         let active = self.active_dashboard();
-        self.section_instances
+        debug_assert!(
+            set.section_owner
+                .values()
+                .all(|&owner| owner < set.dashboards.len()),
+            "each section belongs to a loaded dashboard"
+        );
+        let live: Vec<SectionInstance> = self
+            .section_instances
             .iter()
             .filter(|instance| {
                 set.section_owner
@@ -235,7 +325,12 @@ impl AppState {
                     .is_none_or(|&owner| Some(owner) == active)
             })
             .cloned()
-            .collect()
+            .collect();
+        debug_assert!(
+            live.len() <= self.section_instances.len(),
+            "the live sections are a part of the sections"
+        );
+        live
     }
 
     /// Panels of the dashboard shown, with several dashboards, including those
@@ -264,6 +359,11 @@ pub(crate) mod test_support {
         expr: &str,
         instance_query: &str,
     ) -> String {
+        assert!(!title.is_empty(), "the test dashboard has a title");
+        assert!(
+            humantime::parse_duration(auto_refresh).is_ok(),
+            "the auto refresh of the test dashboard is a duration"
+        );
         serde_json::json!({
             "apiVersion": "dashboard.grafana.app/v2",
             "kind": "Dashboard",
@@ -315,6 +415,16 @@ pub(crate) mod test_support {
         app.variable_names = setup.variables.names;
         app.apply_template(setup.template);
         app.set_dashboards(setup.set);
+        assert_eq!(
+            app.dashboards.as_ref().map(|set| set.dashboards.len()),
+            Some(documents.len()),
+            "each document is a dashboard"
+        );
+        assert_eq!(
+            app.active_dashboard(),
+            Some(0),
+            "the first dashboard is active"
+        );
         app
     }
 }

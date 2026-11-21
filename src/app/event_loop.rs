@@ -38,6 +38,12 @@ where
 
     // semscope: allow(NASA-P10-02) the TUI event loop runs until the user quits (ADR-0002)
     loop {
+        debug_assert!(app.one_dialog_or_less(), "one dialog or less is open");
+        debug_assert!(
+            app.theme_picker_in_range(),
+            "the theme picker selects a theme of the list"
+        );
+        debug_assert!(app.search_is_consistent(), "the search state is consistent");
         if needs_draw {
             terminal.draw(|f| ui::draw_ui(f, app))?;
             needs_draw = false;
@@ -97,6 +103,12 @@ where
         }
         _ => InputAction::Redraw,
     };
+    debug_assert!(app.search_is_consistent(), "the search state is consistent");
+    debug_assert!(
+        app.selection_in_panels(),
+        "the selected panel is in the panel list"
+    );
+    debug_assert!(app.one_dialog_or_less(), "one dialog or less is open");
     Ok(action)
 }
 
@@ -109,9 +121,14 @@ fn apply_action<B: ratatui::backend::Backend>(
 where
     <B as ratatui::backend::Backend>::Error: Send + Sync + 'static,
 {
+    debug_assert!(
+        app.recording_in_limit(),
+        "the recording is in its frame limit"
+    );
     match action {
         InputAction::Quit => {
             finalize_recording_before_quit(app)?;
+            debug_assert!(app.recording.is_none(), "the quit saves the recording");
             return Ok(false);
         }
         InputAction::ExportCurrent => {
@@ -127,6 +144,10 @@ where
         InputAction::Redraw => {}
     }
     capture_recording_after_change(terminal, app)?;
+    debug_assert!(
+        app.recording_in_limit(),
+        "the recording is in its frame limit"
+    );
     Ok(true)
 }
 
@@ -143,7 +164,18 @@ where
     <B as ratatui::backend::Backend>::Error: Send + Sync + 'static,
 {
     let size = terminal.size()?;
-    Ok(Rect::new(0, 0, size.width, size.height))
+    let viewport = Rect::new(0, 0, size.width, size.height);
+    debug_assert_eq!(
+        (viewport.width, viewport.height),
+        (size.width, size.height),
+        "the viewport has the size of the terminal"
+    );
+    debug_assert_eq!(
+        (viewport.x, viewport.y),
+        (0, 0),
+        "the viewport starts at the top left corner"
+    );
+    Ok(viewport)
 }
 
 fn capture_recording_after_change<B: ratatui::backend::Backend>(
@@ -157,9 +189,17 @@ where
         return Ok(());
     }
 
+    debug_assert!(
+        app.recording_in_limit(),
+        "the recording is in its frame limit"
+    );
     let viewport = terminal_viewport(terminal)?;
     let captured = export::capture_recording_frame(app, viewport);
     report_export_error(app, "Recording frame", captured);
+    debug_assert!(
+        app.recording_in_limit(),
+        "the recording is in its frame limit"
+    );
     Ok(())
 }
 
@@ -174,9 +214,14 @@ fn report_export_error<T>(app: &mut AppState, action: &str, result: Result<T>) {
 /// Saves an active recording's manifest. It is a no-op without a recording, so
 /// it is safe to call on every exit path.
 pub(crate) fn finalize_recording_before_quit(app: &mut AppState) -> Result<()> {
+    debug_assert!(
+        app.recording_in_limit(),
+        "the recording is in its frame limit"
+    );
     if app.recording.is_some() {
         export::stop_recording(app, RecordingCompletionReason::Quit)?;
     }
+    debug_assert!(app.recording.is_none(), "no recording stays active");
     Ok(())
 }
 

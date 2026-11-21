@@ -1113,6 +1113,35 @@ impl AppState {
         }
     }
 
+    /// Whether one dialog or less is open: the annotation modal or the theme picker.
+    pub(crate) fn one_dialog_or_less(&self) -> bool {
+        self.annotation_modal.is_none() || self.theme_picker.is_none()
+    }
+
+    /// Whether the theme picker, when open, selects a theme of the list.
+    pub(crate) fn theme_picker_in_range(&self) -> bool {
+        let selected = self.theme_picker.as_ref().map(|picker| picker.selected);
+        selected.is_none_or(|selected| selected < self.themes.len())
+    }
+
+    /// Whether the search text is in its limit, and results exist only in the search mode.
+    pub(crate) fn search_is_consistent(&self) -> bool {
+        self.search_query.chars().count() <= crate::limits::MAX_SEARCH_CHARS
+            && (self.search_results.is_empty() || self.mode == AppMode::Search)
+    }
+
+    /// Whether the selected panel, when there is one, is in the panel list.
+    pub(crate) fn selection_in_panels(&self) -> bool {
+        let selected = self.selected_panel_index();
+        selected.is_none_or(|index| index < self.panels.len())
+    }
+
+    /// Whether an active recording has no more frames than its limit.
+    pub(crate) fn recording_in_limit(&self) -> bool {
+        let recording = self.recording.as_ref();
+        recording.is_none_or(|recording| recording.frame_count <= recording.max_frames)
+    }
+
     /// Intervals for queries without panel query options, such as variables.
     pub(crate) fn default_intervals(&self) -> QueryIntervals {
         QueryIntervals::new(self.range, self.min_step, self.scrape_interval, None)
