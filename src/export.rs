@@ -1064,21 +1064,12 @@ fn render_graph_annotations<'a>(
             out,
             r#"<text x="{x:.2}" y="{:.2}" fill="{color}" font-size="{SMALL_FONT_SIZE:.1}" text-anchor="middle" data-role="annotation-count">{}</text>"#,
             plot.top + SMALL_FONT_SIZE,
-            annotation_cluster_badge(cluster.events.len())
+            crate::ui::cluster_badge(cluster.events.len())
         )
         .unwrap();
     }
 
     clusters
-}
-
-fn annotation_cluster_badge(count: usize) -> char {
-    match count {
-        0 => ' ',
-        1 => '•',
-        2..=9 => char::from_digit(count as u32, 10).unwrap(),
-        _ => '+',
-    }
 }
 
 fn active_export_annotation<'a>(
@@ -2163,7 +2154,7 @@ fn value_ticks(min: f64, max: f64) -> Vec<f64> {
         return Vec::new();
     }
 
-    let step = nice_step((max - min) / 3.0);
+    let step = crate::ui::nice_grid_step(max - min, 3);
     let mut tick = (min / step).ceil() * step;
     let mut ticks = Vec::new();
 
@@ -2174,22 +2165,6 @@ fn value_ticks(min: f64, max: f64) -> Vec<f64> {
         tick += step;
     }
     ticks
-}
-
-fn nice_step(raw: f64) -> f64 {
-    let exponent = raw.abs().log10().floor();
-    let base = 10f64.powf(exponent);
-    let fraction = raw / base;
-    let nice = if fraction <= 1.0 {
-        1.0
-    } else if fraction <= 2.0 {
-        2.0
-    } else if fraction <= 5.0 {
-        5.0
-    } else {
-        10.0
-    };
-    nice * base
 }
 
 fn time_ticks(start: f64, end: f64) -> Vec<f64> {

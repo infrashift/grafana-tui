@@ -19,7 +19,6 @@ rules: "NASA-P10-05": check: assert_calls: rust: [
 // it on. Remove each line when its phase closes (ISSUE-002 to ISSUE-009).
 rules: "NASA-P10-01": enabled: false // ISSUE-003 recursion
 rules: "NASA-P10-02": enabled: false // ISSUE-004 loop bounds
-rules: "NASA-P10-04": enabled: false // ISSUE-002 function length
 rules: "NASA-P10-05": enabled: false // ISSUE-009 assertion density
 rules: "NASA-P10-07": enabled: false // ISSUE-005 checked results
 rules: "NASA-P10-08": enabled: false // ISSUE-008 macros

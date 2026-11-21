@@ -42,6 +42,8 @@ use ratatui::{
     widgets::{Axis, Chart, Dataset, GraphType, Paragraph, Wrap},
 };
 
+pub(crate) use annotations::cluster_badge;
+pub(crate) use autogrid::nice_grid_step;
 pub(crate) use bounds::calculate_y_bounds;
 
 fn graph_type_for_draw_style(draw_style: crate::app::GraphDrawStyle) -> GraphType {
