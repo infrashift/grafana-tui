@@ -304,6 +304,8 @@ pub(crate) struct Materialized {
     pub(crate) reclaimed: Vec<usize>,
     /// Panel slots in use or free for reuse; slots from here on are released.
     pub(crate) panel_slots: usize,
+    /// Whether MAX_LAYOUT_NODES stopped a repeat before its last copy.
+    pub(crate) truncated: bool,
 }
 
 impl DashboardTemplate {
@@ -368,8 +370,10 @@ impl DashboardTemplate {
             materialized_conditions: Vec::new(),
             nodes: 0,
             reserve: node_count(&self.layout.items),
+            truncated: false,
         };
         let items = builder.items(&self.layout.items, &Scope::new(), true);
+        let truncated = builder.truncated;
         let (panels, conditions, sections) = (
             builder.panels,
             builder.materialized_conditions,
@@ -383,6 +387,7 @@ impl DashboardTemplate {
             sections,
             reclaimed,
             panel_slots: self.clones.next_panel,
+            truncated,
         }
     }
 }
@@ -423,6 +428,8 @@ struct Builder<'a, 'v> {
     nodes: usize,
     /// The layout items of the template, which the first copies can still add.
     reserve: usize,
+    /// Whether MAX_LAYOUT_NODES stopped a repeat before its last copy.
+    truncated: bool,
 }
 
 /// A list of template items that the builder expands, with the row or tab
@@ -471,6 +478,8 @@ enum BuildParent<'a> {
 struct Copies {
     rest: std::vec::IntoIter<RepeatCopy>,
     made: usize,
+    /// Whether the layout limit stopped the copies before the last value.
+    cut: bool,
 }
 
 impl Copies {
@@ -479,12 +488,14 @@ impl Copies {
         Self {
             rest: copies.into_iter(),
             made: 0,
+            cut: false,
         }
     }
 
     /// The next copy. A copy after the first needs `room` in the layout.
     fn next(&mut self, room: bool) -> Option<RepeatCopy> {
         if self.made > 0 && !room {
+            self.cut = self.rest.next().is_some();
             return None;
         }
         self.made += 1;
@@ -714,6 +725,7 @@ impl<'a> Builder<'a, '_> {
         let repeat = self.repeats.panels.get(&source);
         let mut copies = self.copies(repeat, scope, primary);
         let room = MAX_LAYOUT_NODES.saturating_sub(self.nodes.saturating_add(self.reserve));
+        self.truncated |= copies.len() > room.max(1);
         copies.truncate(room.max(1));
         self.nodes = self.nodes.saturating_add(copies.len());
         let count = copies.len();
@@ -773,7 +785,10 @@ impl<'a> Builder<'a, '_> {
     /// the frame of its children, or `None` after the last copy.
     fn next_row_copy(&mut self, mut copies: RowCopies<'a>) -> Option<CopyStep<'a>> {
         let room = self.has_room();
-        let mut copy = copies.copies.next(room)?;
+        let Some(mut copy) = copies.copies.next(room) else {
+            self.truncated |= copies.copies.cut;
+            return None;
+        };
         let row = copies.row;
         let section = SectionId::Row(row.id);
         let repeat = self.repeats.rows.get(&row.id);
@@ -835,6 +850,7 @@ impl<'a> Builder<'a, '_> {
                 if let Some(copy) = copies.next(self.has_room()) {
                     return CopyStep::Open(self.open_tab_copy(open, copy));
                 }
+                self.truncated |= copies.cut;
                 open.position += 1;
                 open.copies = None;
             }
@@ -1579,6 +1595,7 @@ mod tests {
 
         assert_eq!(materialized.panels.len(), MAX_LAYOUT_NODES - 1);
         assert_eq!(node_count(&materialized.layout.items), MAX_LAYOUT_NODES - 1);
+        assert!(materialized.truncated);
     }
 
     #[test]
@@ -1614,6 +1631,7 @@ mod tests {
         let materialized = template.materialize(&vars.get());
 
         let count = node_count(&materialized.layout.items);
+        assert!(materialized.truncated);
         assert!(count <= MAX_LAYOUT_NODES, "{count}");
         assert!(count > MAX_LAYOUT_NODES - 8, "{count}");
         let items = &materialized.layout.items;

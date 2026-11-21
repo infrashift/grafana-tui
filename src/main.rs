@@ -363,7 +363,7 @@ fn prepare_dashboards(
     config: &Config,
 ) -> Result<DashboardContent> {
     match loaded {
-        LoadedDashboards::Flat => Ok(flat_content(args, config)),
+        LoadedDashboards::Flat => flat_content(args, config),
         LoadedDashboards::Single(dashboard) => {
             Ok(single_dashboard_content(*dashboard, args, config))
         }
@@ -372,10 +372,16 @@ fn prepare_dashboards(
 }
 
 /// Makes one panel for each `--query`, with the user variables only.
-fn flat_content(args: &Args, config: &Config) -> DashboardContent {
+fn flat_content(args: &Args, config: &Config) -> Result<DashboardContent> {
+    let limit = crate::dashboard::MAX_LAYOUT_NODES;
+    anyhow::ensure!(
+        args.query.len() <= limit,
+        "{} --query panels are more than the limit of {limit} layout items",
+        args.query.len()
+    );
     let mut variables = VariableState::default();
     merge_user_vars(&mut variables, config.vars.clone(), &args.var);
-    DashboardContent {
+    Ok(DashboardContent {
         title: "grafana-tui".to_string(),
         panels: app::default_queries(args.query.clone()),
         skipped_panels: 0,
@@ -384,7 +390,7 @@ fn flat_content(args: &Args, config: &Config) -> DashboardContent {
         template: None,
         refresh_rate_ms: None,
         set: None,
-    }
+    })
 }
 
 /// Prepares one imported dashboard to show.
@@ -1299,6 +1305,29 @@ mod tests {
         assert_eq!(summary.diagnostics.len(), 1);
         assert_eq!(summary.diagnostics[0].code, "unresolved_variable");
         assert!(summary.diagnostics[0].message.contains("$cluster"));
+    }
+
+    #[test]
+    fn query_panels_over_the_layout_limit_are_rejected() {
+        use clap::Parser;
+        let limit = crate::dashboard::MAX_LAYOUT_NODES;
+        let argv = |count: usize| {
+            let mut argv = vec!["grafana-tui".to_string()];
+            for index in 0..count {
+                argv.push("--query".to_string());
+                argv.push(format!("up{{n=\"{index}\"}}"));
+            }
+            Args::parse_from(argv)
+        };
+        let config = Config::default();
+
+        let content = flat_content(&argv(limit), &config).unwrap();
+        assert_eq!(content.panels.len(), limit);
+        let error = flat_content(&argv(limit + 1), &config)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("limit of 4096 layout items"), "{error}");
     }
 
     #[test]
