@@ -128,6 +128,17 @@ impl<'a> Iterator for LayoutWalk<'a> {
     }
 }
 
+/// The number of rows, tab groups, tabs, auto grids and panels in `items`.
+pub(crate) fn node_count(items: &[DashboardLayoutItem]) -> usize {
+    LayoutWalk::new(items, WalkScope::All)
+        .map(|event| match event.item {
+            DashboardLayoutItem::Tabs(group) => group.tabs.len().saturating_add(1),
+            DashboardLayoutItem::AutoGrid(grid) => grid.panels.len().saturating_add(1),
+            DashboardLayoutItem::Row(_) | DashboardLayoutItem::Panel(_) => 1,
+        })
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

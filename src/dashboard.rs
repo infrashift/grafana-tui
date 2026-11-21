@@ -4,7 +4,7 @@ use crate::conditions::ConditionTarget;
 
 mod walk;
 
-pub(crate) use walk::{LayoutWalk, WalkScope};
+pub(crate) use walk::{LayoutWalk, WalkScope, node_count};
 
 /// The most levels of child lists in a layout. The top-level list is level 1.
 ///
@@ -291,7 +291,7 @@ impl DashboardLayout {
 
     pub(crate) fn set_row_collapsed(&mut self, id: RowId, collapsed: bool) -> Option<LayoutChange> {
         let before = self.visible_panel_indices();
-        find_row_mut(&mut self.items, id)?.collapsed = collapsed;
+        *row_collapsed_mut(&mut self.items, id)? = collapsed;
         let after = self.visible_panel_indices();
         Some(LayoutChange {
             newly_visible_panels: after
@@ -310,7 +310,7 @@ impl DashboardLayout {
             return Some(LayoutChange::default());
         }
         let before = self.visible_panel_indices();
-        find_tabs_mut(&mut self.items, id)?.active = Some(index);
+        *tabs_active_mut(&mut self.items, id)? = Some(index);
         let after = self.visible_panel_indices();
         Some(LayoutChange {
             newly_visible_panels: after
@@ -381,65 +381,70 @@ impl DashboardLayout {
     }
 }
 
+/// A copy of `items` without the hidden items. A stack of child lists
+/// replaces recursion. The filter changes each list on its own, so the order
+/// of the lists does not change the result.
 fn filter_items(
     items: &[DashboardLayoutItem],
     hidden: &HashSet<ConditionTarget>,
 ) -> Vec<DashboardLayoutItem> {
-    items
-        .iter()
-        .filter_map(|item| match item {
-            DashboardLayoutItem::Panel(index) => {
-                (!hidden.contains(&ConditionTarget::Panel(*index))).then(|| item.clone())
-            }
-            DashboardLayoutItem::Row(row) => (!hidden.contains(&ConditionTarget::Row(row.id)))
-                .then(|| {
-                    DashboardLayoutItem::Row(DashboardRow {
-                        children: filter_items(&row.children, hidden),
-                        ..row.clone()
-                    })
-                }),
-            DashboardLayoutItem::Tabs(group) => {
-                let shown: Vec<usize> = (0..group.tabs.len())
-                    .filter(|&position| !hidden.contains(&ConditionTarget::Tab(group.id, position)))
-                    .collect();
-                if shown.is_empty() {
-                    return None;
+    let mut filtered = items.to_vec();
+    let mut lists: Vec<&mut Vec<DashboardLayoutItem>> = vec![&mut filtered];
+    for _ in 0..MAX_LAYOUT_STEPS {
+        let Some(list) = lists.pop() else {
+            break;
+        };
+        list.retain_mut(|item| keep_item(item, hidden));
+        for item in list {
+            match item {
+                DashboardLayoutItem::Row(row) => lists.push(&mut row.children),
+                DashboardLayoutItem::Tabs(group) => {
+                    lists.extend(group.tabs.iter_mut().map(|tab| &mut tab.children));
                 }
-                let active = group
-                    .active
-                    .and_then(|active| shown.iter().position(|&position| position == active))
-                    .unwrap_or(0);
-                Some(DashboardLayoutItem::Tabs(DashboardTabs {
-                    id: group.id,
-                    tabs: shown
-                        .iter()
-                        .map(|&position| {
-                            let tab = &group.tabs[position];
-                            DashboardTab {
-                                title: tab.title.clone(),
-                                children: filter_items(&tab.children, hidden),
-                            }
-                        })
-                        .collect(),
-                    active: Some(active),
-                }))
+                DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => {}
             }
-            DashboardLayoutItem::AutoGrid(grid) => {
-                let panels: Vec<usize> = grid
-                    .panels
-                    .iter()
-                    .copied()
-                    .filter(|index| !hidden.contains(&ConditionTarget::Panel(*index)))
-                    .collect();
-                (!panels.is_empty()).then(|| {
-                    DashboardLayoutItem::AutoGrid(DashboardAutoGrid {
-                        panels,
-                        ..grid.clone()
-                    })
-                })
+        }
+    }
+    debug_assert!(lists.is_empty(), "an imported layout is within the limits");
+    filtered
+}
+
+/// Whether `item` stays when the `hidden` items leave the layout. Removes the
+/// hidden tabs and auto grid panels of `item`.
+///
+/// A tab group or an auto grid with nothing left goes. A tab group whose
+/// active tab goes activates the first tab that stays.
+fn keep_item(item: &mut DashboardLayoutItem, hidden: &HashSet<ConditionTarget>) -> bool {
+    match item {
+        DashboardLayoutItem::Panel(index) => !hidden.contains(&ConditionTarget::Panel(*index)),
+        DashboardLayoutItem::Row(row) => !hidden.contains(&ConditionTarget::Row(row.id)),
+        DashboardLayoutItem::Tabs(group) => {
+            let id = group.id;
+            let shown: Vec<usize> = (0..group.tabs.len())
+                .filter(|&position| !hidden.contains(&ConditionTarget::Tab(id, position)))
+                .collect();
+            if shown.is_empty() {
+                return false;
             }
-        })
-        .collect()
+            let active = group
+                .active
+                .and_then(|active| shown.iter().position(|&position| position == active))
+                .unwrap_or(0);
+            group.tabs = std::mem::take(&mut group.tabs)
+                .into_iter()
+                .enumerate()
+                .filter(|(position, _)| shown.contains(position))
+                .map(|(_, tab)| tab)
+                .collect();
+            group.active = Some(active);
+            true
+        }
+        DashboardLayoutItem::AutoGrid(grid) => {
+            grid.panels
+                .retain(|index| !hidden.contains(&ConditionTarget::Panel(*index)));
+            !grid.panels.is_empty()
+        }
+    }
 }
 
 /// Applies displayed row and tab state to a layout that also holds `hidden`
@@ -451,27 +456,21 @@ fn sync_state(
     tabs: &HashMap<TabGroupId, Option<usize>>,
     hidden: &HashSet<ConditionTarget>,
 ) {
-    for item in items {
-        match item {
-            DashboardLayoutItem::Row(row) => {
-                if let Some(&collapsed) = rows.get(&row.id) {
-                    row.collapsed = collapsed;
+    for section in sections_mut(items) {
+        match section {
+            SectionMut::Row { id, collapsed } => {
+                if let Some(&value) = rows.get(&id) {
+                    *collapsed = value;
                 }
-                sync_state(&mut row.children, rows, tabs, hidden);
             }
-            DashboardLayoutItem::Tabs(group) => {
-                if let Some(&Some(displayed)) = tabs.get(&group.id) {
-                    let id = group.id;
-                    group.active = (0..group.tabs.len())
+            SectionMut::Tabs { id, count, active } => {
+                if let Some(&Some(displayed)) = tabs.get(&id) {
+                    *active = (0..count)
                         .filter(|&position| !hidden.contains(&ConditionTarget::Tab(id, position)))
                         .nth(displayed)
-                        .or(group.active);
-                }
-                for tab in &mut group.tabs {
-                    sync_state(&mut tab.children, rows, tabs, hidden);
+                        .or(*active);
                 }
             }
-            DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => {}
         }
     }
 }
@@ -495,32 +494,104 @@ fn collect_state(
     }
 }
 
+/// Copies the row collapse state and the active tabs in `rows` and `tabs`
+/// to the rows and tab groups of `items` with the same ids.
 fn apply_state(
     items: &mut [DashboardLayoutItem],
     rows: &HashMap<RowId, bool>,
     tabs: &HashMap<TabGroupId, Option<usize>>,
 ) {
-    for item in items {
-        match item {
-            DashboardLayoutItem::Row(row) => {
-                if let Some(&collapsed) = rows.get(&row.id) {
-                    row.collapsed = collapsed;
-                }
-                apply_state(&mut row.children, rows, tabs);
-            }
-            DashboardLayoutItem::Tabs(group) => {
-                if let Some(&active) = tabs.get(&group.id) {
-                    group.active = active
-                        .map(|index| index.min(group.tabs.len().saturating_sub(1)))
-                        .filter(|_| !group.tabs.is_empty());
-                }
-                for tab in &mut group.tabs {
-                    apply_state(&mut tab.children, rows, tabs);
+    for section in sections_mut(items) {
+        match section {
+            SectionMut::Row { id, collapsed } => {
+                if let Some(&value) = rows.get(&id) {
+                    *collapsed = value;
                 }
             }
-            DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => {}
+            SectionMut::Tabs { id, count, active } => {
+                if let Some(&value) = tabs.get(&id) {
+                    *active = value
+                        .map(|index| index.min(count.saturating_sub(1)))
+                        .filter(|_| count > 0);
+                }
+            }
         }
     }
+}
+
+/// The state of a row or a tab group, borrowed for a change.
+enum SectionMut<'a> {
+    Row {
+        id: RowId,
+        collapsed: &'a mut bool,
+    },
+    Tabs {
+        id: TabGroupId,
+        count: usize,
+        active: &'a mut Option<usize>,
+    },
+}
+
+/// The state of every row and tab group of `items`, in no fixed order. A stack
+/// of child lists replaces recursion.
+fn sections_mut(items: &mut [DashboardLayoutItem]) -> Vec<SectionMut<'_>> {
+    let mut sections = Vec::new();
+    let mut lists = vec![items];
+    for _ in 0..MAX_LAYOUT_STEPS {
+        let Some(list) = lists.pop() else {
+            break;
+        };
+        for item in list {
+            match item {
+                DashboardLayoutItem::Row(DashboardRow {
+                    id,
+                    collapsed,
+                    children,
+                    ..
+                }) => {
+                    sections.push(SectionMut::Row { id: *id, collapsed });
+                    lists.push(children);
+                }
+                DashboardLayoutItem::Tabs(DashboardTabs { id, tabs, active }) => {
+                    let count = tabs.len();
+                    sections.push(SectionMut::Tabs {
+                        id: *id,
+                        count,
+                        active,
+                    });
+                    lists.extend(tabs.iter_mut().map(|tab| tab.children.as_mut_slice()));
+                }
+                DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => {}
+            }
+        }
+    }
+    debug_assert!(lists.is_empty(), "an imported layout is within the limits");
+    sections
+}
+
+/// The collapse state of the row with `id`.
+fn row_collapsed_mut(items: &mut [DashboardLayoutItem], id: RowId) -> Option<&mut bool> {
+    sections_mut(items)
+        .into_iter()
+        .find_map(|section| match section {
+            SectionMut::Row { id: row, collapsed } if row == id => Some(collapsed),
+            _ => None,
+        })
+}
+
+/// The active tab of the tab group with `id`.
+fn tabs_active_mut(
+    items: &mut [DashboardLayoutItem],
+    id: TabGroupId,
+) -> Option<&mut Option<usize>> {
+    sections_mut(items)
+        .into_iter()
+        .find_map(|section| match section {
+            SectionMut::Tabs {
+                id: group, active, ..
+            } if group == id => Some(active),
+            _ => None,
+        })
 }
 
 /// The rows and tabs that `item` itself defines.
@@ -555,56 +626,12 @@ fn find_row(items: &[DashboardLayoutItem], id: RowId) -> Option<&DashboardRow> {
     })
 }
 
-fn find_row_mut(items: &mut [DashboardLayoutItem], id: RowId) -> Option<&mut DashboardRow> {
-    for item in items {
-        if let DashboardLayoutItem::Row(row) = item {
-            if row.id == id {
-                return Some(row);
-            }
-            if let Some(found) = find_row_mut(&mut row.children, id) {
-                return Some(found);
-            }
-        } else if let DashboardLayoutItem::Tabs(group) = item {
-            for tab in &mut group.tabs {
-                if let Some(found) = find_row_mut(&mut tab.children, id) {
-                    return Some(found);
-                }
-            }
-        }
-    }
-    None
-}
-
 /// The tab group with `id`, first in pre-order.
 fn find_tabs(items: &[DashboardLayoutItem], id: TabGroupId) -> Option<&DashboardTabs> {
     LayoutWalk::new(items, WalkScope::All).find_map(|event| match event.item {
         DashboardLayoutItem::Tabs(group) if group.id == id => Some(group),
         _ => None,
     })
-}
-
-fn find_tabs_mut(items: &mut [DashboardLayoutItem], id: TabGroupId) -> Option<&mut DashboardTabs> {
-    for item in items {
-        match item {
-            DashboardLayoutItem::Tabs(group) => {
-                if group.id == id {
-                    return Some(group);
-                }
-                for tab in &mut group.tabs {
-                    if let Some(found) = find_tabs_mut(&mut tab.children, id) {
-                        return Some(found);
-                    }
-                }
-            }
-            DashboardLayoutItem::Row(row) => {
-                if let Some(found) = find_tabs_mut(&mut row.children, id) {
-                    return Some(found);
-                }
-            }
-            DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => {}
-        }
-    }
-    None
 }
 
 /// Adds the items on screen to `visible`, in pre-order, with their display depth.
