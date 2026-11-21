@@ -18,5 +18,3 @@ rules: "NASA-P10-05": check: assert_calls: rust: [
 // The ratchet: a rule stays off until the refactor phase that clears it turns
 // it on. Remove each line when its phase closes (ISSUE-002 to ISSUE-009).
 rules: "NASA-P10-05": enabled: false // ISSUE-009 assertion density
-rules: "NASA-P10-08": enabled: false // ISSUE-008 macros
-rules: "NASA-P10-09": enabled: false // ISSUE-008 indirection
