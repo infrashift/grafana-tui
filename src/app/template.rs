@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-//! Dashboard templates: the imported layout before repeats are expanded and
-//! variables are interpolated into titles.
+//! Dashboard templates: the imported layout before the app expands repeats
+//! and interpolates variables into titles.
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -31,7 +31,7 @@ use crate::dashboard::{
 use crate::grafana::{SectionVariable, TemplateQueryVar};
 
 /// Values that section query variables resolved to, per section copy and the
-/// scope it was resolved in.
+/// scope it resolved in.
 pub(crate) type ResolvedSections = HashMap<(SectionId, Scope), HashMap<String, Vec<String>>>;
 
 /// Grafana's default number of horizontal repeat copies per row.
@@ -45,11 +45,11 @@ pub(crate) struct ScopeBinding {
     pub(crate) name: String,
     /// Raw selected values.
     pub(crate) values: Vec<String>,
-    /// Query text replacing the formatted values, such as an `allValue`.
+    /// Query text that replaces the formatted values, such as an `allValue`.
     pub(crate) formatted: Option<String>,
     /// Whether values are regex-escaped in queries.
     pub(crate) regex: bool,
-    /// Whether `All` is selected.
+    /// Whether the selection is `All`.
     pub(crate) all: bool,
 }
 
@@ -97,7 +97,7 @@ impl ScopeBinding {
     }
 }
 
-/// Variables bound by enclosing repeats and sections, outermost first; later
+/// Variables that the outer repeats and sections bind, outermost first; later
 /// bindings shadow earlier ones.
 pub(crate) type Scope = Vec<ScopeBinding>;
 
@@ -109,7 +109,7 @@ pub(crate) fn find_binding<'s>(scope: &'s [ScopeBinding], name: &str) -> Option<
 struct TitleVariables<'s, 'v> {
     /// The dashboard's variables.
     variables: &'s Variables<'v>,
-    /// The bindings of the enclosing repeats and sections.
+    /// The bindings of the outer repeats and sections.
     scope: &'s Scope,
 }
 
@@ -229,9 +229,9 @@ struct PanelTemplate {
 /// Ids handed out to repeat copies. A copy keeps its id, and with it its panel
 /// state and row or tab state, for as long as its scope stays selected.
 ///
-/// Ids a materialization no longer uses are forgotten when it finishes, and
-/// their panel slots are reused, so memory follows the copies on screen rather
-/// than every value a variable ever had.
+/// When a `materialize` call finishes, it forgets the ids that it did not use,
+/// and later copies use their panel slots again. So memory follows the copies
+/// on screen, not every value a variable ever had.
 #[derive(Debug, Clone, Default)]
 struct CloneIds {
     panels: HashMap<(usize, Scope), usize>,
@@ -242,15 +242,15 @@ struct CloneIds {
     next_tab_group: usize,
     /// Reclaimed panel slots below `next_panel`, reused lowest first.
     free_panels: BTreeSet<usize>,
-    /// Keys used by the materialization in progress.
+    /// Keys that the current `materialize` call uses.
     used_panels: HashSet<(usize, Scope)>,
     used_rows: HashSet<(RowId, Scope)>,
     used_tab_groups: HashSet<(TabGroupId, Scope)>,
 }
 
 impl CloneIds {
-    /// The slot for a copy of panel `source`, and whether it was just assigned,
-    /// in which case the slot may hold another panel's old state.
+    /// The slot for a copy of panel `source`, and whether this call assigned it
+    /// now. In that case, the slot can hold another panel's old state.
     fn panel(&mut self, source: usize, scope: &Scope) -> (usize, bool) {
         debug_assert!(
             self.free_panels.iter().all(|&slot| slot < self.next_panel),
@@ -309,9 +309,9 @@ impl CloneIds {
         id
     }
 
-    /// Forgets the ids the finished materialization did not use, returning the
-    /// panel slots it reclaimed. Trailing free slots are released entirely, down
-    /// to `imported_panels`.
+    /// Forgets the ids that the finished `materialize` call did not use, and
+    /// returns the panel slots it reclaimed. It releases all free slots at the
+    /// end, down to `imported_panels`.
     fn finish(&mut self, imported_panels: usize) -> Vec<usize> {
         let used_panels = std::mem::take(&mut self.used_panels);
         let used_rows = std::mem::take(&mut self.used_rows);
@@ -370,17 +370,17 @@ pub(crate) struct PanelInstance {
     pub(crate) title: String,
     pub(crate) grid: Option<GridUnit>,
     pub(crate) scope: Scope,
-    /// Whether the slot was just assigned to this copy, so any state left in it
+    /// Whether this copy got the slot only now, so any state left in it
     /// belongs to another panel.
     pub(crate) fresh: bool,
 }
 
-/// A conditional rendering group attached to a materialized item.
+/// A condition group (`ConditionalRenderingGroup`) of a materialized item.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MaterializedCondition {
     pub(crate) target: ConditionTarget,
     pub(crate) group: ConditionGroup,
-    /// Repeat values the item was copied with, which its conditions see.
+    /// The repeat values of this item copy, which its conditions see.
     pub(crate) scope: Scope,
 }
 
@@ -388,10 +388,10 @@ pub(crate) struct MaterializedCondition {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SectionInstance {
     pub(crate) id: SectionId,
-    /// Variables bound around the section, which its queries are expanded with.
+    /// Variables bound around the section. Its queries expand with them.
     pub(crate) scope: Scope,
     pub(crate) queries: Vec<TemplateQueryVar>,
-    /// Imported selections, which resolution keeps while they are offered.
+    /// Imported selections. A selection stays while the variable options include it.
     pub(crate) selected: HashMap<String, Vec<String>>,
 }
 
@@ -402,9 +402,9 @@ pub(crate) struct Materialized {
     pub(crate) panels: Vec<PanelInstance>,
     pub(crate) conditions: Vec<MaterializedCondition>,
     pub(crate) sections: Vec<SectionInstance>,
-    /// Panel slots no copy uses any more, whose state can be dropped.
+    /// Panel slots that no copy uses now. The app can drop their state.
     pub(crate) reclaimed: Vec<usize>,
-    /// Panel slots in use or free for reuse; slots from here on are released.
+    /// Panel slots in use or free to use again. The app releases the slots from here on.
     pub(crate) panel_slots: usize,
     /// Whether MAX_LAYOUT_NODES stopped a repeat before its last copy.
     pub(crate) truncated: bool,
@@ -445,13 +445,13 @@ impl DashboardTemplate {
         template
     }
 
-    /// How many repeat copy ids are remembered, across panels, rows, and tabs.
+    /// How many repeat copy ids the template remembers, across panels, rows, and tabs.
     #[cfg(test)]
     pub(crate) fn retained_ids(&self) -> usize {
         self.clones.panels.len() + self.clones.rows.len() + self.clones.tab_groups.len()
     }
 
-    /// Adds conditional rendering, keyed by the same imported ids as the repeats.
+    /// Adds the conditions, keyed by the same imported ids as the repeats.
     pub(crate) fn with_conditions(mut self, conditions: Conditions) -> Self {
         self.conditions = conditions;
         self
@@ -852,8 +852,8 @@ impl<'a> Builder<'a, '_> {
     }
 
     /// Expands a run of sibling grid panels. A repeated panel grows to hold its
-    /// copies, and later siblings move down by the height it adds, as Grafana's
-    /// grid does when a repeat expands.
+    /// copies. Later siblings move down by the height it adds, as in Grafana's
+    /// grid when a repeat expands.
     fn panel_group(
         &mut self,
         sources: &[usize],
@@ -917,8 +917,8 @@ impl<'a> Builder<'a, '_> {
         (added > 0).then_some((grid.y, added))
     }
 
-    /// Records the panel instances a template panel expands to, returning their
-    /// indices with whether each is the primary copy.
+    /// Records the panel instances that a template panel expands to. Returns
+    /// their indices and whether each is the primary copy.
     fn panel_copies(&mut self, source: usize, scope: &Scope, primary: bool) -> Vec<(usize, bool)> {
         let repeat = self.repeats.panels.get(&source);
         let mut copies = self.copies(repeat, scope, primary);
@@ -1208,8 +1208,9 @@ impl<'a> Builder<'a, '_> {
     }
 
     /// Bindings for a section's variables: resolved values for query variables,
-    /// otherwise the imported selection. Variables without a value are left out,
-    /// so references to them fall through to the dashboard's variables.
+    /// otherwise the imported selection. The bindings leave out variables
+    /// without a value, so references to them fall through to the dashboard's
+    /// variables.
     fn section_bindings(&self, section: SectionId, scope: &Scope) -> Vec<ScopeBinding> {
         let Some(definitions) = self.sections.get(&section) else {
             return Vec::new();
@@ -1320,9 +1321,9 @@ fn finish_tabs(open: TabCopies<'_>) -> DashboardLayoutItem {
 
 /// Grid position of copy `position` of `count` of a repeated panel.
 ///
-/// Matches Grafana's `DashboardGridItem`: horizontal repeats span the full grid
-/// width in rows of up to `maxPerRow` equal columns, and vertical repeats stack
-/// at the panel's own width.
+/// Matches Grafana's `DashboardGridItem`. Horizontal repeats span the full grid
+/// width in rows of up to `maxPerRow` equal columns. Vertical repeats stack at
+/// the panel's own width.
 fn repeat_grid(grid: GridUnit, repeat: &Repeat, position: usize, count: usize) -> GridUnit {
     let position = i32::try_from(position).unwrap_or(i32::MAX);
     let unit = match repeat.direction {
@@ -1433,9 +1434,9 @@ mod tests {
             .collect()
     }
 
-    /// `v2_grafana13_repeats.json` was authored through Grafana 13.2.3's V2 API: a
-    /// horizontal grid repeat over an `All` selection, a repeated row holding an
-    /// auto grid, and repeated tabs.
+    /// `v2_grafana13_repeats.json` comes from the V2 API of Grafana 13.2.3. It
+    /// holds a horizontal grid repeat over an `All` selection, a repeated row
+    /// with an auto grid, and repeated tabs.
     #[test]
     fn grafana13_repeats_fixture_expands_like_grafana() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1819,12 +1820,12 @@ mod tests {
         // New copies get fresh slots once, then keep them.
         assert_eq!(indices(&first), [(0, false), (1, true), (2, true)]);
         assert_eq!(indices(&again), [(0, false), (1, false), (2, false)]);
-        // Dropping `b` reclaims its slot; `c` keeps its own.
+        // The drop of `b` reclaims its slot; `c` keeps its own.
         assert_eq!(indices(&fewer), [(0, false), (2, false)]);
         assert_eq!(fewer.reclaimed, [1]);
         assert_eq!(fewer.panel_slots, 3);
 
-        // The free slot is reused before new ones, and trailing ones are released.
+        // A copy takes the free slot before a new one, and the end slots that are free go away.
         let reused = template.materialize(&Vars::new(&[("dc", &["a", "d"])]).get());
         assert_eq!(indices(&reused), [(0, false), (1, true)]);
         assert_eq!(reused.reclaimed, [2]);

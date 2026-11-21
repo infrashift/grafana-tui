@@ -1,9 +1,9 @@
 //! Background refreshes. Prometheus queries and annotation providers run in
-//! spawned tasks while the event loop keeps handling input; their results are
-//! applied to `AppState` as each task finishes.
+//! spawned tasks while the event loop still handles input. When a task
+//! finishes, this module applies its result to `AppState`.
 //!
 //! A refresh runs in stages, because resolved variables can change the layout
-//! and therefore which panels need data:
+//! and so which panels need data:
 //!
 //! 1. Query variables, then the visible panels' data.
 //! 2. Row and tab variables, when the dashboard has any.
@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::task::{AbortHandle, JoinError, JoinSet};
 
-/// How long a refresh runs before the title bar says it is still refreshing.
+/// How long a refresh runs before the title bar says that it is still in progress.
 const SLOW_REFRESH: Duration = Duration::from_secs(1);
 
 /// Longest wait between attempts while Prometheus is unreachable.
@@ -34,7 +34,7 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Panels fetched at once; each runs its queries in order.
 const CONCURRENT_PANELS: usize = 4;
 
-/// Points that a series keeps after downsampling, for the chart.
+/// Points that a series keeps after the app downsamples it for the chart.
 const SHOWN_POINTS: usize = 200;
 
 /// Whether Prometheus answered the latest refresh.
@@ -58,22 +58,22 @@ pub(crate) enum BackendIndicator {
     Unreachable,
 }
 
-/// Background refresh tasks and the bookkeeping that orders their results.
+/// Background refresh tasks, and the records that put their results in order.
 #[derive(Debug, Default)]
 pub(crate) struct RefreshTasks {
-    /// Dropping the set aborts its tasks, which kills annotation provider
+    /// When the set drops, it aborts its tasks. This kills annotation provider
     /// processes when the app exits.
     tasks: JoinSet<RefreshMessage>,
-    /// Counts started refreshes, so results of a replaced one are ignored.
+    /// Counts started refreshes, so the app ignores the results of a replaced one.
     generation: u64,
     pipeline: Option<Pipeline>,
     /// Orders panel fetches, so an older result never replaces newer data.
     next_seq: u64,
     applied_seq: HashMap<usize, u64>,
-    /// Changes whenever the layout is rebuilt and panel indices may be reused.
+    /// Changes each time the app rebuilds the layout, because a new panel can then get an old index.
     layout_epoch: u64,
     annotations_running: bool,
-    /// The window to load annotations for once the running load finishes.
+    /// The window to load annotations for when the current load finishes.
     annotations_queued: Option<AnnotationRefreshContext>,
     status: BackendStatus,
     /// Why the latest refresh could not reach Prometheus, when it was a TLS
@@ -90,13 +90,13 @@ pub(crate) struct RefreshTasks {
     variable_notices: BTreeMap<String, String>,
     /// Panel fetches started outside a refresh, such as for an expanded row.
     loose: Vec<AbortHandle>,
-    /// Another dashboard became active: its variables reload, as on opening
-    /// it, until a refresh completes.
+    /// Another dashboard became active: its variables reload, as when it
+    /// opens, until a refresh completes.
     load_dashboard: bool,
 }
 
 impl RefreshTasks {
-    /// Another dashboard is shown: the previous one's fetches stop, its
+    /// The app shows another dashboard: the previous one's fetches stop, its
     /// variable errors no longer apply, and the next refresh loads variables.
     pub(super) fn dashboard_switched(&mut self) {
         for fetch in self.loose.drain(..) {
@@ -166,7 +166,7 @@ struct Pipeline {
     generation: u64,
     started: Instant,
     slow_drawn: bool,
-    /// The running stage, aborted when a newer refresh replaces this one.
+    /// The current stage. A newer refresh that replaces this one aborts it.
     abort: AbortHandle,
     end_ts: i64,
     /// Panels the first stage fetched.
@@ -230,7 +230,7 @@ struct PanelFetch {
     succeeded: bool,
 }
 
-/// Query outcomes, to tell an unreachable backend from failing queries.
+/// Query outcomes, to tell an unreachable backend from queries that fail.
 #[derive(Debug, Default, Clone)]
 struct FetchCounts {
     succeeded: usize,
@@ -347,7 +347,7 @@ impl FirstStage {
 }
 
 impl AppState {
-    /// Starts a refresh of the current window, replacing one in progress.
+    /// Starts a refresh of the current window. It replaces a refresh in progress.
     pub(crate) fn start_refresh(&mut self) {
         if let Some(pipeline) = self.refreshes.pipeline.take() {
             pipeline.abort.abort();
@@ -420,7 +420,7 @@ impl AppState {
         update
     }
 
-    /// Refreshes at the user's request, re-querying variables that refresh
+    /// Refreshes when the user asks. It queries again the variables that refresh
     /// when the time range changes, as Grafana's refresh button does.
     pub(crate) fn reload(&mut self) {
         self.refreshes.reload_requested = true;
@@ -456,7 +456,7 @@ impl AppState {
         self.spawn_panel_batch(indices, None, self.view_end_ts);
     }
 
-    /// When the next periodic refresh is due; `None` while one is running.
+    /// When the next periodic refresh is due; `None` while one runs.
     /// Retries back off while Prometheus is unreachable.
     pub(crate) fn next_refresh_at(&self) -> Option<Instant> {
         if self.refreshes.pipeline.is_some() {
@@ -481,7 +481,7 @@ impl AppState {
         Some(self.last_refresh + interval)
     }
 
-    /// When a running refresh becomes slow enough to show, if not shown yet.
+    /// When a refresh in progress becomes slow enough to show, if not shown yet.
     pub(crate) fn slow_refresh_at(&self) -> Option<Instant> {
         let pipeline = self.refreshes.pipeline.as_ref();
         let at = pipeline
@@ -536,7 +536,7 @@ impl AppState {
         self.refreshes.tasks.join_next().await
     }
 
-    /// Applies a finished task, starting the refresh's next stage if any.
+    /// Applies a finished task, and starts the next stage of the refresh if there is one.
     /// Returns whether anything shown changed.
     pub(crate) fn finish_refresh_task(
         &mut self,
@@ -587,7 +587,7 @@ impl AppState {
         changed
     }
 
-    /// Runs every background task to completion, including later stages.
+    /// Runs every background task until it finishes, also the later stages.
     #[cfg(test)]
     pub(crate) async fn settle_refreshes(&mut self) {
         while let Some(result) = self.join_refresh_task().await {
@@ -883,7 +883,7 @@ impl AppState {
             if !indices.contains(&index) {
                 continue;
             }
-            // The copy only needs the queries, so the data is left out.
+            // The copy only needs the queries, so it leaves out the data.
             let series = std::mem::take(&mut panel.series);
             let copy = panel.clone();
             panel.series = series;
@@ -1166,8 +1166,8 @@ impl<'a> PanelQuery<'a> {
             s.values.len() <= MAX_SERIES_POINTS,
             "the series is in the point limit"
         );
-        // NaN and ±Inf show as no value, as they cannot be
-        // scaled for gauges or compared with thresholds.
+        // NaN and ±Inf show as no value, because the app cannot scale them
+        // for gauges or compare them with thresholds.
         let latest_val = s
             .values
             .last()
@@ -1407,7 +1407,7 @@ mod tests {
         format!("http://{address}")
     }
 
-    /// An address nothing listens on, so connections are refused.
+    /// An address that nothing listens on, so the system refuses connections.
     fn refused_prometheus() -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         format!("http://{}", listener.local_addr().unwrap())
@@ -1606,7 +1606,7 @@ mod tests {
         assert!(panel.last_error.is_none());
     }
 
-    /// Answers with `respond(path)`'s status and body, recording each path.
+    /// Answers with `respond(path)`'s status and body, and records each path.
     async fn recording_prometheus(
         respond: fn(&str) -> (&'static str, &'static str),
     ) -> (String, Arc<Mutex<Vec<String>>>) {
@@ -1749,7 +1749,7 @@ mod tests {
         assert_eq!(app.active_dashboard(), Some(1));
         assert_eq!(app.title, "Ops / Consul (imported)");
 
-        // Coming back opens the dashboard again: its variables reload.
+        // A return to the dashboard opens it again: its variables reload.
         let start = requests.lock().unwrap().len();
         app.cycle_dashboard(1).unwrap();
         app.settle_refreshes().await;
@@ -1796,7 +1796,7 @@ mod tests {
 
     #[tokio::test]
     async fn panels_kept_by_data_conditions_follow_the_dashboard_shown() {
-        // Nodes' panel shows only with data, so it is fetched while hidden.
+        // Nodes' panel shows only with data, so the refresh fetches it while it does not show.
         let mut nodes: serde_json::Value = serde_json::from_str(&nodes_and_consul()[0]).unwrap();
         nodes["spec"]["layout"] = serde_json::json!({
             "kind": "AutoGridLayout",
@@ -1865,7 +1865,7 @@ mod tests {
         let [nodes, consul] = nodes_and_consul();
         let mut app = dashboards_app(&hung_prometheus().await, &[&nodes, &consul]);
         app.start_refresh();
-        // A fetch outside the refresh, as for a row that was just expanded.
+        // A fetch outside the refresh, as for a row that the user expanded a moment ago.
         app.fetch_panels(&[0]);
         assert_eq!(app.refreshes.loose.len(), 1);
 
@@ -2084,7 +2084,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(app.range, range * 2);
-        // The zoom replaced the hung refresh instead of queueing behind it.
+        // The zoom replaced the hung refresh. It did not wait in a queue behind it.
         assert_eq!(app.refreshes.generation, 2);
         let replaced = tokio::time::timeout(Duration::from_secs(1), app.join_refresh_task())
             .await

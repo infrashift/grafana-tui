@@ -28,7 +28,7 @@ pub(crate) const DEFAULT_SCRAPE_INTERVAL: Duration = Duration::from_secs(15);
 /// the pixel width Grafana uses for a typical panel.
 const DEFAULT_MAX_DATA_POINTS: u32 = 1000;
 
-/// Prometheus rejects range queries that would return more points per series.
+/// Prometheus rejects a range query that returns more points per series.
 const PROMETHEUS_MAX_POINTS: u64 = 11_000;
 
 /// The step and `$__rate_interval` one query runs with, derived from the time
@@ -44,8 +44,8 @@ pub(crate) struct QueryIntervals {
 impl QueryIntervals {
     /// Divides `range` by `max_data_points` (default 1000), rounds the result
     /// to a Grafana-style interval, and keeps it no finer than `min_interval`.
-    /// The step is coarsened further when Prometheus's 11,000-point limit
-    /// would be exceeded.
+    /// If the step gives more points than Prometheus's 11,000-point limit,
+    /// this function makes the step coarser.
     pub(crate) fn new(
         range: Duration,
         min_interval: Duration,
@@ -275,15 +275,16 @@ pub(crate) fn format_legend(fmt: &str, metric: &HashMap<String, String>) -> Stri
     out
 }
 
-/// A target's legend format, or `None` for Grafana's automatic naming, which
+/// A target's legend format, or `None` for Grafana's automatic series names, which
 /// `__auto` and an empty format ask for.
 pub(crate) fn custom_legend(fmt: Option<&String>) -> Option<&str> {
     fmt.map(|fmt| fmt.as_str())
         .filter(|fmt| !fmt.trim().is_empty() && fmt.trim() != "__auto")
 }
 
-/// Downsamples data points to a maximum number of points using max-pooling.
-/// This preserves peaks which is important for metrics.
+/// Downsamples data points to a maximum number of points. Each output point is
+/// the point with the maximum value in its chunk. This keeps peaks, which are
+/// important for metrics.
 pub(crate) fn downsample(points: Vec<(f64, f64)>, max_points: usize) -> Vec<(f64, f64)> {
     if points.len() <= max_points {
         return points;
