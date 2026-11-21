@@ -22,6 +22,9 @@ pub(crate) struct CommandProvider {
 
 pub(crate) const MAX_STDOUT_BYTES: usize = 10 * 1024 * 1024;
 pub(crate) const MAX_STDERR_BYTES: usize = 64 * 1024;
+/// The most stderr bytes that the reader drains. A provider that writes more
+/// has a fault, so its refresh fails and the reader closes the pipe.
+pub(crate) const MAX_STDERR_DRAIN_BYTES: usize = 16 * 1024 * 1024;
 
 enum CapturedStdout {
     Complete(Vec<u8>),
@@ -249,32 +252,44 @@ async fn write_request(mut stdin: tokio::process::ChildStdin, request: Vec<u8>) 
     stdin.shutdown().await
 }
 
+/// Reads stdout to its end, or until it passes `MAX_STDOUT_BYTES`.
 async fn read_stdout_limited(mut stdout: ChildStdout) -> io::Result<CapturedStdout> {
     let mut captured = Vec::new();
     let mut chunk = [0_u8; 8192];
-    loop {
+    // A read before the end gives one byte or more, so the byte cap bounds the loop.
+    for _ in 0..=MAX_STDOUT_BYTES {
         let read = stdout.read(&mut chunk).await?;
         if read == 0 {
             return Ok(CapturedStdout::Complete(captured));
         }
         if captured.len() + read > MAX_STDOUT_BYTES {
-            return Ok(CapturedStdout::LimitExceeded);
+            break;
         }
         captured.extend_from_slice(&chunk[..read]);
     }
+    Ok(CapturedStdout::LimitExceeded)
 }
 
+/// Reads stderr to its end and keeps the first `MAX_STDERR_BYTES`. Past
+/// `MAX_STDERR_DRAIN_BYTES`, it stops and returns an error.
 async fn read_stderr_capped(mut stderr: ChildStderr) -> io::Result<Vec<u8>> {
     let mut captured = Vec::new();
     let mut chunk = [0_u8; 8192];
-    loop {
+    let mut drained = 0;
+    // A read before the end gives one byte or more, so `drained` grows to the limit.
+    while drained <= MAX_STDERR_DRAIN_BYTES {
         let read = stderr.read(&mut chunk).await?;
         if read == 0 {
             return Ok(captured);
         }
+        drained += read;
         let retained = (MAX_STDERR_BYTES - captured.len()).min(read);
         captured.extend_from_slice(&chunk[..retained]);
     }
+    Err(io::Error::other(format!(
+        "stderr passed the {} MiB drain limit",
+        MAX_STDERR_DRAIN_BYTES >> 20
+    )))
 }
 
 fn stderr_excerpt(bytes: &[u8]) -> Option<String> {
@@ -464,8 +479,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        CommandProvider, MAX_STDERR_BYTES, MAX_STDOUT_BYTES, encode_request, parse_stdout,
-        request_delivered,
+        CommandProvider, MAX_STDERR_BYTES, MAX_STDERR_DRAIN_BYTES, MAX_STDOUT_BYTES,
+        encode_request, parse_stdout, request_delivered,
     };
     use crate::annotations::{
         AnnotationCommandConfig, AnnotationProvider, AnnotationRefreshContext, ProviderPoll,
@@ -750,6 +765,19 @@ mod tests {
         assert!(message.contains("eeeeeeee"));
         assert!(!message.contains('\n'));
         assert!(message.len() < 1024);
+    }
+
+    #[tokio::test]
+    async fn command_provider_fails_when_stderr_passes_the_drain_limit() {
+        let stderr_bytes = (MAX_STDERR_DRAIN_BYTES + 8192).to_string();
+        let mut provider = fixture_provider(
+            ["stderr-bytes", &stderr_bytes, "0"],
+            Duration::from_secs(10),
+        );
+        let ProviderPoll::Failed(error) = provider.refresh(&fixed_context()).await else {
+            panic!("expected stderr drain failure");
+        };
+        assert!(error.to_string().contains("16 MiB drain limit"), "{error}");
     }
 
     #[tokio::test]

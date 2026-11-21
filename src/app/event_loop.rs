@@ -36,6 +36,7 @@ where
     let mut events = EventStream::new();
     let mut needs_draw = true;
 
+    // semscope: allow(NASA-P10-02) the TUI event loop runs until the user quits (ADR-0002)
     loop {
         if needs_draw {
             terminal.draw(|f| ui::draw_ui(f, app))?;
