@@ -84,12 +84,12 @@ pub(crate) fn tab_bar_geometry(
     }
     let mut geometry = TabBarGeometry::default();
     let indent = (depth.saturating_mul(2)).min(usize::from(area.width.saturating_sub(1)));
-    let mut x = area.x.saturating_add(indent as u16);
+    let x = area.x.saturating_add(indent as u16);
     let available = usize::from(area.right().saturating_sub(x));
     if available == 0 {
         return geometry;
     }
-    if titles.is_empty() || active.is_none() {
+    let (false, Some(active)) = (titles.is_empty(), active) else {
         let text = truncate_title("No tabs", available as u16);
         geometry.segments.push(TabSegment {
             rect: Rect::new(x, area.y, text_width(&text) as u16, 1),
@@ -98,35 +98,72 @@ pub(crate) fn tab_bar_geometry(
             activate: None,
         });
         return geometry;
-    }
+    };
 
     let labels = titles
         .iter()
         .enumerate()
         .map(|(index, title)| tab_title(title, index))
         .collect::<Vec<_>>();
-    let active = active.unwrap().min(labels.len() - 1);
+    let active = active.min(labels.len() - 1);
+    let mut segments = SegmentWriter { geometry, area, x };
+    if area.width < 3 {
+        segments.push(format!("* {}", labels[active]), true, Some(active));
+        return segments.geometry;
+    }
+    let (start, end) = visible_tabs(&labels, active, available);
+    if start > 0 {
+        segments.push("< ".to_string(), false, Some(active - 1));
+    }
+    for (index, label) in labels.iter().enumerate().take(end + 1).skip(start) {
+        if index > start {
+            segments.push(" ".to_string(), false, None);
+        }
+        let label = if index == active {
+            format!("* {label}")
+        } else {
+            label.clone()
+        };
+        segments.push(label, index == active, Some(index));
+    }
+    if end + 1 < labels.len() {
+        segments.push(" >".to_string(), false, Some(active + 1));
+    }
+    segments.geometry
+}
+
+/// Returns the first and the last tab that fit in `available` columns around the active tab.
+fn visible_tabs(labels: &[String], active: usize, available: usize) -> (usize, usize) {
     let mut start = active;
     let mut end = active;
-    if area.width >= 3 {
-        loop {
-            let mut grew = false;
-            if start > 0 && range_width(&labels, active, start - 1, end) <= available {
-                start -= 1;
-                grew = true;
-            }
-            if end + 1 < labels.len() && range_width(&labels, active, start, end + 1) <= available {
-                end += 1;
-                grew = true;
-            }
-            if !grew {
-                break;
-            }
+    loop {
+        let mut grew = false;
+        if start > 0 && range_width(labels, active, start - 1, end) <= available {
+            start -= 1;
+            grew = true;
+        }
+        if end + 1 < labels.len() && range_width(labels, active, start, end + 1) <= available {
+            end += 1;
+            grew = true;
+        }
+        if !grew {
+            break;
         }
     }
+    (start, end)
+}
 
-    let mut push = |text: String, selected: bool, activate: Option<usize>| {
-        let remaining = area.right().saturating_sub(x);
+/// Adds tab bar segments from left to right until the bar is full.
+struct SegmentWriter {
+    geometry: TabBarGeometry,
+    area: Rect,
+    x: u16,
+}
+
+impl SegmentWriter {
+    /// Adds one segment, cut short to the remaining width of the bar.
+    fn push(&mut self, text: String, selected: bool, activate: Option<usize>) {
+        let remaining = self.area.right().saturating_sub(self.x);
         if remaining == 0 {
             return;
         }
@@ -135,37 +172,14 @@ pub(crate) fn tab_bar_geometry(
         if width == 0 {
             return;
         }
-        geometry.segments.push(TabSegment {
-            rect: Rect::new(x, area.y, width, 1),
+        self.geometry.segments.push(TabSegment {
+            rect: Rect::new(self.x, self.area.y, width, 1),
             text,
             active: selected,
             activate,
         });
-        x = x.saturating_add(width);
-    };
-
-    if area.width < 3 {
-        push(format!("* {}", labels[active]), true, Some(active));
-        return geometry;
+        self.x = self.x.saturating_add(width);
     }
-    if start > 0 {
-        push("< ".to_string(), false, Some(active - 1));
-    }
-    for (index, label) in labels.iter().enumerate().take(end + 1).skip(start) {
-        if index > start {
-            push(" ".to_string(), false, None);
-        }
-        let label = if index == active {
-            format!("* {label}")
-        } else {
-            label.clone()
-        };
-        push(label, index == active, Some(index));
-    }
-    if end + 1 < labels.len() {
-        push(" >".to_string(), false, Some(active + 1));
-    }
-    geometry
 }
 
 pub(crate) fn tab_at(geometry: &TabBarGeometry, position: Position) -> Option<usize> {

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-use crate::app::{AppState, PanelState};
+use crate::app::{AppState, PanelState, SeriesView};
 use ratatui::{
     prelude::*,
     widgets::{Bar, BarChart, BarGroup, Block, Borders, Paragraph},
@@ -27,29 +27,15 @@ pub(super) fn render_bar_gauge(frame: &mut Frame, area: Rect, p: &PanelState, ap
 
     let scale = 1000.0;
 
-    // Map intermediate valid series
-    let mut valid_series: Vec<_> = p
-        .series
-        .iter()
-        .filter(|s| s.visible && s.value.is_some())
-        .collect();
-
-    // Sort descending safely
-    valid_series.sort_by(|a, b| {
-        let v_a = a.value.unwrap_or(0.0);
-        let v_b = b.value.unwrap_or(0.0);
-        v_b.partial_cmp(&v_a).unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    // Truncate based on area width
-    let max_bars = (area.width / 4).saturating_sub(1).max(1) as usize;
-    valid_series.truncate(max_bars);
+    let valid_series = bar_series(p, area.width);
 
     let mut bars = Vec::with_capacity(valid_series.len());
     let (min, max) = bar_range(p, valid_series.iter().filter_map(|s| s.value));
 
     for s in valid_series {
-        let v = s.value.unwrap();
+        let Some(v) = s.value else {
+            continue;
+        };
         max_label_len = max_label_len.max(s.name.len());
         let color = p.get_color_for_value(v).unwrap_or(theme.palette[0]);
         let bar = Bar::default()
@@ -82,6 +68,28 @@ pub(super) fn render_bar_gauge(frame: &mut Frame, area: Rect, p: &PanelState, ap
         .bar_gap(1);
 
     frame.render_widget(bar_chart, area);
+}
+
+/// Returns the visible series with a value, largest first, as many as fit in `width`.
+fn bar_series(p: &PanelState, width: u16) -> Vec<&SeriesView> {
+    // Map intermediate valid series
+    let mut valid_series: Vec<_> = p
+        .series
+        .iter()
+        .filter(|s| s.visible && s.value.is_some())
+        .collect();
+
+    // Sort descending safely
+    valid_series.sort_by(|a, b| {
+        let v_a = a.value.unwrap_or(0.0);
+        let v_b = b.value.unwrap_or(0.0);
+        v_b.partial_cmp(&v_a).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Truncate based on area width
+    let max_bars = (width / 4).saturating_sub(1).max(1) as usize;
+    valid_series.truncate(max_bars);
+    valid_series
 }
 
 /// The range bars fill: the panel's `min` and `max`, defaulting to zero and
