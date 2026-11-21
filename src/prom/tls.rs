@@ -305,24 +305,30 @@ impl TlsFailure {
     }
 }
 
+/// The most errors that `find_rustls_error` reads in a chain of sources.
+const MAX_ERROR_CHAIN: usize = 16;
+
 /// The rustls error among `error`'s sources, if any. rustls errors can arrive
 /// wrapped in one or more `io::Error`s, whose `source` skips them.
+///
+/// The walk goes into the error inside an `io::Error`. The sources of that
+/// error include the sources of the `io::Error`, so the walk misses no error.
 fn find_rustls_error<'a>(
     error: &'a (dyn std::error::Error + 'static),
 ) -> Option<&'a rustls::Error> {
     let mut next = Some(error);
-    while let Some(error) = next {
+    for _ in 0..MAX_ERROR_CHAIN {
+        let error = next?;
         if let Some(error) = error.downcast_ref::<rustls::Error>() {
             return Some(error);
         }
-        if let Some(found) = error
+        let inner = error
             .downcast_ref::<std::io::Error>()
-            .and_then(std::io::Error::get_ref)
-            .and_then(|inner| find_rustls_error(inner))
-        {
-            return Some(found);
-        }
-        next = error.source();
+            .and_then(std::io::Error::get_ref);
+        next = match inner {
+            Some(inner) => Some(inner),
+            None => error.source(),
+        };
     }
     None
 }
@@ -780,5 +786,34 @@ pub(crate) mod tests {
         );
         assert_ne!(files.client_key, Some(PathBuf::from("~/client.key")));
         assert!(files.client_key.unwrap().ends_with("client.key"));
+    }
+
+    /// A rustls error inside `wraps` nested `io::Error`s.
+    fn wrapped_rustls_error(wraps: usize) -> std::io::Error {
+        let mut error = std::io::Error::other(rustls::Error::DecryptError);
+        for _ in 1..wraps {
+            error = std::io::Error::other(error);
+        }
+        error
+    }
+
+    #[test]
+    fn rustls_errors_are_found_inside_nested_io_errors() {
+        let error = wrapped_rustls_error(3);
+        assert_eq!(
+            find_rustls_error(&error),
+            Some(&rustls::Error::DecryptError)
+        );
+        let plain = std::io::Error::other("no TLS here");
+        assert_eq!(find_rustls_error(&plain), None);
+    }
+
+    #[test]
+    fn the_error_chain_walk_stops_at_its_limit() {
+        // The chain holds the `io::Error`s and the rustls error.
+        let error = wrapped_rustls_error(MAX_ERROR_CHAIN - 1);
+        assert!(find_rustls_error(&error).is_some());
+        let error = wrapped_rustls_error(MAX_ERROR_CHAIN);
+        assert_eq!(find_rustls_error(&error), None);
     }
 }
