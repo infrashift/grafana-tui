@@ -56,13 +56,19 @@ pub(crate) struct ScopeBinding {
 impl ScopeBinding {
     /// A repeat copy's binding: one value, formatted as that variable's only selection.
     pub(crate) fn repeat(name: &str, value: &str, regex: bool) -> Self {
-        Self {
+        let binding = Self {
             name: name.to_string(),
             values: vec![value.to_string()],
             formatted: None,
             regex,
             all: false,
-        }
+        };
+        debug_assert_eq!(binding.values.len(), 1, "a repeat copy binds one value");
+        debug_assert!(
+            binding.formatted.is_none() && !binding.all,
+            "a repeat copy has no All value"
+        );
+        binding
     }
 
     /// The value substituted into queries.
@@ -74,11 +80,20 @@ impl ScopeBinding {
 
     /// The value shown in titles, with several values joined like Grafana's text.
     fn text(&self) -> String {
-        if self.values.is_empty() {
+        let text = if self.values.is_empty() {
             self.formatted.clone().unwrap_or_default()
         } else {
             self.values.join(" + ")
-        }
+        };
+        debug_assert!(
+            text.len() >= self.values.iter().map(String::len).sum::<usize>(),
+            "the text keeps each value"
+        );
+        debug_assert!(
+            self.values.len() < 2 || text.contains(" + "),
+            "several values are joined with a plus sign"
+        );
+        text
     }
 }
 
@@ -100,6 +115,12 @@ struct TitleVariables<'s, 'v> {
 
 impl VariableLookup for TitleVariables<'_, '_> {
     fn lookup(&mut self, name: &str) -> Option<Cow<'_, str>> {
+        debug_assert!(!name.is_empty(), "the variable name is not empty");
+        debug_assert!(
+            name.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_'),
+            "the variable name has only name characters"
+        );
         if let Some(binding) = find_binding(self.scope, name) {
             return Some(Cow::Owned(binding.text()));
         }
@@ -130,18 +151,29 @@ impl Variables<'_> {
     /// Interpolates `$name` references in a title. Variables bound in `scope`
     /// win; other variables show their selected values joined like Grafana's text.
     pub(crate) fn title(&self, title: &str, scope: &Scope) -> String {
-        substitute_variables(
+        let text = substitute_variables(
             title,
             TitleVariables {
                 variables: self,
                 scope,
             },
-        )
+        );
+        debug_assert!(
+            title.contains('$') || text == title,
+            "a title without references stays the same"
+        );
+        text
     }
 
     /// The values a repeat over `name` iterates, and whether they are regex-escaped.
     fn repeat_values<'s>(&'s self, scope: &'s Scope, name: &str) -> (&'s [String], bool) {
-        match find_binding(scope, name) {
+        debug_assert!(!name.is_empty(), "the repeat variable has a name");
+        let found = find_binding(scope, name);
+        debug_assert!(
+            found.is_none_or(|binding| binding.name == name),
+            "the binding has the name of the variable"
+        );
+        match found {
             Some(binding) => (&binding.values, binding.regex),
             None => (
                 self.values.get(name).map_or(&[], Vec::as_slice),
@@ -160,10 +192,19 @@ pub(crate) fn scoped_vars<'a>(
     let Some(scope) = scope.filter(|scope| !scope.is_empty()) else {
         return Cow::Borrowed(vars);
     };
+    let count = vars.len();
     let mut vars = vars.clone();
     for binding in scope {
         vars.insert(binding.name.clone(), binding.query_value());
     }
+    debug_assert!(
+        scope.iter().all(|binding| vars.contains_key(&binding.name)),
+        "each bound variable has a query value"
+    );
+    debug_assert!(
+        vars.len() <= count + scope.len(),
+        "each binding adds one variable or less"
+    );
     Cow::Owned(vars)
 }
 
@@ -211,6 +252,10 @@ impl CloneIds {
     /// The slot for a copy of panel `source`, and whether it was just assigned,
     /// in which case the slot may hold another panel's old state.
     fn panel(&mut self, source: usize, scope: &Scope) -> (usize, bool) {
+        debug_assert!(
+            self.free_panels.iter().all(|&slot| slot < self.next_panel),
+            "each free slot is below the next slot"
+        );
         let key = (source, scope.clone());
         self.used_panels.insert(key.clone());
         if let Some(&index) = self.panels.get(&key) {
@@ -220,26 +265,48 @@ impl CloneIds {
             .free_panels
             .pop_first()
             .unwrap_or_else(|| next(&mut self.next_panel));
+        debug_assert!(
+            index < self.next_panel && !self.free_panels.contains(&index),
+            "the new slot is in use"
+        );
         self.panels.insert(key, index);
         (index, true)
     }
 
     fn row(&mut self, source: RowId, scope: &Scope) -> RowId {
+        debug_assert!(
+            source.value() < self.next_row,
+            "the source row has an id below the next copy id"
+        );
         let key = (source, scope.clone());
         self.used_rows.insert(key.clone());
-        *self
+        let id = *self
             .rows
             .entry(key)
-            .or_insert_with(|| RowId::new(next(&mut self.next_row)))
+            .or_insert_with(|| RowId::new(next(&mut self.next_row)));
+        debug_assert!(
+            id != source && id.value() < self.next_row,
+            "a row copy has a new id"
+        );
+        id
     }
 
     fn tab_group(&mut self, source: TabGroupId, scope: &Scope) -> TabGroupId {
+        debug_assert!(
+            source.value() < self.next_tab_group,
+            "the source tab group has an id below the next copy id"
+        );
         let key = (source, scope.clone());
         self.used_tab_groups.insert(key.clone());
-        *self
+        let id = *self
             .tab_groups
             .entry(key)
-            .or_insert_with(|| TabGroupId::new(next(&mut self.next_tab_group)))
+            .or_insert_with(|| TabGroupId::new(next(&mut self.next_tab_group)));
+        debug_assert!(
+            id != source && id.value() < self.next_tab_group,
+            "a tab group copy has a new id"
+        );
+        id
     }
 
     /// Forgets the ids the finished materialization did not use, returning the
@@ -269,6 +336,20 @@ impl CloneIds {
             self.free_panels.pop_last();
             self.next_panel -= 1;
         }
+        debug_assert!(
+            self.next_panel >= imported_panels,
+            "the imported panels keep their slots"
+        );
+        debug_assert!(
+            self.free_panels.iter().all(|&slot| slot < self.next_panel),
+            "each free slot is below the next slot"
+        );
+        debug_assert!(
+            self.panels
+                .values()
+                .all(|index| *index < self.next_panel && !self.free_panels.contains(index)),
+            "each slot in use is below the next slot and is not free"
+        );
         reclaimed
     }
 }
@@ -332,7 +413,7 @@ pub(crate) struct Materialized {
 impl DashboardTemplate {
     pub(crate) fn new(layout: DashboardLayout, repeats: Repeats, panels: &[PanelState]) -> Self {
         let (max_row, max_tab_group) = max_ids(&layout.items);
-        Self {
+        let template = Self {
             layout,
             repeats,
             conditions: Conditions::default(),
@@ -350,7 +431,18 @@ impl DashboardTemplate {
                 next_tab_group: max_tab_group.map_or(0, |id| id + 1),
                 ..CloneIds::default()
             },
-        }
+        };
+        debug_assert_eq!(
+            template.panels.len(),
+            panels.len(),
+            "each panel has a template"
+        );
+        debug_assert_eq!(
+            template.clones.next_panel,
+            panels.len(),
+            "the copies start after the imported panels"
+        );
+        template
     }
 
     /// How many repeat copy ids are remembered, across panels, rows, and tabs.
@@ -370,6 +462,11 @@ impl DashboardTemplate {
         mut self,
         sections: HashMap<SectionId, Vec<SectionVariable>>,
     ) -> Self {
+        debug_assert!(self.sections.is_empty(), "the sections are set one time");
+        debug_assert!(
+            sections.len() <= MAX_LAYOUT_NODES,
+            "each section is a row or a tab of the layout"
+        );
         self.sections = sections;
         self
     }
@@ -394,6 +491,11 @@ impl DashboardTemplate {
             truncated: false,
         };
         let items = builder.items(&self.layout.items, &Scope::new(), true);
+        debug_assert_eq!(
+            node_count(&items),
+            builder.nodes,
+            "the builder counts each layout item that it makes"
+        );
         let truncated = builder.truncated;
         let (panels, conditions, sections) = (
             builder.panels,
@@ -401,6 +503,16 @@ impl DashboardTemplate {
             builder.section_instances,
         );
         let reclaimed = self.clones.finish(self.panels.len());
+        debug_assert!(
+            reclaimed.iter().all(|&index| index >= self.panels.len()),
+            "only the slot of a repeat copy is reclaimed"
+        );
+        debug_assert!(
+            panels
+                .iter()
+                .all(|panel| panel.index < self.clones.next_panel),
+            "each panel instance has a slot"
+        );
         Materialized {
             layout: DashboardLayout::new(items),
             panels,
@@ -426,6 +538,10 @@ fn max_ids(items: &[DashboardLayoutItem]) -> (Option<usize>, Option<usize>) {
             DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => {}
         }
     }
+    debug_assert!(
+        rows.max(tab_groups) < Some(usize::MAX),
+        "the next copy ids do not overflow"
+    );
     (rows, tab_groups)
 }
 
@@ -468,6 +584,14 @@ struct BuildFrame<'a> {
 impl<'a> BuildFrame<'a> {
     /// Starts the children of a copy.
     fn new(items: &'a [DashboardLayoutItem], copy: RepeatCopy, parent: BuildParent<'a>) -> Self {
+        debug_assert!(
+            items.len() <= MAX_LAYOUT_NODES,
+            "the items are in the layout limit"
+        );
+        debug_assert!(
+            !matches!(parent, BuildParent::Root) || (copy.primary && copy.scope.is_empty()),
+            "the root frame is the primary copy with no bindings"
+        );
         Self {
             items: items.iter(),
             scope: copy.scope,
@@ -481,9 +605,17 @@ impl<'a> BuildFrame<'a> {
     /// This frame, without its items when `open_frames` frames already fill
     /// the stack. The builder leaves out the children past the depth limit.
     fn within_depth(mut self, open_frames: usize) -> Self {
+        debug_assert!(
+            open_frames <= MAX_LAYOUT_DEPTH,
+            "the stack is not deeper than the depth limit"
+        );
         if open_frames >= MAX_LAYOUT_DEPTH {
             self.items = std::slice::Iter::default();
         }
+        debug_assert!(
+            open_frames < MAX_LAYOUT_DEPTH || self.items.as_slice().is_empty(),
+            "a frame at the depth limit has no items"
+        );
         self
     }
 }
@@ -506,6 +638,11 @@ struct Copies {
 impl Copies {
     /// Starts the copies in `copies`.
     fn new(copies: Vec<RepeatCopy>) -> Self {
+        debug_assert!(!copies.is_empty(), "an item has one copy or more");
+        debug_assert!(
+            copies.iter().skip(1).all(|copy| !copy.primary),
+            "only the first copy can be the primary copy"
+        );
         Self {
             rest: copies.into_iter(),
             made: 0,
@@ -515,12 +652,18 @@ impl Copies {
 
     /// The next copy. A copy after the first needs `room` in the layout.
     fn next(&mut self, room: bool) -> Option<RepeatCopy> {
+        debug_assert!(!self.cut, "no copy follows a cut");
         if self.made > 0 && !room {
             self.cut = self.rest.next().is_some();
             return None;
         }
         self.made += 1;
-        self.rest.next()
+        let copy = self.rest.next();
+        debug_assert!(
+            self.made > 1 || copy.is_some(),
+            "the first copy always exists"
+        );
+        copy
     }
 }
 
@@ -564,6 +707,7 @@ impl<'a> Builder<'a, '_> {
         scope: &Scope,
         primary: bool,
     ) -> Vec<DashboardLayoutItem> {
+        debug_assert_eq!(self.nodes, 0, "the build starts with no layout items");
         let root = RepeatCopy {
             scope: scope.clone(),
             primary,
@@ -572,6 +716,10 @@ impl<'a> Builder<'a, '_> {
         frames.push(BuildFrame::new(items, root, BuildParent::Root));
         for _ in 0..MAX_LAYOUT_STEPS {
             let open_frames = frames.len();
+            debug_assert!(
+                open_frames <= MAX_LAYOUT_DEPTH + 1,
+                "the stack is in the depth limit"
+            );
             let Some(frame) = frames.last_mut() else {
                 break;
             };
@@ -602,21 +750,28 @@ impl<'a> Builder<'a, '_> {
             }
             DashboardLayoutItem::Row(row) => {
                 self.flush_panels(frame);
+                debug_assert!(frame.panels.is_empty(), "the panel run is flushed");
                 self.open_row(row, &frame.scope, frame.primary)
             }
             DashboardLayoutItem::Tabs(group) => {
                 self.flush_panels(frame);
+                debug_assert!(frame.panels.is_empty(), "the panel run is flushed");
                 self.open_tabs(group, &frame.scope, frame.primary)
             }
             DashboardLayoutItem::AutoGrid(grid) => {
                 self.flush_panels(frame);
+                debug_assert!(frame.panels.is_empty(), "the panel run is flushed");
                 self.nodes = self.nodes.saturating_add(1);
-                let panels = grid
+                let panels: Vec<usize> = grid
                     .panels
                     .iter()
                     .flat_map(|&source| self.panel_copies(source, &frame.scope, frame.primary))
                     .map(|(index, _)| index)
                     .collect();
+                debug_assert!(
+                    panels.len() >= grid.panels.len(),
+                    "each auto grid panel has one copy or more"
+                );
                 CopyStep::Done(DashboardLayoutItem::AutoGrid(DashboardAutoGrid {
                     panels,
                     ..grid.clone()
@@ -642,6 +797,11 @@ impl<'a> Builder<'a, '_> {
             return Some(Vec::new());
         };
         self.flush_panels(&mut frame);
+        debug_assert!(frame.panels.is_empty(), "the panel run is flushed");
+        debug_assert!(
+            matches!(frame.parent, BuildParent::Root) || !frames.is_empty(),
+            "a row or tab frame has a parent frame"
+        );
         let step = match frame.parent {
             BuildParent::Root => return Some(frame.output),
             BuildParent::Row(copies) => {
@@ -705,24 +865,17 @@ impl<'a> Builder<'a, '_> {
         let mut shifts = Vec::new();
         for &source in sources {
             let copies = self.panel_copies(source, scope, primary);
-            if let Some(grid) = self
-                .templates
-                .get(source)
-                .and_then(|template| template.grid)
-            {
-                let bottom = copies
-                    .iter()
-                    .filter_map(|(index, _)| self.instance(*index)?.grid)
-                    .map(|grid| grid.y + grid.h)
-                    .max()
-                    .unwrap_or(grid.y + grid.h);
-                let added = bottom - (grid.y + grid.h);
-                if added > 0 {
-                    shifts.push((grid.y, added));
-                }
-            }
+            shifts.extend(self.added_rows(source, &copies));
             placed.extend(copies.into_iter().map(|(index, _)| (source, index)));
         }
+        debug_assert!(
+            placed.len() >= sources.len(),
+            "each panel has one copy or more"
+        );
+        debug_assert!(
+            shifts.iter().all(|(_, added)| *added > 0),
+            "a shift moves panels down"
+        );
 
         for (source, index) in placed {
             let shift: i32 = match self
@@ -748,6 +901,22 @@ impl<'a> Builder<'a, '_> {
         }
     }
 
+    /// The top of template panel `source` and the grid rows that its `copies`
+    /// add below it, or `None` when they add no rows.
+    fn added_rows(&self, source: usize, copies: &[(usize, bool)]) -> Option<(i32, i32)> {
+        debug_assert!(!copies.is_empty(), "a panel has one copy or more");
+        let grid = self.templates.get(source)?.grid?;
+        let bottom = copies
+            .iter()
+            .filter_map(|(index, _)| self.instance(*index)?.grid)
+            .map(|grid| grid.y + grid.h)
+            .max()
+            .unwrap_or(grid.y + grid.h);
+        let added = bottom - (grid.y + grid.h);
+        debug_assert!(added >= 0, "the copies do not make the panel shorter");
+        (added > 0).then_some((grid.y, added))
+    }
+
     /// Records the panel instances a template panel expands to, returning their
     /// indices with whether each is the primary copy.
     fn panel_copies(&mut self, source: usize, scope: &Scope, primary: bool) -> Vec<(usize, bool)> {
@@ -758,6 +927,7 @@ impl<'a> Builder<'a, '_> {
         copies.truncate(room.max(1));
         self.nodes = self.nodes.saturating_add(copies.len());
         let count = copies.len();
+        debug_assert!(count >= 1, "a panel has one copy or more");
         debug_assert!(
             source < self.templates.len(),
             "a source indexes a template panel"
@@ -804,17 +974,24 @@ impl<'a> Builder<'a, '_> {
     fn open_row(&mut self, row: &'a DashboardRow, scope: &Scope, primary: bool) -> CopyStep<'a> {
         let section = SectionId::Row(row.id);
         let repeat = self.repeats.rows.get(&row.id);
+        let sections = self.repeat_section(section, repeat, scope, primary);
+        debug_assert!(!sections.is_empty(), "a row has one copy or more");
         let copies = RowCopies {
             row,
-            copies: Copies::new(self.repeat_section(section, repeat, scope, primary)),
+            copies: Copies::new(sections),
             id: row.id,
             scope: Scope::new(),
         };
-        self.next_row_copy(copies).unwrap_or_else(|| {
+        let step = self.next_row_copy(copies).unwrap_or_else(|| {
             // `repeat_section` gives one copy at least, so this row is never empty.
             let empty = DashboardRow::new(row.id, "", row.collapsed, row.hidden_header, Vec::new());
             CopyStep::Done(DashboardLayoutItem::Row(empty))
-        })
+        });
+        debug_assert!(
+            matches!(step, CopyStep::Open(_)),
+            "the first copy of a row opens a frame"
+        );
+        step
     }
 
     /// Starts the next copy of a row: its id, variables and condition. Gives
@@ -833,8 +1010,17 @@ impl<'a> Builder<'a, '_> {
         } else {
             self.clones.row(row.id, &copy.scope)
         };
+        debug_assert!(
+            copy.primary == (id == row.id),
+            "only the primary copy keeps the id of the row"
+        );
         self.nodes = self.nodes.saturating_add(1);
+        let bound = copy.scope.len();
         self.bind_section(section, repeat, &mut copy.scope);
+        debug_assert!(
+            copy.scope.len() >= bound,
+            "the section variables add to the scope"
+        );
         if let Some(group) = self.conditions.rows.get(&row.id) {
             self.materialized_conditions.push(MaterializedCondition {
                 target: ConditionTarget::Row(id),
@@ -860,6 +1046,10 @@ impl<'a> Builder<'a, '_> {
         } else {
             self.clones.tab_group(group.id, scope)
         };
+        debug_assert!(
+            primary == (id == group.id),
+            "only the primary copy keeps the id of the tab group"
+        );
         self.nodes = self.nodes.saturating_add(1);
         let open = TabCopies {
             group,
@@ -873,7 +1063,12 @@ impl<'a> Builder<'a, '_> {
             title: String::new(),
             tabs: Vec::new(),
         };
-        self.next_tab_copy(open)
+        let step = self.next_tab_copy(open);
+        debug_assert!(
+            group.tabs.is_empty() || matches!(step, CopyStep::Open(_)),
+            "a tab group with tabs opens its first tab"
+        );
+        step
     }
 
     /// Starts the next copy of the current tab, or the first copy of the next
@@ -882,6 +1077,10 @@ impl<'a> Builder<'a, '_> {
         let group = open.group;
         // Each pass makes a copy, or moves to the next tab.
         for _ in 0..group.tabs.len().saturating_add(2) {
+            debug_assert!(
+                open.position <= group.tabs.len(),
+                "the tab position is in range"
+            );
             if let Some(copies) = open.copies.as_mut() {
                 if let Some(copy) = copies.next(self.has_room()) {
                     return CopyStep::Open(self.open_tab_copy(open, copy));
@@ -900,12 +1099,21 @@ impl<'a> Builder<'a, '_> {
                 self.repeat_section(section, repeat, scope, primary),
             ));
         }
+        debug_assert!(open.position >= group.tabs.len(), "each tab is done");
         CopyStep::Done(finish_tabs(open))
     }
 
     /// Starts one copy of the current tab: its variables, condition and title.
     fn open_tab_copy(&mut self, mut open: TabCopies<'a>, mut copy: RepeatCopy) -> BuildFrame<'a> {
         let group = open.group;
+        debug_assert!(
+            open.position < group.tabs.len(),
+            "the tab position is in range"
+        );
+        debug_assert!(
+            open.tabs.len() >= open.position,
+            "each earlier tab has one copy or more"
+        );
         let key = (group.id, open.position);
         let repeat = self.repeats.tabs.get(&key);
         self.nodes = self.nodes.saturating_add(1);
@@ -939,7 +1147,8 @@ impl<'a> Builder<'a, '_> {
     ) -> Vec<RepeatCopy> {
         let mut section_scope = scope.clone();
         section_scope.extend(self.section_bindings(section, scope));
-        self.copies(repeat, &section_scope, primary)
+        let copies: Vec<RepeatCopy> = self
+            .copies(repeat, &section_scope, primary)
             .into_iter()
             .map(|copy| {
                 // Drop the section bindings again; `bind_section` adds them per copy.
@@ -950,7 +1159,13 @@ impl<'a> Builder<'a, '_> {
                     primary: copy.primary,
                 }
             })
-            .collect()
+            .collect();
+        debug_assert!(!copies.is_empty(), "a section has one copy or more");
+        debug_assert!(
+            copies.iter().all(|copy| copy.scope.len() >= scope.len()),
+            "each copy keeps the outer bindings"
+        );
+        copies
     }
 
     /// Adds a section copy's variables to its scope, resolved in that copy's
@@ -981,7 +1196,15 @@ impl<'a> Builder<'a, '_> {
             .into_iter()
             .filter(|binding| repeat.is_none_or(|repeat| repeat.variable != binding.name))
             .collect();
+        debug_assert!(
+            bindings.iter().all(|binding| definitions
+                .iter()
+                .any(|definition| definition.name == binding.name)),
+            "each binding is a variable of the section"
+        );
+        let bound = scope.len();
         scope.extend(bindings);
+        debug_assert!(scope.len() >= bound, "the bindings add to the scope");
     }
 
     /// Bindings for a section's variables: resolved values for query variables,
@@ -992,7 +1215,7 @@ impl<'a> Builder<'a, '_> {
             return Vec::new();
         };
         let resolved = self.variables.sections.get(&(section, scope.clone()));
-        definitions
+        let bindings: Vec<ScopeBinding> = definitions
             .iter()
             .filter_map(|definition| {
                 let values = resolved
@@ -1015,7 +1238,18 @@ impl<'a> Builder<'a, '_> {
                     all: definition.all,
                 })
             })
-            .collect()
+            .collect();
+        debug_assert!(
+            bindings.len() <= definitions.len(),
+            "each variable gives one binding or less"
+        );
+        debug_assert!(
+            bindings
+                .iter()
+                .all(|binding| binding.formatted.is_none() || binding.all),
+            "only an All selection has a formatted value"
+        );
+        bindings
     }
 
     /// The copies of an item repeated over its variable's selected values. An
@@ -1030,7 +1264,7 @@ impl<'a> Builder<'a, '_> {
                 primary,
             }];
         };
-        values
+        let copies: Vec<RepeatCopy> = values
             .iter()
             .enumerate()
             .map(|(position, value)| {
@@ -1041,7 +1275,13 @@ impl<'a> Builder<'a, '_> {
                     primary: primary && position == 0,
                 }
             })
-            .collect()
+            .collect();
+        debug_assert_eq!(copies.len(), values.len(), "each value has one copy");
+        debug_assert!(
+            copies.iter().filter(|copy| copy.primary).count() <= 1,
+            "one copy or less is the primary copy"
+        );
+        copies
     }
 
     fn instance(&self, index: usize) -> Option<&PanelInstance> {
@@ -1064,6 +1304,17 @@ fn finish_tabs(open: TabCopies<'_>) -> DashboardLayoutItem {
         let last = materialized.tabs.len().checked_sub(1);
         materialized.active = last.map(|last| active.min(last));
     }
+    debug_assert!(
+        materialized
+            .active
+            .is_none_or(|active| active < materialized.tabs.len()),
+        "the active tab is in the tab group"
+    );
+    debug_assert_eq!(
+        materialized.active.is_some(),
+        !materialized.tabs.is_empty(),
+        "a tab group with tabs has an active tab"
+    );
     DashboardLayoutItem::Tabs(materialized)
 }
 
@@ -1074,7 +1325,7 @@ fn finish_tabs(open: TabCopies<'_>) -> DashboardLayoutItem {
 /// at the panel's own width.
 fn repeat_grid(grid: GridUnit, repeat: &Repeat, position: usize, count: usize) -> GridUnit {
     let position = i32::try_from(position).unwrap_or(i32::MAX);
-    match repeat.direction {
+    let unit = match repeat.direction {
         RepeatDirection::Vertical => GridUnit {
             y: grid.y + position * grid.h,
             ..grid
@@ -1095,7 +1346,14 @@ fn repeat_grid(grid: GridUnit, repeat: &Repeat, position: usize, count: usize) -
                 h: grid.h,
             }
         }
-    }
+    };
+    debug_assert_eq!(unit.h, grid.h, "a copy keeps the height of the panel");
+    debug_assert!(
+        repeat.direction == RepeatDirection::Vertical
+            || (unit.x >= 0 && unit.x + unit.w <= GRID_COLUMNS),
+        "a horizontal copy is inside the grid width"
+    );
+    unit
 }
 
 #[cfg(test)]
