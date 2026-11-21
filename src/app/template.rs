@@ -242,9 +242,11 @@ impl CloneIds {
         self.tab_groups
             .retain(|key, _| used_tab_groups.contains(key));
         self.free_panels.extend(reclaimed.iter().copied());
-        while self.next_panel > imported_panels
-            && self.free_panels.last() == Some(&(self.next_panel - 1))
-        {
+        // Each pass releases one slot, down to `imported_panels`.
+        for _ in imported_panels..self.next_panel {
+            if self.free_panels.last() != Some(&(self.next_panel - 1)) {
+                break;
+            }
             self.free_panels.pop_last();
             self.next_panel -= 1;
         }
