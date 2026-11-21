@@ -24,7 +24,14 @@ pub(crate) fn cluster_badge(count: usize) -> char {
     match count {
         0 => ' ',
         1 => '•',
-        2..=9 => char::from_digit(count as u32, 10).unwrap(),
+        2 => '2',
+        3 => '3',
+        4 => '4',
+        5 => '5',
+        6 => '6',
+        7 => '7',
+        8 => '8',
+        9 => '9',
         _ => '+',
     }
 }
@@ -122,6 +129,8 @@ mod tests {
         assert_eq!(cluster_badge(2), '2');
         assert_eq!(cluster_badge(9), '9');
         assert_eq!(cluster_badge(10), '+');
+        let digits: String = (2..=9).map(cluster_badge).collect();
+        assert_eq!(digits, "23456789");
     }
 
     #[test]

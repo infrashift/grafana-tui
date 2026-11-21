@@ -23,7 +23,6 @@ pub(crate) struct AnnotationCommandConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum AnnotationSourceConfig {
     File(PathBuf),
     Command(AnnotationCommandConfig),
@@ -38,9 +37,15 @@ pub(crate) struct AnnotationRefreshContext {
 }
 
 impl AnnotationRefreshContext {
+    /// Returns the window of length `range` that ends at `end_ts`. An end out of the
+    /// chrono range becomes the Unix epoch. A start out of the chrono range becomes
+    /// the earliest time that chrono holds.
     pub(crate) fn from_unix_window(end_ts: i64, range: Duration) -> Self {
-        let to = DateTime::<Utc>::from_timestamp(end_ts, 0).expect("valid Unix timestamp");
-        let from = to - TimeDelta::from_std(range).expect("supported dashboard range");
+        let to = DateTime::<Utc>::from_timestamp(end_ts, 0).unwrap_or(DateTime::UNIX_EPOCH);
+        let from = TimeDelta::from_std(range)
+            .ok()
+            .and_then(|span| to.checked_sub_signed(span))
+            .unwrap_or(DateTime::<Utc>::MIN_UTC);
         Self { from, to }
     }
 }
@@ -53,7 +58,6 @@ impl AnnotationProviderError {
         Self(message.into())
     }
 
-    #[allow(dead_code)] // Used by command providers before they are runtime-wired.
     pub(crate) fn command(program: &str, reason: impl fmt::Display) -> Self {
         Self(format!("annotation command {program}: {reason}"))
     }
@@ -113,6 +117,17 @@ mod tests {
         fn refresh<'a>(&'a mut self, _context: &'a AnnotationRefreshContext) -> ProviderFuture<'a> {
             Box::pin(async { ProviderPoll::Loaded(AnnotationSnapshot::new(Vec::new())) })
         }
+    }
+
+    #[test]
+    fn windows_out_of_the_chrono_range_use_documented_limits() {
+        let context = AnnotationRefreshContext::from_unix_window(i64::MAX, Duration::ZERO);
+        assert_eq!(context.to, chrono::DateTime::UNIX_EPOCH);
+        assert_eq!(context.from, chrono::DateTime::UNIX_EPOCH);
+        let context = AnnotationRefreshContext::from_unix_window(100, Duration::MAX);
+        assert_eq!(context.from, chrono::DateTime::<chrono::Utc>::MIN_UTC);
+        let context = AnnotationRefreshContext::from_unix_window(100, Duration::from_secs(10));
+        assert_eq!(context.from.timestamp(), 90);
     }
 
     #[tokio::test]

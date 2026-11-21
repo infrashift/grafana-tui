@@ -82,13 +82,23 @@ pub(super) fn alias_target(name: &str) -> Option<&'static str> {
 /// Looks up a built-in theme or alias, ignoring case.
 pub(crate) fn builtin(name: &str) -> Option<Theme> {
     let name = alias_target(name).unwrap_or(name);
-    let builtin = BUILTINS
+    BUILTINS
         .iter()
-        .find(|builtin| builtin.name.eq_ignore_ascii_case(name))?;
-    Some(match &builtin.spec {
+        .find(|builtin| builtin.name.eq_ignore_ascii_case(name))
+        .map(build)
+}
+
+/// Every built-in theme, in display order.
+pub(super) fn builtin_themes() -> impl Iterator<Item = Theme> {
+    BUILTINS.iter().map(build)
+}
+
+/// Builds the theme of one built-in entry.
+fn build(builtin: &Builtin) -> Theme {
+    match &builtin.spec {
         Spec::Terminal => terminal(),
         Spec::Base(base) => Theme::from_base(builtin.name, base),
-    })
+    }
 }
 
 // folke/tokyonight.nvim lua/tokyonight/colors/{storm,night,moon}.lua. Day comes
