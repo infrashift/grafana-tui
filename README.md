@@ -4,7 +4,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Rust Version](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 
-**grafana-tui** is a terminal user interface for Prometheus, inspired by Grafana. It lets you inspect time-series dashboards from a fast, keyboard-driven TUI that works well over SSH and in minimal environments.
+**grafana-tui** is a terminal user interface (TUI) for Prometheus. Grafana is the model for its design. The TUI shows time-series dashboards in a terminal. The keyboard controls all of its functions. It works over SSH and on hosts with few tools.
 
 [![asciicast](https://asciinema.org/a/vMRNEjG0FEDKGP31.svg)](https://asciinema.org/a/vMRNEjG0FEDKGP31)
 
@@ -16,7 +16,7 @@ Install the latest prebuilt binary into `~/.local/bin`:
 bash -o pipefail -c 'curl --proto =https --tlsv1.2 -LsSf https://raw.githubusercontent.com/infrashift/grafana-tui/main/install.sh | bash'
 ```
 
-See [Installation](https://infrashift.github.io/grafana-tui/installation/) for other directories, pinned versions, manual downloads, and building from source.
+For other directories, pinned versions, manual downloads and builds from source, see [Install grafana-tui](https://infrashift.github.io/grafana-tui/installation/).
 
 Run against a Prometheus instance:
 
@@ -35,19 +35,19 @@ cargo run -- --grafana-json examples/dashboards/prometheus_demo.json --prometheu
 
 ## Features
 
-- Prometheus range and instant queries with async fetching.
-- Grafana Classic JSON and V2 Resource JSON/YAML import for graph, timeseries, stat, gauge, bar gauge, table, and heatmap panels, including interactive nested rows and tabs.
-- Template variables, Grafana built-in PromQL variables, legend formatting, thresholds, and grid layout support.
-- Grafana timeseries draw styles for lines, points, bars, area fill, hidden axes, and per-panel grid visibility.
-- Keyboard-first navigation, row/tab/panel search, interactive rows and tabs, fullscreen mode, mouse selection, and value inspection.
-- SVG/PNG export and changed-frame recording bundles.
-- TOML configuration and 19 built-in themes, including Tokyo Night, Catppuccin, and Gruvbox flavors.
-- Read-only external file or command-backed JSONL point annotations with panel targeting, tag filtering, and navigable cluster details.
+- Prometheus range queries and instant queries. The TUI sends the queries asynchronously.
+- Import of Grafana Classic JSON and V2 Resource JSON/YAML. The import supports graph, timeseries, stat, gauge, bar gauge, table and heatmap panels. It also supports interactive nested rows and tabs.
+- Template variables, Grafana built-in PromQL variables, legend formats, thresholds and the grid layout.
+- Grafana timeseries draw styles for lines, points, bars, area fill and hidden axes. Each panel can show or hide its grid.
+- Keyboard controls to move through the dashboard. Search for a row, a tab or a panel. Interactive rows and tabs, a fullscreen mode, mouse selection and a value inspector.
+- SVG/PNG export, and recording bundles that keep only the changed frames.
+- TOML configuration and 19 built-in themes. The themes include Tokyo Night, Catppuccin and Gruvbox flavors.
+- Read-only JSONL point annotations from an external file or from a command. Each annotation can target panels. A tag filter selects the annotations. The TUI shows the details of each annotation cluster, and you can move through them.
 
 ## Documentation
 
 - [User guide](https://infrashift.github.io/grafana-tui/)
-- [Installation](https://infrashift.github.io/grafana-tui/installation/)
+- [Install grafana-tui](https://infrashift.github.io/grafana-tui/installation/)
 - [Quick start](https://infrashift.github.io/grafana-tui/quick-start/)
 - [Configuration](https://infrashift.github.io/grafana-tui/configuration/)
 - [External annotations](https://infrashift.github.io/grafana-tui/annotations/)
@@ -82,17 +82,18 @@ grafana-tui man
 ```
 
 Grafana 13 users can import an exact `dashboard.grafana.app/v2` JSON or YAML
-resource with recursive `GridLayout`, `AutoGridLayout`, `RowsLayout`, and
-`TabsLayout` containers, including repeated panels, rows, and tabs, conditional
-rendering, and row and tab variables. Exports reference library panels by uid
-only, so enable **Share dashboard with another instance** when exporting to
-inline them. See the
-[dashboard import guide](https://infrashift.github.io/grafana-tui/grafana-dashboard-import/)
-for the current format requirements.
+resource. The resource can have recursive `GridLayout`, `AutoGridLayout`,
+`RowsLayout` and `TabsLayout` containers. It can also have repeated panels,
+rows and tabs, `conditionalRendering` rules, and row and tab variables.
+
+A Grafana export refers to each library panel only by its uid. To put the
+library panels in the export, enable **Share dashboard with another instance**
+before the export. For the current format requirements, see the
+[dashboard import guide](https://infrashift.github.io/grafana-tui/grafana-dashboard-import/).
 
 ## Contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [DEVELOPMENT.md](DEVELOPMENT.md) for local development notes.
+We welcome changes from contributors. For the rules, see [CONTRIBUTING.md](CONTRIBUTING.md). For notes about local builds and tests, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## License
 

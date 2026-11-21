@@ -1,10 +1,10 @@
 # grafana-tui Examples
 
-This directory contains example Grafana dashboards and a demo environment for testing grafana-tui.
+This directory contains example Grafana dashboards and a demo environment. Use them to test grafana-tui.
 
 ## Quick Demo
 
-Want to try grafana-tui instantly? Use the pre-configured demo environment:
+To try grafana-tui fast, use the pre-configured demo environment:
 
 ```bash
 cd demo
@@ -18,9 +18,9 @@ See [`demo/README.md`](demo/README.md) for details.
 [`demo/hashistack-rdw/`](demo/hashistack-rdw/README.md) holds eight operator
 dashboards for a Consul/Nomad/Vault platform with a Consul Connect (Envoy) mesh
 and remote developer workspaces. They are Grafana 13 V2 resources and run
-against a real datacenter's mTLS Prometheus (client certificate required), not
-the bundled demo stack. The README covers issuing the reader certificate and
-building the config.
+against the mTLS Prometheus of a real datacenter, not against the bundled demo
+stack. This Prometheus requires a client certificate. The README tells how to
+issue the reader certificate and how to build the config.
 
 ## SSHadowForge Dashboards
 
@@ -35,16 +35,17 @@ HashiStack set.
 
 [`annotations.jsonl`](annotations.jsonl) is a read-only external JSONL event
 source for graph and timeseries panels. Its `Deployed v2.4` event uses
-`panel_titles` to target the bundled `HTTP Request Rate by Status Code` panel;
-the remaining events omit `panel_titles` and therefore remain dashboard-wide.
+`panel_titles` to target the bundled `HTTP Request Rate by Status Code` panel.
+The other events do not have `panel_titles`, so they apply to the full dashboard.
 Run it with a dashboard:
 
 ```bash
 cargo run -- --grafana-json examples/dashboards/prometheus_demo.json --annotations-file examples/annotations.jsonl
 ```
 
-See the [external annotations guide](../docs/src/content/docs/annotations.md) for targeting,
-tag filtering, inspection, reload behavior, and limitations.
+The [external annotations guide](../docs/src/content/docs/annotations.md) tells
+how to target panels, filter tags, examine annotations and reload them. It also
+gives the limits.
 
 ### Git Command Provider
 
@@ -68,27 +69,27 @@ The optional first argument is the Git repository path and defaults to `.`.
 
 ## Dashboards
 
-Every dashboard here is a Grafana 13 V2 resource. `prometheus_demo.json`,
+Every dashboard here is a Grafana 13 V2 resource. Grafana 13.2.3 converted
+some of them from Classic JSON: `prometheus_demo.json`,
 `all_visualizations.json`, `instant_queries.json`, `thresholds_demo.json`,
-`simple_test.json`, and the vLLM demo dashboards were converted from Classic
-JSON by Grafana 13.2.3; the Classic originals live in
-`tests/fixtures/grafana/classic_examples`, and a test checks that both formats
-import identically.
+`simple_test.json` and the vLLM demo dashboards. The Classic originals are in
+`tests/fixtures/grafana/classic_examples`. A test checks that the two
+formats import identically.
 
 
 ### `prometheus_demo.json`
-**Recommended for first-time users!** A comprehensive dashboard designed for the included demo environment.
-Shows all 6 visualization types with real metrics from Prometheus monitoring itself:
+**We recommend this dashboard for first-time users.** We made it for the included demo environment.
+It shows all 6 panel types. The data is the real metrics that Prometheus records about itself:
 - Graph, Gauge, Stat, Bar Gauge, Table, Heatmap
 - Works immediately with `demo/docker-compose.yml`
 
 ### `all_visualizations.json`
 Demonstrates all supported panel types in a single dashboard:
-- **Graph**: Line chart showing CPU usage over time
-- **Timeseries styles**: Bars with hidden axis, area fill, and points-only rendering
-- **Gauge**: Progress bar for memory usage
+- **Graph**: Line chart of the CPU use over time
+- **Timeseries styles**: Bars with a hidden axis, area fill, and a style with only points
+- **Gauge**: Progress bar for the memory use
 - **Stat**: Big value display with sparkline for uptime
-- **Bar Gauge**: Vertical bars comparing request rates
+- **Bar Gauge**: Vertical bars that compare request rates
 - **Table**: Tabular view of series
 - **Heatmap**: Color-coded time-series intensity
 
@@ -97,7 +98,7 @@ Demonstrates queries marked `instant` and the default instant query behavior
 used by Gauge, Bar Gauge, and Table panels.
 
 ### `thresholds_demo.json`
-Demonstrates threshold rendering, threshold marker styles, and explicit field
+Shows thresholds, the styles of the threshold markers, and explicit field
 min/max bounds.
 
 ### `grafana_v2_compatibility.json`
@@ -110,10 +111,10 @@ cargo run -- --grafana-json examples/dashboards/grafana_v2_compatibility.json --
 ```
 
 ### `grafana_v2_rows.json`
-An exact Grafana V2 `RowsLayout` resource demonstrating expanded, nested, and
-initially collapsed rows with three Prometheus panels. It also includes a
-hidden-header container, whose child panel flows directly beneath its parent
-row. Run it against the bundled demo stack:
+An exact Grafana V2 `RowsLayout` resource that shows expanded rows, nested rows,
+and rows that start collapsed. It has three Prometheus panels. It also has a
+container with a hidden header. The child panel of this container shows directly
+below its parent row. Run it against the bundled demo stack:
 
 ```bash
 cargo run -- --grafana-json examples/dashboards/grafana_v2_rows.json --prometheus-url http://localhost:19090
@@ -121,39 +122,41 @@ cargo run -- --grafana-json examples/dashboards/grafana_v2_rows.json --prometheu
 
 ### `grafana_v2_autogrid.json`
 An exact Grafana V2 `AutoGridLayout` resource with five Prometheus panels in up
-to three columns. Columns reflow as the terminal is resized: two at 120 columns,
-one at 80.
+to three columns. When the terminal size changes, the columns move to fit:
+two columns at a width of 120, one column at 80.
 
 ```bash
 cargo run -- --grafana-json examples/dashboards/grafana_v2_autogrid.json --prometheus-url http://localhost:19090
 ```
 
 ### `grafana_v2_repeats.yaml`
-A Grafana V2 resource in YAML, as exported by Grafana 13. A request-rate panel
-repeats horizontally, two per row, over an `All` selection of HTTP handlers,
-pushing the panel below it down; a row repeats over every `job` that the
-`label_values(up, job)` query variable resolves.
+A Grafana V2 resource in YAML, as Grafana 13 exports it. A request-rate panel
+repeats horizontally, two per row, over an `All` selection of HTTP handlers.
+The repeats move the panel below them down. A row repeats over every `job` that
+the `label_values(up, job)` query variable resolves.
 
 ```bash
 cargo run -- --grafana-json examples/dashboards/grafana_v2_repeats.yaml --prometheus-url http://localhost:19090
 ```
 
 ### `grafana_v2_conditional.json`
-A Grafana V2 resource authored in Grafana 13 with conditional rendering. The
-`Production` row shows because `env` is `prod`, while the `Staging only` row is
-hidden; the server-error panel appears only when Prometheus returns 5xx
-requests; and the `Zoomed in` tab is shown only while the time range is an hour
-or less.
+A Grafana V2 resource that we wrote in Grafana 13 with `conditionalRendering`
+rules:
+
+- The `Production` row shows because `env` is `prod`.
+- The `Staging only` row does not show.
+- The server-error panel shows only when Prometheus returns 5xx requests.
+- The `Zoomed in` tab shows only while the time range is an hour or less.
 
 ```bash
 cargo run -- --grafana-json examples/dashboards/grafana_v2_conditional.json --prometheus-url http://localhost:19090 --range 1h
 ```
 
 ### `grafana_v2_sections.json`
-A Grafana V2 resource authored in Grafana 13 with row variables. The
-`Tail latency` row defines its own `quantile` (0.99), shadowing the dashboard's
-0.9 inside that row only, and the `Busiest handlers` row defines a `handler`
-query variable whose `/api/v1/` values a repeated panel iterates.
+A Grafana V2 resource that we wrote in Grafana 13 with row variables. The
+`Tail latency` row defines its own `quantile` (0.99). In that row only, this
+value replaces the 0.9 of the dashboard. The `Busiest handlers` row defines a
+`handler` query variable. A repeated panel iterates over its `/api/v1/` values.
 
 ```bash
 cargo run -- --grafana-json examples/dashboards/grafana_v2_sections.json --prometheus-url http://localhost:19090
