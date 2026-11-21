@@ -27,7 +27,6 @@ pub(crate) use data::{
 pub(crate) use event_loop::{finalize_recording_before_quit, run_app};
 #[cfg(test)]
 pub(crate) use state::dashboard_test_support;
-#[allow(unused_imports)]
 pub(crate) use state::{
     AppMode, AppState, BackendIndicator, BackendStatus, DashboardInfo, DashboardSet,
     GraphAxisPlacement, GraphDrawStyle, GraphOptions, GraphPointMode, GraphStackingMode, GridUnit,

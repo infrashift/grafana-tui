@@ -108,7 +108,9 @@ impl InflightGuard {
     /// Sends the leader's result to every waiting caller and releases the claim.
     fn publish(self, result: &Result<QueryResult>) {
         for waiter in self.take_waiters() {
-            let _ = waiter.send(match result {
+            // The send fails only when the waiting caller has stopped and dropped
+            // its receiver. No one reads the result then, so the failure does not matter.
+            let _delivered: Result<(), WaiterResult> = waiter.send(match result {
                 Ok(result) => Ok(result.clone()),
                 Err(error) => Err(error.to_string()),
             });
@@ -549,9 +551,6 @@ struct PromResponse<T> {
 
 #[derive(Debug, Deserialize, Clone)]
 pub(crate) struct QueryRangeData {
-    #[serde(rename = "resultType")]
-    #[allow(dead_code)]
-    pub(crate) result_type: String,
     pub(crate) result: Vec<Series>,
 }
 
@@ -962,7 +961,6 @@ mod tests {
 
         let resp: PromResponse<QueryRangeData> = serde_json::from_str(json).unwrap();
         assert_eq!(resp.status, "success");
-        assert_eq!(resp.data.result_type, "matrix");
         assert_eq!(resp.data.result.len(), 1);
         assert_eq!(resp.data.result[0].metric.get("job").unwrap(), "prometheus");
         assert_eq!(resp.data.result[0].values.len(), 2);

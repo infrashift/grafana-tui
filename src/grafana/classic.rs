@@ -256,7 +256,6 @@ impl RawVar {
             query,
             regex: self.regex,
             all_value: self.all_value,
-            source_path: format!("templating.list[{index}]"),
             refresh: match self.refresh {
                 Some(Value::Number(refresh)) => match refresh.as_u64() {
                     Some(0) => Some(model::VariableRefresh::Never),

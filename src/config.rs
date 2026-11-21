@@ -34,7 +34,6 @@ pub(crate) struct Config {
     #[serde(default, alias = "grafana_dashboard", deserialize_with = "one_or_many")]
     pub(crate) grafana_json: Vec<PathBuf>,
     pub(crate) annotations_file: Option<PathBuf>,
-    #[allow(dead_code)]
     pub(crate) annotations_command: Option<crate::annotations::AnnotationCommandConfig>,
     pub(crate) threshold_marker: Option<String>,
     pub(crate) export_dir: Option<PathBuf>,
