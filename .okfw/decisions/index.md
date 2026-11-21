@@ -11,4 +11,5 @@
 * [ADR-0005: Keep a modern-mode ZMakefile next to the Makefile](adr-0005-keep-a-modern-mode-zmakefile-next-to-the-makefile--01a1fd4e4886.md) - The ZMakefile has the same tasks as the Makefile in zmake modern mode, and GNU Make keeps the Makefile.
 * [ADR-0006: One bounded layout walker replaces recursion](adr-0006-one-bounded-layout-walker-replaces-recursion--01a1fd7e8997.md) - Explicit stacks with depth, node and step limits replace the 24 recursive walks of the layout tree and other chains.
 * [ADR-0007: Named limits cap each input and growable collection](adr-0007-named-limits-cap-each-input-and-growable-collection--01a1fdaaf533.md) - The table of every resource limit, where the program checks it and what the user sees at the limit.
+* [ADR-0008: Enum dispatch replaces trait objects and function pointers](adr-0008-enum-dispatch-replaces-trait-objects-and-function-pointers--01a1fdc48e48.md) - An enum of annotation providers, plain data and small traits replace Box dyn, dyn Fn, function pointers and the theme macro.
 

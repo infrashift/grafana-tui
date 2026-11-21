@@ -44,6 +44,7 @@ The rules apply to production code. Test code (`#[cfg(test)]` modules and `tests
 | `src/num.rs` | R10 | The one place with `as` casts. Each function maps NaN, clamps, then casts, and tests compare it bit for bit with `as`. Each has an `#[allow]` with a reason. |
 | `LayoutNode` in `src/grafana/model.rs` | R3 | `large_enum_variant` is allowed: `MAX_LAYOUT_NODES` caps the nodes, and a `Box` adds one allocation for each panel. |
 | `AppState::new` | R4 | `too_many_arguments` is allowed: the constructor takes each start-up setting, and many tests call it. |
+| `src/prom/tls.rs` (`RustlsFailure::find`, `find_rustls_error`, `error_chain`) | R9 | These take `&(dyn std::error::Error + 'static)`, the type that `Error::source()` gives. A walk of an error chain needs it. |
 
 The phases add rows to this table when they find a deviation.
 
