@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-use anyhow::{Result, anyhow};
+use crate::limits::{MAX_PANEL_SERIES, MAX_QUERY_BYTES, MAX_QUERY_MESSAGES, MAX_SERIES_POINTS};
+use anyhow::{Result, anyhow, ensure};
 use reqwest::Client;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -347,6 +348,7 @@ impl PromClient {
         end: i64,
         step: Duration,
     ) -> Result<QueryResult> {
+        check_query_len(expr)?;
         let cache_key = (expr.to_string(), start, end, step);
         if let Some(result) = lock(&self.cache).get(&cache_key) {
             return Ok(result);
@@ -421,11 +423,11 @@ impl PromClient {
             ));
         }
 
-        Ok(QueryResult {
+        Ok(limit_result(QueryResult {
             series: body.data.result,
             warnings: body.warnings,
             infos: body.infos,
-        })
+        }))
     }
 
     /// Values of `label` on series in `start..=end`, only those matching
@@ -437,6 +439,8 @@ impl PromClient {
         start: i64,
         end: i64,
     ) -> Result<Vec<String>> {
+        check_query_len(label)?;
+        check_query_len(selector.unwrap_or_default())?;
         let mut url = format!(
             "{}/api/v1/label/{}/values?start={}&end={}",
             self.base.trim_end_matches('/'),
@@ -458,6 +462,7 @@ impl PromClient {
         expr: &str,
         time: i64,
     ) -> Result<Vec<String>> {
+        check_query_len(expr)?;
         let url = self.build_query_url(expr, time);
         let body: PromResponse<QueryInstantData> = self.get_json(&url).await?;
         ensure_success(&body.status)?;
@@ -465,14 +470,15 @@ impl PromClient {
     }
 
     pub(crate) async fn query_instant_series(&self, expr: &str, time: i64) -> Result<QueryResult> {
+        check_query_len(expr)?;
         let url = self.build_query_url(expr, time);
         let body: PromResponse<QueryInstantData> = self.get_json(&url).await?;
         ensure_success(&body.status)?;
-        Ok(QueryResult {
+        Ok(limit_result(QueryResult {
             series: body.data.into_series(time),
             warnings: body.warnings,
             infos: body.infos,
-        })
+        }))
     }
 
     async fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
@@ -529,6 +535,56 @@ async fn read_body(resp: &mut reqwest::Response, limit: usize) -> Result<Vec<u8>
         body.extend_from_slice(&chunk);
     }
     Err(anyhow::Error::new(ResponseTooLarge(limit)))
+}
+
+/// Fails when `query` has more than `MAX_QUERY_BYTES` bytes.
+fn check_query_len(query: &str) -> Result<()> {
+    ensure!(
+        query.len() <= MAX_QUERY_BYTES,
+        "the query has {} bytes, more than the limit of {MAX_QUERY_BYTES} bytes",
+        query.len()
+    );
+    Ok(())
+}
+
+/// Cuts `result` to the series, point and message limits. Each cut adds a
+/// warning, so the panel shows it.
+fn limit_result(mut result: QueryResult) -> QueryResult {
+    let mut cuts = Vec::new();
+    let series = result.series.len();
+    if series > MAX_PANEL_SERIES {
+        result.series.truncate(MAX_PANEL_SERIES);
+        cuts.push(format!(
+            "{series} series: the panel keeps the first {MAX_PANEL_SERIES} (the series limit)"
+        ));
+    }
+    let mut long_series = 0;
+    for series in &mut result.series {
+        let excess = series.values.len().saturating_sub(MAX_SERIES_POINTS);
+        if excess > 0 {
+            series.values.drain(..excess);
+            long_series += 1;
+        }
+    }
+    if long_series > 0 {
+        cuts.push(format!(
+            "{long_series} series have more than {MAX_SERIES_POINTS} points: the panel keeps \
+             the newest (the point limit)"
+        ));
+    }
+    cuts.extend(cut_messages(&mut result.warnings, "warnings"));
+    cuts.extend(cut_messages(&mut result.infos, "infos"));
+    result.warnings.extend(cuts);
+    result
+}
+
+/// Cuts `messages` to `MAX_QUERY_MESSAGES`, and gives a warning when it cuts.
+fn cut_messages(messages: &mut Vec<String>, kind: &str) -> Option<String> {
+    let excess = messages.len().checked_sub(MAX_QUERY_MESSAGES)?;
+    messages.truncate(MAX_QUERY_MESSAGES);
+    (excess > 0).then(|| {
+        format!("{excess} more Prometheus {kind} are not shown (the limit is {MAX_QUERY_MESSAGES})")
+    })
 }
 
 fn ensure_success(status: &str) -> Result<()> {
@@ -852,6 +908,101 @@ mod tests {
             error.to_string(),
             "prometheus 502 Bad Gateway: <html>bad gateway</html>"
         );
+    }
+
+    /// A series with `points` points at the times 0, 1, 2 and on.
+    fn series_with_points(points: usize) -> Series {
+        Series {
+            metric: HashMap::new(),
+            values: std::iter::successors(Some(0.0), |time| Some(time + 1.0))
+                .take(points)
+                .map(|time| (time, "1".to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn results_in_the_limits_stay_the_same() {
+        let result = limit_result(QueryResult {
+            series: vec![series_with_points(MAX_SERIES_POINTS)],
+            warnings: vec!["partial".to_string(); MAX_QUERY_MESSAGES],
+            infos: Vec::new(),
+        });
+        assert_eq!(result.series[0].values.len(), MAX_SERIES_POINTS);
+        assert_eq!(result.warnings.len(), MAX_QUERY_MESSAGES);
+    }
+
+    #[test]
+    fn series_over_the_limit_are_cut_with_a_warning() {
+        let result = limit_result(QueryResult {
+            series: vec![series_with_points(1); MAX_PANEL_SERIES + 5],
+            ..QueryResult::default()
+        });
+        assert_eq!(result.series.len(), MAX_PANEL_SERIES);
+        assert_eq!(
+            result.warnings,
+            ["2005 series: the panel keeps the first 2000 (the series limit)"]
+        );
+    }
+
+    #[test]
+    fn points_over_the_limit_are_cut_to_the_newest_with_a_warning() {
+        let result = limit_result(QueryResult {
+            series: vec![
+                series_with_points(MAX_SERIES_POINTS + 3),
+                series_with_points(2),
+            ],
+            ..QueryResult::default()
+        });
+        assert_eq!(result.series[0].values.len(), MAX_SERIES_POINTS);
+        assert_eq!(result.series[0].values[0].0, 3.0);
+        assert_eq!(result.series[1].values.len(), 2);
+        assert_eq!(
+            result.warnings,
+            ["1 series have more than 22000 points: the panel keeps the newest (the point limit)"]
+        );
+    }
+
+    #[test]
+    fn messages_over_the_limit_are_cut_with_a_warning() {
+        let result = limit_result(QueryResult {
+            series: Vec::new(),
+            warnings: vec!["w".to_string(); MAX_QUERY_MESSAGES + 2],
+            infos: vec!["i".to_string(); MAX_QUERY_MESSAGES + 1],
+        });
+        assert_eq!(result.infos.len(), MAX_QUERY_MESSAGES);
+        assert_eq!(result.warnings.len(), MAX_QUERY_MESSAGES + 2);
+        assert_eq!(
+            result.warnings[MAX_QUERY_MESSAGES..],
+            [
+                "2 more Prometheus warnings are not shown (the limit is 32)",
+                "1 more Prometheus infos are not shown (the limit is 32)",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn queries_over_the_length_limit_are_not_sent() {
+        let client = PromClient::new("http://127.0.0.1:9".to_string());
+        let long = "a".repeat(MAX_QUERY_BYTES + 1);
+        let expected = format!("the query has {} bytes, more than the limit of", long.len());
+        let step = Duration::from_secs(15);
+        let errors = [
+            client.query_range(&long, 0, 60, step).await.unwrap_err(),
+            client.query_instant_series(&long, 0).await.unwrap_err(),
+            client
+                .query_instant_result_strings(&long, 0)
+                .await
+                .unwrap_err(),
+            client.label_values(&long, None, 0, 60).await.unwrap_err(),
+            client
+                .label_values("job", Some(&long), 0, 60)
+                .await
+                .unwrap_err(),
+        ];
+        for error in errors {
+            assert!(error.to_string().starts_with(&expected), "{error}");
+        }
     }
 
     #[test]
