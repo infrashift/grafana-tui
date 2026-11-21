@@ -333,6 +333,9 @@ fn threshold_color(steps: &[ThresholdStep], value: f64) -> Option<Color> {
     matched_color
 }
 
+/// The longest time range that the zoom out key gives: one week.
+pub(super) const MAX_ZOOM_RANGE: Duration = Duration::from_secs(7 * 24 * 3600);
+
 /// Application mode.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum AppMode {
@@ -623,7 +626,7 @@ impl AppState {
     /// Zoom out: double the time range.
     pub(crate) fn zoom_out(&mut self) {
         self.range *= 2;
-        self.range = self.range.min(Duration::from_secs(7 * 24 * 3600));
+        self.range = self.range.min(MAX_ZOOM_RANGE);
     }
 
     /// Pan left: shift the time window backward.
