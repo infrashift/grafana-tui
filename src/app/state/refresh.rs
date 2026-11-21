@@ -18,6 +18,7 @@ use crate::app::variables::{
     VariableQueryContext, VariableReport, VariableUpdate, refresh_query_variables,
 };
 use crate::grafana::TemplateQueryVar;
+use crate::limits::MAX_PANEL_SERIES;
 use crate::prom;
 use futures::StreamExt;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -941,6 +942,8 @@ struct PanelResults {
     warnings: Vec<String>,
     infos: Vec<String>,
     counts: FetchCounts,
+    /// Series that the queries returned over `MAX_PANEL_SERIES`.
+    cut_series: usize,
 }
 
 impl PanelResults {
@@ -949,9 +952,16 @@ impl PanelResults {
         self.counts.succeeded += 1;
         push_new_messages(&mut self.warnings, result.warnings);
         push_new_messages(&mut self.infos, result.infos);
-        for s in result.series {
-            self.series.push(query.series_view(s));
-        }
+        let room = MAX_PANEL_SERIES.saturating_sub(self.series.len());
+        let cut = result.series.len().saturating_sub(room);
+        self.series.extend(
+            result
+                .series
+                .into_iter()
+                .take(room)
+                .map(|s| query.series_view(s)),
+        );
+        self.cut_series += cut;
     }
 
     /// Adds the error of a failed query, and counts an unreachable backend.
@@ -971,7 +981,13 @@ impl PanelResults {
     }
 
     /// The fetch of panel `index`, with the query counts.
-    fn into_fetch(self, index: usize) -> (PanelFetch, FetchCounts) {
+    fn into_fetch(mut self, index: usize) -> (PanelFetch, FetchCounts) {
+        if self.cut_series > 0 {
+            self.warnings.push(format!(
+                "{} more series are not shown (the panel limit is {MAX_PANEL_SERIES} series)",
+                self.cut_series
+            ));
+        }
         let fetch = PanelFetch {
             index,
             series: self.series,
@@ -1183,6 +1199,38 @@ mod tests {
         assert!(panel.series.is_empty());
         assert!(!panel.notices.stale);
         assert!(panel.last_error.is_some());
+    }
+
+    #[test]
+    fn panel_series_over_the_limit_are_cut_with_a_warning() {
+        let query = PanelQuery {
+            expr: "up".to_string(),
+            legend: None,
+            mode: QueryMode::Range,
+            start_ts: 0,
+            end_ts: 60,
+            step: Duration::from_secs(15),
+        };
+        let result = |count: usize| prom::QueryResult {
+            series: vec![
+                prom::Series {
+                    metric: HashMap::new(),
+                    values: vec![(0.0, "1".to_string())],
+                };
+                count
+            ],
+            ..prom::QueryResult::default()
+        };
+        let mut results = PanelResults::default();
+        results.add_result(&query, result(MAX_PANEL_SERIES - 2));
+        results.add_result(&query, result(5));
+
+        let (fetch, _) = results.into_fetch(0);
+        assert_eq!(fetch.series.len(), MAX_PANEL_SERIES);
+        assert_eq!(
+            fetch.warnings,
+            ["3 more series are not shown (the panel limit is 2000 series)"]
+        );
     }
 
     #[tokio::test]

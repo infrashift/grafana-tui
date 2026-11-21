@@ -22,6 +22,18 @@ pub(crate) const MAX_DASHBOARD_FILES: usize = 64;
 /// Most user variables from `--var` or from the config: a dashboard seldom has more than 30.
 pub(crate) const MAX_USER_VARS: usize = 256;
 
+/// Most series that one query or one panel keeps: a terminal cannot show more as separate lines.
+pub(crate) const MAX_PANEL_SERIES: usize = 2_000;
+
+/// Most points that one series keeps: twice the 11,000 points that Prometheus returns at most.
+pub(crate) const MAX_SERIES_POINTS: usize = 22_000;
+
+/// Most warnings, and most infos, that one query keeps: Prometheus sends one or two.
+pub(crate) const MAX_QUERY_MESSAGES: usize = 32;
+
+/// Longest query sent to Prometheus: its request line has 1 MiB, and URL encoding can triple a byte.
+pub(crate) const MAX_QUERY_BYTES: usize = 256 * 1024;
+
 /// Reads the file at `path`, and fails when it has more than `limit` bytes.
 ///
 /// The check uses the length in the metadata first. The read stops after
