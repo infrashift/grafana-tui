@@ -1,0 +1,5 @@
+# A pinned toolchain: a new stable release can add clippy lints, and the lint
+# gate denies each warning (ADR-0003). Update the pin on purpose.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt", "llvm-tools-preview"]

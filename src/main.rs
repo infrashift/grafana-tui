@@ -14,7 +14,36 @@
  * limitations under the License.
  */
 
-#![forbid(unsafe_code)]
+// The Power of 10 lints in Cargo.toml apply to production code only (ADR-0002).
+// The test build allows them. The normal build still checks all production code.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::too_many_lines,
+        clippy::excessive_nesting,
+        clippy::too_many_arguments,
+        clippy::missing_assert_message,
+        clippy::unwrap_used,
+        clippy::get_unwrap,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::unwrap_in_result,
+        clippy::let_underscore_must_use,
+        clippy::let_underscore_untyped,
+        clippy::map_err_ignore,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_wrap,
+        clippy::cast_lossless,
+        clippy::large_stack_frames,
+        reason = "P10: the rules apply to production code only"
+    )
+)]
 
 mod annotations;
 mod app;
@@ -43,6 +72,8 @@ use serde::Serialize;
 use theme::Theme;
 
 mod cli;
+#[cfg(test)]
+mod snapshot_tests;
 
 use annotations::{AnnotationCommandConfig, AnnotationSourceConfig};
 use cli::Args;

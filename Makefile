@@ -6,11 +6,21 @@ DIST_DIR  := dist
 PREFIX    ?= $(HOME)/.local
 COVER_MIN ?= 95
 CARGO     ?= cargo
+SEMSCOPE  ?= semscope
+LEXISCOPE ?= lexiscope
+OKFW      ?= okfw
+# The documents that lexiscope checks against ASD-STE100. CHANGELOG.md is
+# generated history, so it is not in the list.
+STE_PATHS := README.md DEVELOPMENT.md CONTRIBUTING.md RELEASE_PROCESS.md ROADMAP.md \
+             GRAFANA_COMPATIBILITY.md examples docs/src/content/docs .okfw src tests
+STE_SCAN  := $(LEXISCOPE) scan --ruleset ste-100 --ruleset vocabulary.cue --fail-on note \
+             --exclude node_modules --exclude .okfw/daily --exclude .okfw/ephemeral \
+             --exclude index.md --exclude log.md
 
 .DEFAULT_GOAL := build
 
 .PHONY: all build install run test test-install cover cover-html cover-check lint fmt vuln tidy \
-        check package checksums version changelog clean tools help \
+        check p10 docs-style wiki package checksums version changelog clean tools help \
         docs-install docs-dev docs-build docs-preview docs-clean
 
 all: check build
@@ -51,7 +61,16 @@ vuln: ## cargo-audit against the RustSec advisory database (needs the network)
 tidy: ## Fail if Cargo.lock is out of date with Cargo.toml (CI-friendly)
 	$(CARGO) metadata --locked --format-version 1 >/dev/null
 
-check: fmt lint test test-install cover-check ## Everything CI runs (lint + tests + coverage gate)
+p10: ## Check src/ against the NASA Power of 10 rules (semscope, with the .semscope.cue overlay)
+	$(SEMSCOPE) scan --ruleset nasa-p10 --ruleset .semscope.cue --fail-level error src
+
+docs-style: ## Check the docs and the code comments against ASD-STE100 (lexiscope)
+	$(STE_SCAN) $(STE_PATHS)
+
+wiki: ## Validate the OKF wiki in .okfw/
+	$(OKFW) validate --all
+
+check: fmt lint test test-install cover-check p10 wiki ## Everything CI runs (lint + tests + coverage + rule gates)
 
 # install.sh extracts the binary by name from the archive root, so it sits at
 # the top level of the tarball, next to the license files.
