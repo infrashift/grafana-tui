@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-// The Power of 10 lints in Cargo.toml apply to production code only (ADR-0002).
-// The test build allows them. The normal build still checks all production code.
+// The Power of 10 lints in Cargo.toml apply only to non-test code (ADR-0002).
+// The test build allows them. The normal build still checks all non-test code.
 #![cfg_attr(
     test,
     allow(
@@ -625,7 +625,7 @@ fn build_state(
     state.all_vars = content.variables.all_vars;
     state.variable_names = content.variables.names;
     state.query_vars = content.query_vars;
-    // Repeats expand from the variables, so the template is applied after them.
+    // Repeats expand from the variables, so this function applies the template after them.
     if let Some(template) = content.template {
         state.apply_template(template);
     }
@@ -645,8 +645,8 @@ fn build_state(
 ///
 /// The terminal guard restores the terminal on every exit path.
 async fn run_terminal(state: &mut app::AppState, tick_rate: Duration) -> Result<()> {
-    // The first refresh starts once the dashboard is drawn. Stopping on a
-    // signal drops the app, which aborts refreshes and kills annotation
+    // The first refresh starts after the first draw of the dashboard. A stop on
+    // a signal drops the app, which aborts refreshes and kills annotation
     // provider processes.
     let mut shutdown = ShutdownSignals::register();
 
@@ -666,13 +666,13 @@ async fn run_terminal(state: &mut app::AppState, tick_rate: Duration) -> Result<
     res.and(finalized)
 }
 
-/// Signals asking grafana-tui to stop: SIGINT, and on Unix SIGTERM or SIGHUP (the
-/// terminal closing).
+/// Signals that ask grafana-tui to stop: SIGINT, and on Unix SIGTERM or SIGHUP
+/// (the terminal closes).
 ///
-/// Handlers are installed when this is created, replacing the default action
-/// of killing the process outright. Stopping through `recv` instead drops the
-/// running refresh, so annotation provider processes are killed and the
-/// terminal is restored.
+/// `register` installs the handlers. They replace the default action, which
+/// kills the process at once. A stop through `recv` drops the current refresh
+/// instead. That drop kills the annotation provider processes, and the
+/// terminal guard restores the terminal.
 struct ShutdownSignals {
     #[cfg(unix)]
     signals: Vec<tokio::signal::unix::Signal>,
@@ -725,8 +725,8 @@ impl ShutdownSignals {
     }
 }
 
-/// Raw mode, the alternate screen, and mouse capture, undone when dropped,
-/// including on early returns and while unwinding from a panic.
+/// Raw mode, the alternate screen, and mouse capture, undone when dropped.
+/// This also occurs on early returns and when a panic unwinds the stack.
 struct TerminalGuard;
 
 impl TerminalGuard {
@@ -736,7 +736,7 @@ impl TerminalGuard {
             crossterm::terminal::is_raw_mode_enabled().unwrap_or(true),
             "raw mode is on"
         );
-        // From here on, dropping the guard restores the terminal.
+        // From here on, a drop of the guard restores the terminal.
         let guard = Self;
         execute!(
             std::io::stdout(),
@@ -753,8 +753,8 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// Restores the terminal, continuing past individual failures so one failing
-/// step cannot leave the others undone.
+/// Restores the terminal. It continues when one step fails, so that step
+/// cannot leave the others undone.
 fn restore_terminal() {
     let raw_mode = disable_raw_mode();
     let screen = execute!(
@@ -788,8 +788,8 @@ fn restore_report(steps: [std::io::Result<()>; 2]) -> Option<String> {
     })
 }
 
-/// Restores the terminal before the default panic message is printed, so the
-/// message lands on the normal screen instead of the alternate one.
+/// Restores the terminal before the default hook prints the panic message, so
+/// the message lands on the normal screen instead of the alternate one.
 fn install_terminal_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -798,7 +798,7 @@ fn install_terminal_panic_hook() {
     }));
 }
 
-/// One theme name per line, marking the one `selected` resolves to.
+/// One theme name per line, with a mark on the one that `selected` resolves to.
 fn theme_list(selected: &str, themes: &[Theme]) -> String {
     let current = theme::resolve(selected, themes)
         .ok()
@@ -881,7 +881,7 @@ struct DashboardSetup {
 
 /// Prepares several dashboards to show, one per tab. Each dashboard's
 /// variables stay its own; config and `--var` values pin a variable in every
-/// dashboard that defines it. Diagnostics are printed per dashboard.
+/// dashboard that defines it. This function prints the diagnostics of each dashboard.
 fn build_dashboard_set(
     set: grafana::DashboardSet,
     config_vars: Option<HashMap<String, String>>,
@@ -1114,7 +1114,7 @@ struct VariableState {
     names: HashSet<String>,
 }
 
-/// Validation of several dashboards, one entry per file.
+/// The check results of several dashboards, one entry per file.
 #[derive(Debug, Serialize)]
 struct MultiValidationSummary {
     dashboards: Vec<FileValidationSummary>,
@@ -1197,11 +1197,12 @@ fn build_import_context(
     }
 }
 
-/// Applies config and `--var` overrides, returning the variables they pin.
+/// Applies config and `--var` overrides, and returns the variables they pin.
 ///
-/// A single user value is used verbatim, so it may be a regex. Repeating
-/// `--var` for one name selects several values, which are regex-escaped and
-/// joined like a Grafana multi-value selection and iterated by repeats.
+/// This function uses a single user value verbatim, so it can be a regex. When
+/// `--var` occurs more than once for one name, it selects several values. This
+/// function regex-escapes and joins them like a Grafana multi-value selection,
+/// and repeats iterate over them.
 fn merge_user_vars(
     variables: &mut VariableState,
     config_vars: Option<HashMap<String, String>>,
@@ -1252,7 +1253,7 @@ fn print_import_diagnostics(diagnostics: &[grafana::ImportDiagnostic]) {
     print_import_diagnostics_for(None, diagnostics);
 }
 
-/// Prints import diagnostics, naming the dashboard file when several load.
+/// Prints import diagnostics. When several dashboards load, it names the dashboard file.
 fn print_import_diagnostics_for(
     file: Option<&std::path::Path>,
     diagnostics: &[grafana::ImportDiagnostic],
@@ -1295,8 +1296,8 @@ fn print_import_diagnostics_for(
     }
 }
 
-/// Prints the validation of several dashboards: every file's diagnostics and
-/// result, then fails under `strict` if any file had warnings.
+/// Prints the check results of several dashboards: every file's diagnostics
+/// and result. Then it fails under `strict` if any file had warnings.
 fn print_validation_summaries(
     summaries: &MultiValidationSummary,
     format: cli::ValidateFormat,

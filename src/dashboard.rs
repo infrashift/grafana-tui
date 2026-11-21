@@ -47,7 +47,7 @@ impl TabGroupId {
     }
 }
 
-/// A row or tab that defines variables, by the ids it was imported with.
+/// A row or tab that defines variables, by its ids from the import.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SectionId {
     Row(RowId),
@@ -55,10 +55,10 @@ pub(crate) enum SectionId {
     Tab(TabGroupId, usize),
 }
 
-/// Direction in which a repeated panel's copies are laid out.
+/// The direction in which the layout puts the copies of a repeated panel.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum RepeatDirection {
-    /// Side by side across the full grid width, wrapping after `max_per_row`.
+    /// Side by side across the full grid width, with a new line after `max_per_row`.
     #[default]
     Horizontal,
     /// Stacked below each other at the source panel's width.
@@ -91,7 +91,7 @@ impl Repeat {
     }
 }
 
-/// Repeat settings of an imported layout, keyed by the ids it was imported with.
+/// Repeat settings of an imported layout, keyed by the ids from the import.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Repeats {
     pub(crate) panels: HashMap<usize, Repeat>,
@@ -124,8 +124,8 @@ pub(crate) enum DashboardLayoutItem {
 
 /// Panels flowed row-major into equal-width columns (Grafana V2 `AutoGridLayout`).
 ///
-/// Unlike rows and tabs, an auto grid is not selectable and has no header: its
-/// panels belong to the enclosing container, and only their placement differs.
+/// Unlike rows and tabs, an auto grid is not selectable and has no header.
+/// Its panels belong to the container around it, and only their position differs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DashboardAutoGrid {
     pub(crate) panels: Vec<usize>,
@@ -140,9 +140,9 @@ impl DashboardAutoGrid {
     /// Number of columns for `width` cells.
     ///
     /// Mirrors Grafana's CSS `repeat(auto-fit, minmax(...))` track list with a
-    /// one-cell gap: as many minimum-width columns as fit, at most `max_columns`,
-    /// and never more than there are panels because `auto-fit` collapses empty
-    /// tracks so the remaining panels stretch.
+    /// one-cell gap. It gives as many minimum-width columns as fit, at most
+    /// `max_columns`. It never gives more columns than panels, because `auto-fit`
+    /// collapses empty tracks, and the panels stretch to fill the row.
     pub(crate) fn column_count(&self, width: u16) -> u16 {
         let fitting = width.saturating_add(1) / self.min_column_width.saturating_add(1);
         let panels = u16::try_from(self.panels.len()).unwrap_or(u16::MAX);
@@ -285,7 +285,7 @@ impl DashboardLayout {
         panels
     }
 
-    /// Every panel in the layout, including those in collapsed rows and
+    /// Every panel in the layout, also those in collapsed rows and
     /// inactive tabs.
     pub(crate) fn panel_indices(&self) -> Vec<usize> {
         let mut panels = Vec::new();
@@ -293,7 +293,7 @@ impl DashboardLayout {
         panels
     }
 
-    /// Every panel in one tab of a tab group, including those in its collapsed
+    /// Every panel in one tab of a tab group, also those in its collapsed
     /// rows and inactive inner tabs.
     pub(crate) fn tab_panel_indices(&self, id: TabGroupId, index: usize) -> Vec<usize> {
         let group = self.tabs(id);
@@ -411,7 +411,8 @@ impl DashboardLayout {
     }
 
     /// Copies row collapse state and active tabs from `previous` onto the rows and
-    /// tab groups with the same ids, so rebuilding a layout keeps what was open.
+    /// tab groups with the same ids. So a layout keeps what was open when the
+    /// app rebuilds it.
     pub(crate) fn restore_state(&mut self, previous: &DashboardLayout) {
         let count = self.items.len();
         let mut rows = HashMap::new();
@@ -427,8 +428,8 @@ impl DashboardLayout {
 
     /// This layout without the rows, tabs, and auto grid panels in `hidden`.
     ///
-    /// Tab groups and auto grids left empty are dropped. A tab group whose
-    /// active tab is hidden activates its first remaining tab.
+    /// This function drops the tab groups and auto grids that become empty. A tab
+    /// group whose active tab does not show activates its first visible tab.
     pub(crate) fn without(&self, hidden: &HashSet<ConditionTarget>) -> DashboardLayout {
         let layout = DashboardLayout::new(filter_items(&self.items, hidden));
         debug_assert!(
@@ -443,8 +444,8 @@ impl DashboardLayout {
     }
 
     /// Copies row collapse state and active tabs back from `displayed`, which
-    /// is this layout `without` the `hidden` items, so the state survives
-    /// rebuilding the displayed layout for a new set of hidden items.
+    /// is this layout `without` the `hidden` items. So the state survives when
+    /// the app rebuilds the displayed layout for a new set of hidden items.
     pub(crate) fn sync_state_from(
         &mut self,
         displayed: &DashboardLayout,
@@ -565,7 +566,7 @@ fn keep_item(item: &mut DashboardLayoutItem, hidden: &HashSet<ConditionTarget>) 
 }
 
 /// Applies displayed row and tab state to a layout that also holds `hidden`
-/// items, translating each displayed active tab back to its position among
+/// items. It changes each displayed active tab back to its position among
 /// all of the group's tabs.
 fn sync_state(
     items: &mut [DashboardLayoutItem],
@@ -1178,7 +1179,7 @@ mod tests {
         };
         let titles: Vec<_> = group.tabs.iter().map(|tab| tab.title.as_str()).collect();
         assert_eq!(titles, ["B", "C"]);
-        // The active tab was hidden, so the first remaining tab is active.
+        // `hidden` holds the active tab, so the first visible tab is active.
         assert_eq!(group.active, Some(0));
         assert_eq!(group.tabs[0].children, [auto_grid(vec![2])]);
         assert_eq!(shown.visible_panel_indices(), [2]);
@@ -1217,7 +1218,7 @@ mod tests {
 
         assert_eq!(layout.tabs(TabGroupId::new(0)).unwrap().active, Some(2));
         assert!(layout.row(RowId::new(0)).unwrap().collapsed);
-        // Showing every tab again keeps "C" active.
+        // When every tab shows again, "C" stays active.
         let shown = layout.without(&HashSet::new());
         assert_eq!(shown.tabs(TabGroupId::new(0)).unwrap().active, Some(2));
     }

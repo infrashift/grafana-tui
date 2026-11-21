@@ -1,12 +1,12 @@
 //! Checked numeric conversions (ADR-0002, rule R10).
 //!
-//! This module is the one place in production code that uses `as`. Each
+//! This module is the one place in non-test code that uses `as`. Each
 //! float-to-integer function maps NaN to 0, clamps the value to the target
-//! range and then cuts the fraction. That is the result of the `as` cast that
+//! range and then cuts the part after the decimal point. That is the result of the `as` cast that
 //! it replaces. Each integer-to-float function rounds to the nearest float, as
 //! `as` does. The integer-to-integer functions saturate at the range ends.
 
-/// Converts `value` to `u8`. NaN gives 0. The result saturates at the range ends and has no fraction.
+/// Converts `value` to `u8`. NaN gives 0. The result saturates at the range ends and is a whole number.
 #[allow(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
@@ -30,7 +30,7 @@ pub(crate) fn f32_to_u8(value: f32) -> u8 {
     result
 }
 
-/// Converts `value` to `u16`. NaN gives 0. The result saturates at the range ends and has no fraction.
+/// Converts `value` to `u16`. NaN gives 0. The result saturates at the range ends and is a whole number.
 #[allow(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
@@ -54,7 +54,7 @@ pub(crate) fn f64_to_u16(value: f64) -> u16 {
     result
 }
 
-/// Converts `value` to `u32`. NaN gives 0. The result saturates at the range ends and has no fraction.
+/// Converts `value` to `u32`. NaN gives 0. The result saturates at the range ends and is a whole number.
 #[allow(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
@@ -78,7 +78,7 @@ pub(crate) fn f64_to_u32(value: f64) -> u32 {
     result
 }
 
-/// Converts `value` to `u64`. NaN gives 0. The result saturates at the range ends and has no fraction.
+/// Converts `value` to `u64`. NaN gives 0. The result saturates at the range ends and is a whole number.
 #[allow(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
@@ -101,7 +101,7 @@ pub(crate) fn f64_to_u64(value: f64) -> u64 {
     result
 }
 
-/// Converts `value` to `usize`. NaN gives 0. The result saturates at the range ends and has no fraction.
+/// Converts `value` to `usize`. NaN gives 0. The result saturates at the range ends and is a whole number.
 #[allow(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
@@ -123,7 +123,7 @@ pub(crate) fn f64_to_usize(value: f64) -> usize {
     result
 }
 
-/// Converts `value` to `i64`. NaN gives 0. The result saturates at the range ends and has no fraction.
+/// Converts `value` to `i64`. NaN gives 0. The result saturates at the range ends and is a whole number.
 #[allow(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
@@ -148,7 +148,7 @@ pub(crate) fn f64_to_i64(value: f64) -> i64 {
     result
 }
 
-/// Converts `value` to the nearest `f64`. A value above 2^53 can lose precision.
+/// Converts `value` to the nearest `f64`. Above 2^53, not every integer has an exact `f64`.
 #[allow(
     clippy::as_conversions,
     clippy::cast_precision_loss,
@@ -158,7 +158,7 @@ pub(crate) fn u64_to_f64(value: u64) -> f64 {
     value as f64
 }
 
-/// Converts `value` to the nearest `f64`. A value above 2^53 can lose precision.
+/// Converts `value` to the nearest `f64`. Above 2^53, not every integer has an exact `f64`.
 #[allow(
     clippy::as_conversions,
     clippy::cast_precision_loss,
@@ -168,7 +168,7 @@ pub(crate) fn usize_to_f64(value: usize) -> f64 {
     value as f64
 }
 
-/// Converts `value` to the nearest `f64`. A value of more than 2^53 in size can lose precision.
+/// Converts `value` to the nearest `f64`. Not every integer of more than 2^53 in size has an exact `f64`.
 #[allow(
     clippy::as_conversions,
     clippy::cast_precision_loss,
@@ -178,7 +178,7 @@ pub(crate) fn i64_to_f64(value: i64) -> f64 {
     value as f64
 }
 
-/// Converts `value` to the nearest `f32`. A value above 2^24 can lose precision.
+/// Converts `value` to the nearest `f32`. Above 2^24, not every integer has an exact `f32`.
 #[allow(
     clippy::as_conversions,
     clippy::cast_precision_loss,

@@ -127,7 +127,7 @@ fn one_or_many<'de, D: serde::Deserializer<'de>>(
     Ok(paths)
 }
 
-/// Expands a path starting with `~` to the user's home directory.
+/// Expands a path that starts with `~` to the user's home directory.
 pub(crate) fn expand_path(path: &std::path::Path) -> PathBuf {
     let path_str = path.to_string_lossy();
     if path_str.starts_with("~")
