@@ -35,6 +35,7 @@ The code now follows the NASA Power of 10 rules for safety-critical code (see th
 - **demo/sshadowforge:** Young histograms, counts without decimals, honest empty states
 - **p10:** Report the layout limit cuts and turn on the R1 gate (ISSUE-003)
 - **export:** No NaN coordinates for NaN or huge values (ISSUE-011)
+- **ci:** Install the pinned toolchain with each release target
 - **deps:** Update quinn, rustls, rustls-webpki, webpki-roots and zstd for 18 advisories
 
 ### 📚 Documentation

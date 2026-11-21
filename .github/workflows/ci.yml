@@ -26,8 +26,8 @@ jobs:
           persist-credentials: false
       - name: Install Rust
         run: |
-          rustup toolchain install stable --profile minimal --component clippy,rustfmt,llvm-tools-preview
-          rustup default stable
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal --component clippy,rustfmt,llvm-tools-preview
       # The registry, the build tree and the two cargo-installed dev tools.
       # `make tools` skips a tool that is already installed at its version.
       - uses: actions/cache@v4
@@ -60,8 +60,8 @@ jobs:
           persist-credentials: false
       - name: Install Rust
         run: |
-          rustup toolchain install stable --profile minimal --component clippy
-          rustup default stable
+          $channel = (Select-String -Path rust-toolchain.toml -Pattern '^channel = "(.*)"').Matches[0].Groups[1].Value
+          rustup toolchain install $channel --profile minimal --component clippy
       - run: cargo build --locked
       - run: cargo clippy --locked --all-targets -- -D warnings
 
@@ -75,8 +75,8 @@ jobs:
           persist-credentials: false
       - name: Install Rust
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal
       - run: make tidy
       - run: make package
       - name: Archive holds a working binary at its root
