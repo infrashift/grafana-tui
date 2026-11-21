@@ -378,7 +378,7 @@ fn parse_auto_grid_item(
     let repeat = parse_repeat(item_spec, &item_spec_path)?;
     let (element_name, element) = resolve_element_reference(item_spec, elements, &item_spec_path)?;
     let element_path = format!("spec.elements[{element_name:?}]");
-    // Auto grid items are positioned when projected, so the panel has no grid.
+    // The layout positions auto grid items when it projects them, so the panel has no grid.
     let panel = parse_panel(element, &element_path, None, diagnostics)?;
     debug_assert!(
         diagnostics.len() >= before,
@@ -520,8 +520,8 @@ fn parse_row_header<'a>(
     let variables =
         normalize_variables(row_spec, &format!("{row_spec_path}.variables"), diagnostics)?;
 
-    // `fillScreen` stretches a row to the browser viewport; terminal rows already
-    // size to their content, so the flag is validated and otherwise ignored.
+    // `fillScreen` stretches a row to the browser viewport. Terminal rows already
+    // size to their content, so the parser validates the flag and then ignores it.
     optional_bool_from(row_spec, "fillScreen", &row_spec_path)?;
 
     let child_path = format!("{row_spec_path}.layout");
@@ -753,7 +753,7 @@ fn normalize_option_variable(
     })
 }
 
-/// Values of a variable's saved `options`, excluding Grafana's `$__all` entry.
+/// Values of a variable's saved `options`, without Grafana's `$__all` entry.
 fn option_values(spec: &JsonObject) -> Vec<String> {
     let options = spec.get("options").and_then(Value::as_array);
     let values: Vec<String> = options
@@ -825,10 +825,10 @@ fn require_object_from<'a>(
         .ok_or_else(|| anyhow!("invalid Grafana V2 resource at {path}: expected an object"))
 }
 
-/// Returns the array at `key`, treating an absent or `null` value as empty.
+/// Returns the array at `key`. An absent or `null` value gives an empty array.
 ///
 /// Grafana's resource API serializes unset slices as `null`, and its frontend
-/// exporter drops empty fields, so neither can be distinguished from `[]`.
+/// exporter drops empty fields, so the parser cannot tell either of them from `[]`.
 fn optional_array_from<'a>(object: &'a JsonObject, key: &str, path: &str) -> Result<&'a [Value]> {
     debug_assert!(
         !key.is_empty() && !key.contains('.'),
@@ -842,7 +842,7 @@ fn optional_array_from<'a>(object: &'a JsonObject, key: &str, path: &str) -> Res
     }
 }
 
-/// Returns the object at `key`, treating an absent or `null` value as `None`.
+/// Returns the object at `key`. An absent or `null` value gives `None`.
 fn optional_object_from<'a>(
     object: &'a JsonObject,
     key: &str,
@@ -1000,8 +1000,8 @@ fn parse_repeat(spec: &JsonObject, spec_path: &str) -> Result<Option<model::Repe
 
 /// Reads the `conditionalRendering` group of a row, tab, or auto grid item spec.
 ///
-/// Condition kinds grafana-tui does not know are skipped with a diagnostic, which
-/// leaves them undecided, as Grafana treats conditions it cannot evaluate.
+/// The parser skips condition kinds that grafana-tui does not know, with a diagnostic.
+/// This leaves them undecided, as Grafana treats conditions it cannot evaluate.
 fn parse_condition_group(
     spec: &JsonObject,
     spec_path: &str,
@@ -1417,12 +1417,12 @@ fn field_defaults_from(defaults: RawFieldDefaults, panel_path: &str) -> model::F
     converted
 }
 
-/// Validates the shape of an inline V2 panel before typed deserialization.
+/// Validates the shape of an inline V2 panel before serde reads it into types.
 ///
-/// Only `vizConfig.group` and each query's `group` are required: without them the
-/// renderer and datasource are unknown. Every other container may be absent or
-/// `null` in real exports and is defaulted, but a present value of the wrong type
-/// is still rejected at its native path.
+/// Only `vizConfig.group` and each query's `group` must be present. Without them,
+/// the renderer and the datasource are unknown. Real exports can omit any other
+/// container or set it to `null`, and then it takes its default. But this function
+/// still rejects a present value of the wrong type at its native path.
 fn validate_panel_structure(element: &JsonObject, path: &str) -> Result<()> {
     debug_assert!(
         path.starts_with("spec.elements["),
@@ -1542,7 +1542,7 @@ fn non_empty_json_value(value: &Value) -> bool {
 
 /// Deserializes an absent or `null` field as its type's default.
 ///
-/// Pair with `#[serde(default)]` so missing fields also take the default.
+/// Pair with `#[serde(default)]` so that absent fields also take the default.
 fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,

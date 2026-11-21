@@ -24,7 +24,7 @@ mod import;
 mod model;
 mod v2;
 
-/// Result of importing a Grafana dashboard.
+/// Result of a Grafana dashboard import.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DashboardImport {
     /// Dashboard title.
@@ -33,10 +33,10 @@ pub(crate) struct DashboardImport {
     pub(crate) queries: Vec<QueryPanel>,
     /// Recursive layout of panels and rows.
     pub(crate) layout: crate::dashboard::DashboardLayout,
-    /// Variables extracted from `templating.list`, formatted for interpolation.
+    /// Variables from `templating.list`, in the format that queries interpolate.
     pub(crate) vars: HashMap<String, String>,
-    /// Raw selected values per variable, before formatting into `vars`; `All`
-    /// selects every known option. Repeats iterate these and titles show them.
+    /// Raw selected values per variable, before the import formats them into `vars`.
+    /// `All` selects every known option. Repeats iterate these and titles show them.
     pub(crate) var_values: HashMap<String, Vec<String>>,
     /// Multi-value and include-all variables, whose values are regex-escaped.
     pub(crate) regex_vars: HashSet<String>,
@@ -44,7 +44,7 @@ pub(crate) struct DashboardImport {
     pub(crate) all_vars: HashSet<String>,
     /// Names of every variable the dashboard defines.
     pub(crate) variable_names: HashSet<String>,
-    /// Conditional rendering of rows, tabs, and auto grid items in `layout`.
+    /// The `conditionalRendering` of rows, tabs, and auto grid items in `layout`.
     pub(crate) conditions: crate::conditions::Conditions,
     /// Variables that rows and tabs in `layout` define for their contents.
     pub(crate) sections: HashMap<crate::dashboard::SectionId, Vec<SectionVariable>>,
@@ -52,15 +52,15 @@ pub(crate) struct DashboardImport {
     pub(crate) repeats: crate::dashboard::Repeats,
     /// Dynamic query variables extracted from `templating.list`.
     pub(crate) query_vars: Vec<TemplateQueryVar>,
-    /// Number of panels that were skipped (unsupported types).
+    /// Number of panels that the import skipped (unsupported types).
     pub(crate) skipped_panels: usize,
     /// Dashboard-level refresh interval in milliseconds, if provided.
     pub(crate) refresh_rate_ms: Option<u64>,
-    /// Warnings produced while importing the dashboard.
+    /// Warnings that the dashboard import produced.
     pub(crate) diagnostics: Vec<ImportDiagnostic>,
 }
 
-/// A warning produced while importing a Grafana dashboard.
+/// A warning that a Grafana dashboard import produces.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ImportDiagnostic {
     /// Stable diagnostic code.
@@ -100,9 +100,9 @@ pub(crate) struct TemplateQueryVar {
     pub(crate) regex: Option<String>,
     /// JSON-ish source path for the variable query.
     pub(crate) query_path: String,
-    /// Whether `All` is selected, so every resolved value is used.
+    /// Whether the variable selects `All`, so that queries use every resolved value.
     pub(crate) select_all: bool,
-    /// Replaces the resolved values when `All` is selected, if set.
+    /// Replaces the resolved values when the variable selects `All`, if set.
     pub(crate) all_value: Option<String>,
     /// Whether values are regex-escaped, as for multi-value or include-all variables.
     pub(crate) regex_values: bool,
@@ -120,8 +120,8 @@ pub(crate) enum VariableRefresh {
     OnTimeRangeChange,
 }
 
-/// A variable that a V2 row or tab defines for itself and its contents,
-/// shadowing a dashboard variable of the same name.
+/// A variable that a V2 row or tab defines for itself and its contents. It
+/// hides a dashboard variable of the same name.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SectionVariable {
     pub(crate) name: String,
@@ -129,9 +129,9 @@ pub(crate) struct SectionVariable {
     pub(crate) values: Vec<String>,
     /// Whether values are regex-escaped, as for multi-value or include-all variables.
     pub(crate) regex: bool,
-    /// Whether `All` is selected.
+    /// Whether the variable selects `All`.
     pub(crate) all: bool,
-    /// Replaces the values in queries while `All` is selected, if set.
+    /// Replaces the values in queries while the variable selects `All`, if set.
     pub(crate) all_value: Option<String>,
     /// Prometheus query that resolves the values, for query variables.
     pub(crate) query: Option<TemplateQueryVar>,
@@ -165,7 +165,7 @@ pub(crate) struct GridPos {
     pub(crate) h: i32,
 }
 
-/// Serialization of a dashboard file, chosen from its extension.
+/// The file format of a dashboard file, chosen from its extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DocumentFormat {
     Json,
@@ -216,7 +216,7 @@ pub(crate) struct DashboardSet {
     /// Every dashboard's panels and variables, under one tab group whose tabs
     /// are the dashboards, in order. Dashboard variables are the tabs' variables.
     pub(crate) combined: DashboardImport,
-    /// The tab group holding one tab per dashboard.
+    /// The tab group that has one tab per dashboard.
     pub(crate) root: crate::dashboard::TabGroupId,
     /// Each dashboard imported alone, in order: its title, refresh rate,
     /// variables and diagnostics, exactly as a single dashboard.
@@ -315,7 +315,7 @@ fn import_document(data: &str, format: DocumentFormat) -> Result<DashboardImport
 /// Parses a dashboard document into JSON values.
 ///
 /// Grafana exports Classic dashboards as JSON and V2 resources as JSON or YAML.
-/// Both formats feed the same importer, so YAML is converted to `serde_json::Value`.
+/// Both formats feed the same importer, so this function converts YAML to `serde_json::Value`.
 fn parse_document(data: &str, format: DocumentFormat) -> Result<Value> {
     debug_assert!(
         crate::num::usize_to_u64(data.len()) <= crate::limits::MAX_DASHBOARD_BYTES,
@@ -449,7 +449,7 @@ struct VariableScan<'a> {
 
 impl VariableScan<'_> {
     /// Checks the `${name}` reference that `braced` starts after its `{`.
-    /// Returns the text after the `}`, or `None` when the `}` is missing.
+    /// Returns the text after the `}`, or `None` when there is no `}`.
     fn braced_variable<'t>(&mut self, braced: &'t str) -> Option<&'t str> {
         let (inner, remainder) = braced.split_once('}')?;
         debug_assert!(
@@ -857,8 +857,8 @@ mod tests {
         }
     }
 
-    /// `v2_grafana13_autogrid.json` was authored through Grafana 13.2.3's V2 API: two
-    /// rows, each holding an auto grid, one with named and one with custom sizes.
+    /// `v2_grafana13_autogrid.json` comes from Grafana 13.2.3's V2 API: two
+    /// rows, each with an auto grid, one with named and one with custom sizes.
     #[test]
     fn v2_grafana13_auto_grids_import_sizes_in_terminal_units() {
         let dashboard = parse_grafana_dashboard(include_str!(
@@ -1014,8 +1014,8 @@ mod tests {
         }
     }
 
-    /// A V2 dashboard with one panel querying `expr`, refreshing every
-    /// `auto_refresh`, and an `instance` variable resolved by `instance_query`.
+    /// A V2 dashboard with one panel that queries `expr` and refreshes every
+    /// `auto_refresh`, and an `instance` variable that `instance_query` resolves.
     fn v2_dashboard(title: &str, auto_refresh: &str, expr: &str, instance_query: &str) -> String {
         let mut json = valid_v2_resource();
         make_v2_panel_importable(&mut json);
@@ -1057,7 +1057,7 @@ mod tests {
         assert_eq!(group.active, Some(0));
         let titles: Vec<&str> = group.tabs.iter().map(|tab| tab.title.as_str()).collect();
         assert_eq!(titles, ["Nodes", "Consul"]);
-        // Panels are numbered across dashboards, so their indices do not collide.
+        // The import numbers panels across dashboards, so their indices do not collide.
         let exprs: Vec<&str> = set
             .combined
             .queries
@@ -1080,7 +1080,7 @@ mod tests {
         assert_eq!(instance_query(0), "label_values(node_uname_info, instance)");
         assert_eq!(instance_query(1), "label_values(consul_up, instance)");
 
-        // Each file also imports alone, as a single dashboard would.
+        // Each file also imports alone, with the same result as a single dashboard.
         let refresh: Vec<_> = set
             .files
             .iter()
@@ -1224,8 +1224,8 @@ mod tests {
         );
     }
 
-    /// `v2_grafana13_sections.json` was authored through Grafana 13.2.3's V2 API:
-    /// a row shadowing the dashboard's `quantile`, and a row whose `handler`
+    /// `v2_grafana13_sections.json` comes from Grafana 13.2.3's V2 API:
+    /// a row that hides the dashboard's `quantile`, and a row whose `handler`
     /// query variable drives a repeat.
     #[test]
     fn v2_grafana13_section_variables_fixture_imports_per_row() {
@@ -2057,7 +2057,7 @@ mod tests {
         assert_eq!(v2.vars.get("region"), classic.vars.get("region"));
     }
 
-    /// Applies a named malformation to `v2_compatibility.json`'s only panel.
+    /// Applies the named bad-input case to `v2_compatibility.json`'s only panel.
     fn v2_compatibility_with_panel_case(case: &str) -> serde_json::Value {
         let mut json: serde_json::Value = serde_json::from_str(include_str!(
             "../tests/fixtures/grafana/v2_compatibility.json"
@@ -2347,11 +2347,11 @@ mod tests {
         }
     }
 
-    /// `v2_grafana13_export.json` is a dashboard authored through Grafana 13.2.3's
-    /// `dashboard.grafana.app/v2` API and read back unchanged apart from dropping
-    /// `status`, so it carries the server's real serialization: unset slices are
-    /// `null`, `vizConfig.version` is empty, and the query-less text panel's query
-    /// group has an empty `kind`.
+    /// `v2_grafana13_export.json` holds a dashboard that went through Grafana 13.2.3's
+    /// `dashboard.grafana.app/v2` API and came back unchanged, apart from the removed
+    /// `status`. So it has the server's real JSON output. Unset slices are `null`,
+    /// `vizConfig.version` is empty, and the query-less text panel's query group
+    /// has an empty `kind`.
     #[test]
     fn v2_grafana13_export_imports_server_serialized_nulls() {
         let dashboard = parse_grafana_dashboard(include_str!(
@@ -2383,8 +2383,8 @@ mod tests {
     }
 
     /// `v2_grafana13_external_export.json` applies Grafana's "Share dashboard with
-    /// another instance" rules to the export above: query datasources are replaced
-    /// by export labels and query variable selections are cleared.
+    /// another instance" rules to the export above. The rules replace the query
+    /// datasources with export labels and clear the query variable selections.
     #[test]
     fn v2_grafana13_external_export_resolves_variables_dynamically() {
         let dashboard = parse_grafana_dashboard(include_str!(
@@ -2747,9 +2747,9 @@ mod tests {
         );
     }
 
-    /// `v2_grafana13_conditional.json` was authored through Grafana 13.2.3's V2 API
-    /// with variable, data, and time range conditions on rows, tabs, and an auto
-    /// grid item.
+    /// `v2_grafana13_conditional.json` comes from Grafana 13.2.3's V2 API. It has
+    /// variable, data, and time range conditions on rows, tabs, and an auto grid
+    /// item.
     #[test]
     fn v2_grafana13_conditional_rendering_fixture_imports_every_group() {
         use crate::conditions::Condition;
@@ -2912,7 +2912,7 @@ mod tests {
                 .get(&(crate::dashboard::TabGroupId::new(0), 0)),
             Some(&dc)
         );
-        // Without a saved selection, the first option is selected.
+        // Without a saved selection, the import selects the first option.
         assert_eq!(
             dashboard.var_values.get("dc"),
             Some(&vec!["eu".to_string()])
@@ -3121,7 +3121,7 @@ mod tests {
         );
     }
 
-    /// What an import means for the dashboard, leaving out source paths, which
+    /// What an import means for the dashboard, without source paths, which
     /// differ between the Classic and V2 formats.
     fn import_semantics(import: &DashboardImport) -> String {
         let panels: Vec<String> = import
@@ -3305,7 +3305,7 @@ mod tests {
             dashboard.vars.get("job"),
             Some(&"node-exporter".to_string())
         );
-        // Several selected values become a regex alternation, as in Grafana.
+        // Several selected values become a regex `(a|b)` group, as in Grafana.
         assert_eq!(
             dashboard.vars.get("instance").map(String::as_str),
             Some("(server1|server2)")
@@ -3427,7 +3427,7 @@ mod tests {
         let tuned = &dashboard.queries[0].resolution;
         assert_eq!(tuned.min_interval.as_deref(), Some(">1m"));
         assert_eq!(tuned.max_data_points, Some(300));
-        // Hidden targets are dropped, so intervals stay parallel to exprs.
+        // The import drops hidden targets, so intervals stay parallel to exprs.
         assert_eq!(
             tuned.target_min_intervals,
             [Some("30s".to_string()), None, Some("$min_step".to_string())]
