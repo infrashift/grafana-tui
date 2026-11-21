@@ -32,7 +32,7 @@ grafana-tui can be configured with CLI options, a TOML configuration file, or bo
 | `--autogrid-color <COLOR>` | Color for automatic graph grid lines and labels | theme grid color |
 | `--export-dir <DIR>` | Directory for exports and recordings | `./grafana-tui-exports` |
 | `--export-format <FORMAT>` | `svg`, `png`, or `both` | `svg` |
-| `--record-max-frames <COUNT>` | Maximum changed frames per recording | `300` |
+| `--record-max-frames <COUNT>` | Maximum changed frames per recording (1 to 100000) | `300` |
 | `--refresh-rate <MS>` | Data fetch interval in milliseconds, for every dashboard | the dashboard's auto-refresh, else `1000` |
 | `--config <FILE>` | Configuration file path | none |
 
