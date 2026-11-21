@@ -18,7 +18,7 @@ use super::data::{QueryIntervals, expand_expr};
 use crate::grafana::{TemplateQueryVar, VariableRefresh};
 use crate::limits::MAX_VARIABLE_VALUES;
 use crate::prom;
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, ensure};
 use regex::Regex;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -49,6 +49,7 @@ pub(crate) fn substitute_variables<L: VariableLookup>(text: &str, mut lookup: L)
         let Some((before, after)) = rest.split_once('$') else {
             break;
         };
+        debug_assert!(after.len() < rest.len(), "each pass makes the rest shorter");
         out.push_str(before);
         let (name, remainder) = if let Some(braced) = after.strip_prefix('{') {
             braced.split_once('}').unwrap_or(("", after))
@@ -58,6 +59,10 @@ pub(crate) fn substitute_variables<L: VariableLookup>(text: &str, mut lookup: L)
                 .unwrap_or(after.len());
             after.split_at_checked(end).unwrap_or((after, ""))
         };
+        debug_assert!(
+            remainder.len() <= after.len(),
+            "the text after the name is a part of the text after the dollar sign"
+        );
         let value = (!name.is_empty() && name.chars().all(is_variable_name_char))
             .then(|| lookup.lookup(name))
             .flatten();
@@ -73,6 +78,10 @@ pub(crate) fn substitute_variables<L: VariableLookup>(text: &str, mut lookup: L)
         }
     }
     out.push_str(rest);
+    debug_assert!(
+        text.contains('$') || out == text,
+        "a text without references stays the same"
+    );
     out
 }
 
@@ -87,7 +96,7 @@ fn is_variable_name_char(ch: char) -> bool {
 /// otherwise each value is regex-escaped for use inside a PromQL string, and
 /// several values become an alternation such as `(a|b)`.
 pub(crate) fn format_prometheus_values(values: &[String], regex: bool) -> String {
-    match values {
+    let formatted = match values {
         [] => String::new(),
         [value] if !regex => value.clone(),
         [value] => prometheus_regex_escape(value),
@@ -99,7 +108,16 @@ pub(crate) fn format_prometheus_values(values: &[String], regex: bool) -> String
                 .collect::<Vec<_>>()
                 .join("|")
         ),
-    }
+    };
+    debug_assert!(
+        formatted.len() >= values.iter().map(String::len).sum::<usize>(),
+        "the formatted text keeps each character of the values"
+    );
+    debug_assert!(
+        values.len() < 2 || (formatted.starts_with('(') && formatted.ends_with(')')),
+        "several values become one group"
+    );
+    formatted
 }
 
 /// Grafana's `prometheusSpecialRegexEscape`: backslashes become four backslashes
@@ -116,6 +134,14 @@ fn prometheus_regex_escape(value: &str) -> String {
             _ => out.push(ch),
         }
     }
+    debug_assert!(
+        out.len() >= value.len(),
+        "the escape never removes characters"
+    );
+    debug_assert!(
+        out.chars().last() == value.chars().last(),
+        "the escaped text ends with the last character of the value"
+    );
     out
 }
 
@@ -169,6 +195,16 @@ pub(crate) fn parse_custom_variable_values(query: &str, json: bool) -> Vec<Strin
         }
     }
     push(&mut current);
+    debug_assert!(
+        values.len() <= query.len(),
+        "each custom value has one character or more of the query"
+    );
+    debug_assert!(
+        values
+            .iter()
+            .all(|value| !value.is_empty() && value.trim() == value),
+        "each custom value is trimmed and not empty"
+    );
     values
 }
 
@@ -244,12 +280,24 @@ pub(crate) async fn refresh_query_variables(
             Some(all_value) if query_var.select_all => all_value.clone(),
             _ => format_prometheus_values(&selected, query_var.regex_values),
         };
+        debug_assert!(
+            !selected.is_empty() && selected.len() <= MAX_VARIABLE_VALUES,
+            "the selection has one value or more and is in the value limit"
+        );
         if var_values.get(&query_var.name) != Some(&selected) {
             changed.push(&query_var.name);
         }
         vars.insert(query_var.name.clone(), formatted);
         var_values.insert(query_var.name.clone(), selected);
     }
+    debug_assert!(
+        report.queried.len() <= query_vars.len(),
+        "each variable is queried one time or less"
+    );
+    debug_assert!(
+        report.errors.len() <= report.queried.len(),
+        "only a queried variable can fail"
+    );
     report
 }
 
@@ -263,16 +311,34 @@ fn cap_values(name: &str, mut values: Vec<String>, report: &mut VariableReport) 
             format!("kept the first {MAX_VARIABLE_VALUES} of {count} values (the value limit)"),
         ));
     }
+    debug_assert!(
+        values.len() <= MAX_VARIABLE_VALUES,
+        "the values are in the value limit"
+    );
+    debug_assert_eq!(
+        values.len(),
+        count.min(MAX_VARIABLE_VALUES),
+        "the cut keeps the values below the limit"
+    );
     values
 }
 
 /// Whether `update` queries `query_var` for its own sake.
 fn is_due(query_var: &TemplateQueryVar, update: VariableUpdate) -> bool {
-    match update {
+    let due = match update {
         VariableUpdate::Load => true,
         VariableUpdate::TimeRangeChange => query_var.refresh == VariableRefresh::OnTimeRangeChange,
         VariableUpdate::Tick => false,
-    }
+    };
+    debug_assert!(
+        due || update != VariableUpdate::Load,
+        "a load queries each variable"
+    );
+    debug_assert!(
+        !due || update != VariableUpdate::Tick,
+        "a tick queries only the dependent variables"
+    );
+    due
 }
 
 /// The selection from the non-empty `values`, or `None` when no value remains.
@@ -288,6 +354,7 @@ fn select_values(
     if values.is_empty() {
         return None;
     }
+    let count = values.len();
     if query_var.select_all {
         return Some(values);
     }
@@ -301,6 +368,11 @@ fn select_values(
         }
         _ => values.into_iter().take(1).collect(),
     };
+    debug_assert!(!selected.is_empty(), "the selection has one value or more");
+    debug_assert!(
+        selected.len() <= count,
+        "the selection is not larger than the offered values"
+    );
     Some(selected)
 }
 
@@ -326,8 +398,16 @@ fn references_any(query: &str, names: &[&str]) -> bool {
         found: false,
     };
     if !names.is_empty() {
-        substitute_variables(query, &mut probe);
+        let unchanged = substitute_variables(query, &mut probe);
+        debug_assert_eq!(
+            unchanged, query,
+            "the probe resolves no variable, so the query stays the same"
+        );
     }
+    debug_assert!(
+        !probe.found || !names.is_empty(),
+        "a reference is found only for a name in the list"
+    );
     probe.found
 }
 
@@ -342,9 +422,11 @@ async fn resolve_query_variable(
         intervals,
         end_ts,
     } = *context;
+    debug_assert!(!intervals.step.is_zero(), "the query step is not zero");
     let expanded_query = expand_expr(&query_var.query, range, intervals, vars);
     let query = parse_prometheus_variable_query(&expanded_query)?;
     let start_ts = end_ts - crate::num::u64_to_i64(range.as_secs());
+    debug_assert!(start_ts <= end_ts, "the time window starts before it ends");
     let values = match query {
         PrometheusVariableQuery::LabelValues { metric, label } => {
             prometheus
@@ -378,11 +460,16 @@ fn parse_prometheus_variable_query(query: &str) -> Result<PrometheusVariableQuer
     }
 
     if let Some(args) = call_args(query, "query_result") {
+        ensure!(
+            !args.trim().is_empty(),
+            "the query_result variable query has no expression"
+        );
         return Ok(PrometheusVariableQuery::QueryResult(
             args.trim().to_string(),
         ));
     }
 
+    ensure!(!query.trim().is_empty(), "the variable query is empty");
     Ok(PrometheusVariableQuery::QueryResult(
         query.trim().to_string(),
     ))
@@ -392,6 +479,11 @@ fn call_args<'a>(query: &'a str, name: &str) -> Option<&'a str> {
     let query = query.trim();
     let rest = query.strip_prefix(name)?.trim_start();
     let inner = rest.strip_prefix('(')?.strip_suffix(')')?;
+    debug_assert!(!name.is_empty(), "the function name is not empty");
+    debug_assert!(
+        inner.len() + name.len() + 2 <= query.len(),
+        "the arguments are inside the call text"
+    );
     Some(inner)
 }
 
@@ -413,7 +505,18 @@ fn split_top_level_args(args: &str) -> Vec<&str> {
     }
 
     parts.push(args.get(start..).unwrap_or_default().trim());
-    parts.into_iter().filter(|part| !part.is_empty()).collect()
+    let parts: Vec<&str> = parts.into_iter().filter(|part| !part.is_empty()).collect();
+    debug_assert!(
+        parts.len() <= args.matches(',').count() + 1,
+        "each argument ends at a comma or at the end"
+    );
+    debug_assert!(
+        parts
+            .iter()
+            .all(|part| !part.is_empty() && part.trim() == *part),
+        "each argument is trimmed and not empty"
+    );
+    parts
 }
 
 fn apply_regex(values: Vec<String>, regex: Option<&str>) -> Result<Vec<String>> {
@@ -425,9 +528,14 @@ fn apply_regex(values: Vec<String>, regex: Option<&str>) -> Result<Vec<String>> 
         .strip_prefix('/')
         .and_then(|regex| regex.rsplit_once('/').map(|(pattern, _)| pattern))
         .unwrap_or(regex);
+    debug_assert!(
+        pattern.len() <= regex.len(),
+        "the pattern is a part of the regex text"
+    );
     let regex = Regex::new(pattern)?;
 
-    Ok(values
+    let count = values.len();
+    let matched: Vec<String> = values
         .into_iter()
         .filter_map(|value| {
             let captures = regex.captures(&value)?;
@@ -436,7 +544,12 @@ fn apply_regex(values: Vec<String>, regex: Option<&str>) -> Result<Vec<String>> 
                 .or_else(|| captures.get(0))
                 .map(|matched| matched.as_str().to_string())
         })
-        .collect())
+        .collect();
+    debug_assert!(
+        matched.len() <= count,
+        "the regex keeps one value or less for each value"
+    );
+    Ok(matched)
 }
 
 #[cfg(test)]
