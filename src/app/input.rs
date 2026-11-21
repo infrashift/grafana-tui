@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-use super::state::{AppMode, AppState, YAxisMode};
+use super::state::{AppMode, AppState, MAX_ZOOM_RANGE, YAxisMode};
 use crate::annotations::AnnotationModal;
 use crate::dashboard::{DashboardItemId, TabGroupId};
 use crate::limits::MAX_SEARCH_CHARS;
@@ -42,6 +42,8 @@ pub(super) async fn handle_key(
     terminal_size: Size,
     app: &mut AppState,
 ) -> Result<InputAction> {
+    debug_assert!(app.one_dialog_or_less(), "one dialog or less is open");
+    debug_assert!(app.search_is_consistent(), "the search state is consistent");
     // Raw mode delivers Ctrl+C as a key rather than SIGINT.
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return Ok(InputAction::Quit);
@@ -63,24 +65,7 @@ pub(super) async fn handle_key(
         return Ok(handle_theme_picker_key(key, terminal_size, app));
     }
 
-    // Shift is part of the key, so only Ctrl and Alt rule out the binding.
-    if key.code == KeyCode::Char('T')
-        && !key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        && app.mode != AppMode::Search
-    {
-        app.open_theme_picker();
-        return Ok(InputAction::Redraw);
-    }
-
-    if key.code == KeyCode::Char('t') && key.modifiers.is_empty() && app.mode != AppMode::Search {
-        app.open_tag_filter_modal();
-        return Ok(InputAction::Redraw);
-    }
-
-    if key.code == KeyCode::Char('a') && key.modifiers.is_empty() && app.mode != AppMode::Search {
-        app.annotations.toggle_visibility();
+    if handle_overlay_key(key, app) {
         return Ok(InputAction::Redraw);
     }
 
@@ -91,7 +76,45 @@ pub(super) async fn handle_key(
         AppMode::FullscreenInspect => handle_fullscreen_inspect_key(key, app),
         AppMode::Normal => handle_normal_key(key, terminal_size, app).await?,
     };
+    debug_assert!(
+        app.selection_in_panels(),
+        "the selected panel is in the panel list"
+    );
     Ok(action)
+}
+
+/// Opens the theme picker or the tag filter, or shows or hides the
+/// annotations. Returns `false` when `key` does none of these.
+fn handle_overlay_key(key: KeyEvent, app: &mut AppState) -> bool {
+    debug_assert!(
+        app.annotation_modal.is_none() && app.theme_picker.is_none(),
+        "no dialog is open"
+    );
+    let plain = key.modifiers.is_empty() && app.mode != AppMode::Search;
+    // Shift is part of the key, so only Ctrl and Alt rule out the binding.
+    let handled = if key.code == KeyCode::Char('T')
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        && app.mode != AppMode::Search
+    {
+        app.open_theme_picker();
+        true
+    } else if key.code == KeyCode::Char('t') && plain {
+        app.open_tag_filter_modal();
+        true
+    } else if key.code == KeyCode::Char('a') && plain {
+        app.annotations.toggle_visibility();
+        true
+    } else {
+        false
+    };
+    debug_assert!(app.one_dialog_or_less(), "one dialog or less is open");
+    debug_assert!(
+        app.theme_picker_in_range(),
+        "the theme picker selects a theme of the list"
+    );
+    handled
 }
 
 fn handle_annotation_modal_key(
@@ -99,6 +122,11 @@ fn handle_annotation_modal_key(
     terminal_size: Size,
     app: &mut AppState,
 ) -> InputAction {
+    debug_assert!(
+        app.annotation_modal.is_some(),
+        "the annotation modal is open"
+    );
+    debug_assert!(app.theme_picker.is_none(), "the theme picker is closed");
     match key.code {
         KeyCode::Esc => app.annotation_modal = None,
         KeyCode::Enter => {
@@ -144,6 +172,7 @@ fn handle_annotation_modal_key(
 }
 
 fn handle_theme_picker_key(key: KeyEvent, terminal_size: Size, app: &mut AppState) -> InputAction {
+    debug_assert!(app.theme_picker.is_some(), "the theme picker is open");
     let page = isize::try_from(ui::theme_picker_page_size(terminal_size, app)).unwrap_or(1);
     match key.code {
         KeyCode::Enter => app.close_theme_picker(true),
@@ -156,6 +185,10 @@ fn handle_theme_picker_key(key: KeyEvent, terminal_size: Size, app: &mut AppStat
         KeyCode::End => app.move_theme_picker(isize::MAX),
         _ => {}
     }
+    debug_assert!(
+        app.theme_picker_in_range(),
+        "the theme picker selects a theme of the list"
+    );
     InputAction::Redraw
 }
 
@@ -180,6 +213,11 @@ pub(super) async fn handle_mouse(
         }
         _ => {}
     }
+    debug_assert!(app.one_dialog_or_less(), "one dialog or less is open");
+    debug_assert!(
+        app.selection_in_panels(),
+        "the selected panel is in the panel list"
+    );
     Ok(InputAction::Redraw)
 }
 
@@ -215,6 +253,14 @@ fn select_at_mouse(mouse: MouseEvent, terminal_size: Size, app: &mut AppState) -
         app.mode = AppMode::FullscreenInspect;
         place_cursor_at_column(app, item.rect, mouse.column);
     }
+    debug_assert!(
+        app.selection_in_panels(),
+        "the selected panel is in the panel list"
+    );
+    debug_assert!(
+        app.mode != AppMode::Fullscreen,
+        "a click in the fullscreen mode starts the inspect mode"
+    );
     Ok(())
 }
 
@@ -228,13 +274,22 @@ fn clicked_tab(
         return None;
     };
     let group = app.layout.tabs(group_id)?;
+    debug_assert!(
+        group.active.is_none_or(|active| active < group.tabs.len()),
+        "the active tab is in the tab group"
+    );
     let titles = group
         .tabs
         .iter()
         .map(|tab| tab.title.clone())
         .collect::<Vec<_>>();
     let geometry = ui::tab_bar_geometry(item.rect, &titles, group.active, depth);
-    ui::tab_at(&geometry, position).map(|index| (group_id, index))
+    let index = ui::tab_at(&geometry, position)?;
+    debug_assert!(
+        index < group.tabs.len(),
+        "the clicked tab is in the tab group"
+    );
+    Some((group_id, index))
 }
 
 /// Moves the inspect cursor to the time at `column` in the chart of `rect`.
@@ -244,7 +299,13 @@ fn place_cursor_at_column(app: &mut AppState, rect: Rect, column: u16) {
         let relative_x = f64::from(column.saturating_sub(rect.x + 1));
         let fraction = (relative_x / chart_width).clamp(0.0, 1.0);
         let (start_ts, _) = app.time_bounds();
-        app.cursor_x = Some(start_ts + fraction * app.range.as_secs_f64());
+        let cursor = start_ts + fraction * app.range.as_secs_f64();
+        debug_assert!(cursor.is_finite(), "the cursor time is a finite number");
+        debug_assert!(
+            cursor >= start_ts,
+            "the cursor is not before the time window"
+        );
+        app.cursor_x = Some(cursor);
     }
 }
 
@@ -280,11 +341,20 @@ fn handle_search_key(key: KeyEvent, terminal_size: Size, app: &mut AppState) -> 
         }
         _ => {}
     }
+    debug_assert!(app.search_is_consistent(), "the search state is consistent");
+    debug_assert!(
+        app.mode == AppMode::Search || app.search_query.is_empty(),
+        "the search text is empty outside the search mode"
+    );
     InputAction::Redraw
 }
 
 fn handle_inspect_key(key: KeyEvent, app: &mut AppState) -> InputAction {
-    match key.code {
+    debug_assert!(
+        app.mode == AppMode::Inspect,
+        "the app is in the inspect mode"
+    );
+    let action = match key.code {
         KeyCode::Enter => {
             app.open_rendered_annotation_cluster();
             InputAction::Redraw
@@ -304,10 +374,19 @@ fn handle_inspect_key(key: KeyEvent, app: &mut AppState) -> InputAction {
         }
         KeyCode::Char('q') => InputAction::Quit,
         _ => InputAction::Redraw,
-    }
+    };
+    debug_assert!(
+        app.mode == AppMode::Inspect || app.cursor_x.is_none(),
+        "the cursor stays only in the inspect mode"
+    );
+    action
 }
 
 async fn handle_fullscreen_key(key: KeyEvent, app: &mut AppState) -> Result<InputAction> {
+    debug_assert!(
+        app.mode == AppMode::Fullscreen,
+        "the app is in the fullscreen mode"
+    );
     let action = match key.code {
         KeyCode::Esc | KeyCode::Char('f') | KeyCode::Enter => {
             app.mode = AppMode::Normal;
@@ -328,11 +407,19 @@ async fn handle_fullscreen_key(key: KeyEvent, app: &mut AppState) -> Result<Inpu
         }
         _ => shared_key_action(handle_shared_keys(key, app).await?),
     };
+    debug_assert!(
+        app.mode != AppMode::FullscreenInspect || app.cursor_x.is_some(),
+        "the inspect mode starts with a cursor"
+    );
     Ok(action)
 }
 
 fn handle_fullscreen_inspect_key(key: KeyEvent, app: &mut AppState) -> InputAction {
-    match key.code {
+    debug_assert!(
+        app.mode == AppMode::FullscreenInspect,
+        "the app is in the fullscreen inspect mode"
+    );
+    let action = match key.code {
         KeyCode::Enter => {
             app.open_rendered_annotation_cluster();
             InputAction::Redraw
@@ -356,7 +443,12 @@ fn handle_fullscreen_inspect_key(key: KeyEvent, app: &mut AppState) -> InputActi
         }
         KeyCode::Char('q') => InputAction::Quit,
         _ => InputAction::Redraw,
-    }
+    };
+    debug_assert!(
+        app.mode == AppMode::FullscreenInspect || app.cursor_x.is_none(),
+        "the cursor stays only in the inspect mode"
+    );
+    action
 }
 
 async fn handle_normal_key(
@@ -364,6 +456,7 @@ async fn handle_normal_key(
     terminal_size: Size,
     app: &mut AppState,
 ) -> Result<InputAction> {
+    debug_assert!(app.mode == AppMode::Normal, "the app is in the normal mode");
     if handle_selection_key(key, app)? {
         ensure_selected_item_visible(terminal_size, app);
         return Ok(InputAction::Redraw);
@@ -410,12 +503,18 @@ async fn handle_normal_key(
         }
         _ => shared_key_action(handle_shared_keys(key, app).await?),
     };
+    debug_assert!(
+        !matches!(app.mode, AppMode::Fullscreen | AppMode::Inspect)
+            || app.selected_panel_index().is_some(),
+        "the fullscreen and inspect modes show a selected panel"
+    );
     Ok(action)
 }
 
 /// Moves the selection, opens and closes rows, or changes the tab or
 /// dashboard. Returns `false` when `key` does none of these.
 fn handle_selection_key(key: KeyEvent, app: &mut AppState) -> Result<bool> {
+    debug_assert!(app.mode == AppMode::Normal, "the app is in the normal mode");
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => app.select_previous_item(),
         KeyCode::Down | KeyCode::Char('j') => app.select_next_item(),
@@ -440,6 +539,10 @@ fn handle_selection_key(key: KeyEvent, app: &mut AppState) -> Result<bool> {
         }
         _ => return Ok(false),
     }
+    debug_assert!(
+        app.selection_in_panels(),
+        "the selected panel is in the panel list"
+    );
     Ok(true)
 }
 
@@ -449,7 +552,16 @@ fn ensure_selected_item_visible(terminal_size: Size, app: &mut AppState) {
 }
 
 async fn handle_shared_keys(key: KeyEvent, app: &mut AppState) -> Result<SharedKeyResult> {
+    debug_assert!(
+        matches!(app.mode, AppMode::Normal | AppMode::Fullscreen),
+        "the shared keys apply in the normal and fullscreen modes"
+    );
+    let range = app.range;
     if shift_time_window(key, app) {
+        debug_assert!(
+            app.range <= range.max(MAX_ZOOM_RANGE),
+            "a zoom keeps the range in its limit"
+        );
         app.start_refresh();
         return Ok(SharedKeyResult::Handled);
     }
@@ -475,38 +587,67 @@ async fn handle_shared_keys(key: KeyEvent, app: &mut AppState) -> Result<SharedK
 /// Returns `false` when `key` does none of these.
 fn shift_time_window(key: KeyEvent, app: &mut AppState) -> bool {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let window = (app.range, app.time_offset);
     match key.code {
         KeyCode::Char('+') => app.zoom_out(),
         KeyCode::Char('-') => app.zoom_in(),
         KeyCode::Char('[') | KeyCode::Left if shift => app.pan_left(),
         KeyCode::Char(']') | KeyCode::Right if shift => app.pan_right(),
         KeyCode::Char('0') => app.reset_to_live(),
-        _ => return false,
+        _ => {
+            debug_assert_eq!(
+                (app.range, app.time_offset),
+                window,
+                "another key keeps the time window"
+            );
+            return false;
+        }
     }
+    debug_assert!(
+        key.code != KeyCode::Char('0') || app.is_live(),
+        "the 0 key goes back to the live mode"
+    );
     true
 }
 
 /// Switches the y-axis mode of the selected panel.
 fn toggle_selected_y_axis(app: &mut AppState) {
+    debug_assert!(
+        app.selection_in_panels(),
+        "the selected panel is in the panel list"
+    );
     if let Some(panel) = app
         .selected_panel_index()
         .and_then(|index| app.panels.get_mut(index))
     {
+        let before = panel.y_axis_mode;
         panel.y_axis_mode = match panel.y_axis_mode {
             YAxisMode::Auto => YAxisMode::ZeroBased,
             YAxisMode::ZeroBased => YAxisMode::Auto,
         };
+        debug_assert_ne!(panel.y_axis_mode, before, "the y-axis mode changes");
     }
 }
 
 fn shared_key_action(result: SharedKeyResult) -> InputAction {
-    match result {
+    let action = match result {
         SharedKeyResult::Handled | SharedKeyResult::Unhandled => InputAction::Redraw,
         SharedKeyResult::Quit => InputAction::Quit,
-    }
+    };
+    debug_assert_eq!(
+        matches!(result, SharedKeyResult::Quit),
+        action == InputAction::Quit,
+        "only the quit key quits"
+    );
+    action
 }
 
 fn update_search_results(app: &mut AppState) {
+    debug_assert!(app.mode == AppMode::Search, "the app is in the search mode");
+    debug_assert!(
+        app.search_query.chars().count() <= MAX_SEARCH_CHARS,
+        "the search text is in its limit"
+    );
     if app.search_query.is_empty() {
         app.search_results.clear();
         return;
@@ -545,6 +686,10 @@ fn update_search_results(app: &mut AppState) {
 }
 
 fn toggle_series_visibility(app: &mut AppState, c: char) {
+    debug_assert!(
+        app.selection_in_panels(),
+        "the selected panel is in the panel list"
+    );
     let Some(digit) = c.to_digit(10) else {
         return;
     };
@@ -559,6 +704,10 @@ fn toggle_series_visibility(app: &mut AppState, c: char) {
         for series in &mut panel.series {
             series.visible = true;
         }
+        debug_assert!(
+            panel.series.iter().all(|series| series.visible),
+            "the 0 key shows each series"
+        );
     } else {
         let idx = usize::try_from(digit - 1).ok();
         if let Some(series) = idx.and_then(|idx| panel.series.get_mut(idx)) {
