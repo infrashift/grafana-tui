@@ -59,8 +59,9 @@ impl<'a> GraphView<'a> {
         cursor_x: Option<f64>,
     ) -> Self {
         let (start, now) = app.time_bounds();
+        debug_assert!(start <= now, "the time range starts before it ends");
         let x_bounds = [start, now];
-        Self {
+        let view = Self {
             panel,
             x_bounds,
             y_bounds: calculate_y_bounds(panel),
@@ -73,7 +74,24 @@ impl<'a> GraphView<'a> {
                 .map(|(value, color)| (value, app.theme.threshold_color(color)))
                 .collect(),
             thresholds_dashed: thresholds_dashed(app, panel),
-        }
+        };
+        let [lower, upper] = view.y_bounds;
+        debug_assert!(lower <= upper, "the y bounds are in order");
+        debug_assert!(
+            view.colors.len() == panel.series.len(),
+            "each series has a color"
+        );
+        debug_assert!(
+            view.cursor_values.len() <= panel.series.len(),
+            "no more than one cursor value for each series"
+        );
+        debug_assert!(
+            view.events
+                .iter()
+                .all(|event| (start..=now).contains(&event.timestamp_secs())),
+            "each annotation event is in the time range"
+        );
+        view
     }
 
     /// Returns true when the panel has annotation events or series points to draw.
@@ -98,7 +116,8 @@ impl<'a> GraphView<'a> {
 
     /// Returns the legend labels as series index and text.
     pub(crate) fn legend_labels(&self, mode: LegendMode) -> Vec<(usize, String)> {
-        self.panel
+        let labels: Vec<(usize, String)> = self
+            .panel
             .series
             .iter()
             .enumerate()
@@ -114,7 +133,25 @@ impl<'a> GraphView<'a> {
                 }
                 (index, label)
             })
-            .collect()
+            .collect();
+        let count = self.panel.series.len();
+        debug_assert!(
+            labels
+                .iter()
+                .zip(labels.iter().skip(1))
+                .all(|(a, b)| a.0 < b.0)
+                && labels.last().is_none_or(|(index, _)| *index < count),
+            "the label indexes are series indexes in increasing order"
+        );
+        debug_assert!(
+            mode == LegendMode::VisibleOnly || labels.len() == count,
+            "the full legend has a label for each series"
+        );
+        debug_assert!(
+            mode == LegendMode::VisibleOnly || labels.iter().all(|(_, label)| !label.is_empty()),
+            "each label of the full legend has text"
+        );
+        labels
     }
 }
 
@@ -125,17 +162,28 @@ impl AppState {
         panel_index: usize,
         panel: &'a PanelState,
     ) -> GraphView<'a> {
+        debug_assert!(
+            self.cursor_x.is_none_or(f64::is_finite),
+            "the cursor is at a finite time"
+        );
         GraphView::build(self, panel_index, panel, self.cursor_x)
     }
 }
 
 /// Returns zero when the y range contains zero, else the lower y bound.
 pub(super) fn area_fill_baseline(y_bounds: [f64; 2]) -> f64 {
-    if y_bounds[0] <= 0.0 && y_bounds[1] >= 0.0 {
+    let [lower, upper] = y_bounds;
+    debug_assert!(lower <= upper, "the y bounds are in order");
+    let baseline = if lower <= 0.0 && upper >= 0.0 {
         0.0
     } else {
-        y_bounds[0]
-    }
+        lower
+    };
+    debug_assert!(
+        (lower..=upper).contains(&baseline),
+        "the baseline is inside the y bounds"
+    );
+    baseline
 }
 
 /// Returns the annotation events of a graph panel in the time range `x_bounds`.
@@ -168,6 +216,10 @@ fn cursor_values(
         return values;
     };
     let max_distance = app.default_intervals().step.as_secs_f64() * 2.0;
+    debug_assert!(
+        max_distance.is_finite() && max_distance >= 0.0,
+        "the cursor distance is finite and not negative"
+    );
     for series in &panel.series {
         let closest = series.points.iter().min_by(|a, b| {
             let da = (a.0 - cursor_x).abs();
@@ -180,13 +232,21 @@ fn cursor_values(
             values.insert(series.name.clone(), *value);
         }
     }
+    debug_assert!(
+        values.len() <= panel.series.len(),
+        "no more than one cursor value for each series"
+    );
     values
 }
 
 /// Returns the color of each series: the palette, or a name hash when the palette is too short.
 fn series_colors(panel: &PanelState, theme: &Theme) -> Vec<Color> {
+    debug_assert!(
+        !theme.palette.is_empty(),
+        "a theme palette has at least one color"
+    );
     let use_hash_colors = panel.series.len() > theme.palette.len();
-    panel
+    let colors: Vec<Color> = panel
         .series
         .iter()
         .enumerate()
@@ -197,7 +257,12 @@ fn series_colors(panel: &PanelState, theme: &Theme) -> Vec<Color> {
                 theme.palette_color(index)
             }
         })
-        .collect()
+        .collect();
+    debug_assert!(
+        colors.len() == panel.series.len(),
+        "each series has a color"
+    );
+    colors
 }
 
 /// Returns the value and the configured color of each threshold step that has a value.
@@ -205,7 +270,7 @@ pub(super) fn threshold_steps(panel: &PanelState) -> Vec<(f64, Color)> {
     let Some(thresholds) = &panel.thresholds else {
         return Vec::new();
     };
-    thresholds
+    let steps: Vec<(f64, Color)> = thresholds
         .steps
         .iter()
         .filter_map(|step| {
@@ -220,7 +285,17 @@ pub(super) fn threshold_steps(panel: &PanelState) -> Vec<(f64, Color)> {
             };
             Some((value, step.color))
         })
-        .collect()
+        .collect();
+    debug_assert!(
+        steps.len()
+            == thresholds
+                .steps
+                .iter()
+                .filter(|step| step.value.is_some())
+                .count(),
+        "each threshold step with a value gives one entry"
+    );
+    steps
 }
 
 /// Returns true when the threshold marker or the panel threshold style is dashed.

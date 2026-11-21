@@ -101,6 +101,14 @@ fn chart_plot_left(
     }
     .min(chart_area.width / 3);
     let gutter = labels_left_of_y_axis + y_axis_offset;
+    debug_assert!(
+        has_y_axis_labels || y_label_width == 0,
+        "a chart without y labels has no y label width"
+    );
+    debug_assert!(
+        gutter <= chart_area.width / 3 + 1,
+        "the gutter is no wider than a third of the chart and the axis column"
+    );
 
     chart_area.left() + gutter
 }
@@ -197,6 +205,13 @@ struct ChartFrame<'a> {
 impl ChartFrame<'_> {
     /// Returns a chart with the graph axes and the datasets `datasets`.
     fn overlay_chart<'d>(&self, datasets: Vec<Dataset<'d>>) -> Chart<'d> {
+        let ([x_start, x_end], [y_start, y_end]) = (self.view.x_bounds, self.view.y_bounds);
+        debug_assert!(x_start <= x_end, "the x bounds are in order");
+        debug_assert!(y_start <= y_end, "the y bounds are in order");
+        debug_assert!(
+            self.x_labels.len() == 2,
+            "the x axis has a label at each end"
+        );
         let theme = &self.app.theme;
         Chart::new(datasets)
             .x_axis(
@@ -240,6 +255,10 @@ pub(super) fn render_graph_panel(
     }
     let (chart_area, legend_area, show_legend) = layout_areas(area, view.has_legend());
     let chart = chart_frame(app, &view, chart_area);
+    debug_assert!(
+        !show_legend || view.has_legend(),
+        "the panel shows a legend only when it has one"
+    );
     let cursor_line = cursor_x.map_or_else(Vec::new, |cx| {
         vec![(cx, view.y_bounds[0]), (cx, view.y_bounds[1])]
     });
@@ -283,6 +302,18 @@ fn layout_areas(area: Rect, has_legend: bool) -> (Rect, Rect, bool) {
     let legend_height = if has_legend && area.height > 5 { 2 } else { 0 };
     let [chart, legend] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(legend_height)]).areas(area);
+    debug_assert!(
+        chart.width == area.width && legend.width == area.width,
+        "the chart and the legend have the width of the panel"
+    );
+    debug_assert!(
+        chart.height.saturating_add(legend.height) == area.height,
+        "the chart and the legend fill the panel height"
+    );
+    debug_assert!(
+        legend.height == legend_height,
+        "the legend gets the rows that it reserves"
+    );
     (chart, legend, legend_height > 0)
 }
 
@@ -310,6 +341,12 @@ fn chart_frame<'a>(app: &'a AppState, view: &'a GraphView<'a>, area: Rect) -> Ch
         chart_y_label_width(&y_labels),
         &x_labels,
         !y_labels.is_empty(),
+    );
+    debug_assert!(left >= area.left(), "the plot starts in the chart area");
+    debug_assert!(plot_height >= 1, "the plot has at least one row");
+    debug_assert!(
+        show_autogrid || value_ticks.is_empty(),
+        "a chart without the autogrid has no value ticks"
     );
     ChartFrame {
         app,
@@ -344,6 +381,11 @@ fn axis_y_labels(view: &GraphView<'_>, plot_height: u16, color: Color) -> Vec<Sp
     if let Some(last) = labels.last_mut() {
         *last = Span::styled(display.format_number(view.y_bounds[1]), style);
     }
+    debug_assert!(
+        labels.len() == y_axis_height,
+        "the y axis has a label slot for each row"
+    );
+    debug_assert!(labels.len() >= 2, "the y axis has a label at each end");
     labels
 }
 
@@ -404,6 +446,15 @@ fn build_datasets<'d>(
                 .push(braille_dataset(cursor_line, GraphType::Line, cursor_color));
         }
     }
+    let cursor_count = usize::from(!cursor_line.is_empty());
+    debug_assert!(
+        layers.chart.len() == view.colors.len() + cursor_count,
+        "the chart has a dataset for each series and the cursor"
+    );
+    debug_assert!(
+        layers.strong.len() <= layers.chart.len(),
+        "the data mask has no more datasets than the chart"
+    );
     layers
 }
 
@@ -414,6 +465,18 @@ fn render_main_chart(
     datasets: Vec<Dataset<'_>>,
     strong_datasets: Vec<Dataset<'_>>,
 ) -> Option<Buffer> {
+    debug_assert!(
+        strong_datasets.len() <= datasets.len(),
+        "the data mask has no more datasets than the chart"
+    );
+    debug_assert!(
+        datasets.len() >= chart.view.colors.len(),
+        "each series has a dataset"
+    );
+    debug_assert!(
+        chart.plot.left >= chart.area.left() && chart.plot.right == chart.area.right(),
+        "the plot is in the chart area"
+    );
     // The chart fills its plot with the style's background, or reset without one.
     let main_chart = chart
         .overlay_chart(datasets)
@@ -429,6 +492,18 @@ fn render_main_chart(
 /// Renders the threshold markers, the autogrid and the intermediate y labels over the chart.
 fn render_overlay(frame: &mut Frame, chart: &ChartFrame<'_>, strong_data_buf: Option<&Buffer>) {
     let view = chart.view;
+    debug_assert!(
+        strong_data_buf.is_none_or(|mask| mask.area == chart.area),
+        "the data mask has the chart area"
+    );
+    debug_assert!(
+        chart.show_autogrid || chart.value_ticks.is_empty(),
+        "a chart without the autogrid has no value ticks"
+    );
+    debug_assert!(
+        view.thresholds.len() <= view.panel.thresholds.as_ref().map_or(0, |t| t.steps.len()),
+        "no more than one threshold value for each step"
+    );
     render_threshold_overlay(frame, chart, strong_data_buf);
     render_raw_threshold_lines(
         frame,
@@ -457,6 +532,14 @@ fn render_threshold_overlay(
         return;
     }
     let points = threshold_datasets(&view.thresholds, view.thresholds_dashed, view.x_bounds);
+    debug_assert!(
+        points.len() == view.thresholds.len(),
+        "each threshold has a line"
+    );
+    debug_assert!(
+        view.thresholds_dashed || !marker_name.starts_with("dashed"),
+        "a dashed marker gives dashed threshold lines"
+    );
     let (marker, graph_type) = threshold_marker(marker_name);
     let datasets: Vec<_> = view
         .thresholds
@@ -471,6 +554,10 @@ fn render_threshold_overlay(
                 .data(data)
         })
         .collect();
+    debug_assert!(
+        datasets.len() == points.len(),
+        "each threshold line has a dataset"
+    );
     // Data curves keep precedence wherever both map to the same terminal cell.
     if datasets.is_empty() || chart.plot.top > chart.plot.bottom {
         return;
@@ -486,8 +573,13 @@ fn render_threshold_overlay(
 /// Renders the autogrid lines on the blank plot cells and the time labels below them.
 fn render_autogrid(frame: &mut Frame, chart: &ChartFrame<'_>) {
     let (view, plot) = (chart.view, chart.plot);
+    debug_assert!(plot.top <= plot.bottom, "the plot has at least one row");
     let [start, now] = view.x_bounds;
     let plot_width = plot.right.saturating_sub(plot.left);
+    debug_assert!(
+        plot_width <= chart.area.width,
+        "the plot is not wider than the chart"
+    );
     let time_ticks = calculate_time_grid_ticks(start, now, plot_width);
     let grid_lines = build_autogrid_datasets(
         view.x_bounds,
@@ -496,6 +588,10 @@ fn render_autogrid(frame: &mut Frame, chart: &ChartFrame<'_>) {
         &chart.value_ticks,
         plot_width,
         chart.plot_height,
+    );
+    debug_assert!(
+        grid_lines.len() <= time_ticks.len() + chart.value_ticks.len(),
+        "each grid line comes from a tick"
     );
     let grid_color = chart.app.grid_color();
     let datasets = grid_lines
@@ -518,11 +614,20 @@ fn render_autogrid(frame: &mut Frame, chart: &ChartFrame<'_>) {
 /// Renders the autogrid and threshold value labels on the y axis.
 fn render_y_labels(frame: &mut Frame, chart: &ChartFrame<'_>) {
     let view = chart.view;
+    debug_assert!(!is_y_axis_hidden(&view.options), "the y axis is visible");
     let width = y_label_width(
         &chart.y_labels,
         &chart.value_ticks,
         &view.thresholds,
         &view.panel.display,
+    );
+    debug_assert!(
+        width >= chart_y_label_width(&chart.y_labels),
+        "the label width holds each axis label"
+    );
+    debug_assert!(
+        chart.value_ticks.len() <= 5,
+        "the value grid has five or fewer ticks"
     );
     render_intermediate_y_labels(
         frame,
@@ -549,6 +654,14 @@ fn render_legend_or_detail(
     view: &GraphView<'_>,
     theme: &Theme,
 ) {
+    debug_assert!(
+        view.colors.len() == view.panel.series.len(),
+        "each series has a color"
+    );
+    debug_assert!(
+        active_annotation.is_none_or(|cluster| !cluster.events.is_empty()),
+        "the active cluster has an event"
+    );
     if let Some(cluster) = active_annotation {
         let [heading, details] = format_cluster_detail_lines(cluster, usize::from(area.width));
         let detail_style = Style::default().fg(theme.annotation);
@@ -570,6 +683,10 @@ fn render_legend_or_detail(
             ]
         })
         .collect();
+    debug_assert!(
+        legend_items.len() == view.panel.series.len().saturating_mul(2),
+        "each series has a legend mark and a legend label"
+    );
     let legend = Paragraph::new(Line::from(legend_items)).wrap(Wrap { trim: true });
     frame.render_widget(legend, area);
 }

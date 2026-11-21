@@ -32,7 +32,18 @@ pub(super) fn nice_grid_step(range: f64, target_lines: usize) -> f64 {
     } else {
         10.0
     };
-    nice_fraction * magnitude
+    let step = nice_fraction * magnitude;
+    // A subnormal magnitude or an overflow loses the precision of the checks.
+    let precise = magnitude.is_normal() && step.is_finite();
+    debug_assert!(
+        !precise || step >= raw_step * (1.0 - 1e-9),
+        "the nice step is not finer than the raw step"
+    );
+    debug_assert!(
+        !precise || step <= raw_step * 2.5 * (1.0 + 1e-9),
+        "the nice step is no more than 2.5 times the raw step"
+    );
+    step
 }
 
 pub(super) fn build_autogrid_datasets(

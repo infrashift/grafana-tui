@@ -127,7 +127,21 @@ impl ThemeSpec {
 
     /// Parses each configured single-color role into `theme`, and names the key on error.
     fn apply_roles(&self, theme: &mut Theme) -> Result<()> {
-        for (role, value, slot) in self.role_slots(theme) {
+        let slots = self.role_slots(theme);
+        debug_assert!(
+            slots.iter().enumerate().all(|(index, (role, _, _))| {
+                slots
+                    .iter()
+                    .take(index)
+                    .all(|(before, _, _)| before != role)
+            }),
+            "each role key is unique"
+        );
+        debug_assert!(
+            slots.iter().all(|(role, _, _)| !role.is_empty()),
+            "each role has a key"
+        );
+        for (role, value, slot) in slots {
             if let Some(value) = value {
                 *slot = parse_theme_color(value).with_context(|| format!("`{role}`"))?;
             }
@@ -138,10 +152,19 @@ impl ThemeSpec {
 
 /// Builds every configured theme, so a mistake in any of them surfaces at startup.
 pub(crate) fn custom_themes(specs: &BTreeMap<String, ThemeSpec>) -> Result<Vec<Theme>> {
-    specs
+    let themes = specs
         .iter()
         .map(|(name, spec)| build(name, spec).with_context(|| format!("theme `{name}`")))
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    debug_assert!(
+        themes.len() == specs.len(),
+        "each theme table gives one theme"
+    );
+    debug_assert!(
+        themes.iter().all(|theme| !theme.palette.is_empty()),
+        "each user theme has a palette color"
+    );
+    Ok(themes)
 }
 
 fn build(name: &str, spec: &ThemeSpec) -> Result<Theme> {
@@ -174,6 +197,11 @@ fn build(name: &str, spec: &ThemeSpec) -> Result<Theme> {
             .collect::<Result<_>>()
             .context("`palette`")?;
     }
+    debug_assert!(theme.name == name, "the theme has the name of its table");
+    debug_assert!(
+        !theme.palette.is_empty(),
+        "a user theme has a palette color"
+    );
     Ok(theme)
 }
 
@@ -184,6 +212,7 @@ pub(crate) fn parse_theme_color(value: &str) -> Result<Color> {
         && hex.chars().all(|digit| digit.is_ascii_hexdigit())
     {
         let rgb = u32::from_str_radix(hex, 16).with_context(|| format!("`{value}`"))?;
+        debug_assert!(rgb <= 0x00ff_ffff, "six hex digits give a 24-bit color");
         return Ok(super::rgb(rgb));
     }
     Ok(match value.to_ascii_lowercase().as_str() {

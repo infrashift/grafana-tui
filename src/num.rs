@@ -17,7 +17,17 @@ pub(crate) fn f32_to_u8(value: f32) -> u8 {
     if value.is_nan() {
         return 0;
     }
-    value.clamp(0.0, f32::from(u8::MAX)) as u8
+    let clamped = value.clamp(0.0, f32::from(u8::MAX));
+    debug_assert!(
+        (0.0..=f32::from(u8::MAX)).contains(&clamped),
+        "the clamped value is in the u8 range"
+    );
+    let result = clamped as u8;
+    debug_assert!(
+        (clamped - f32::from(result)).abs() < 1.0,
+        "the conversion removes no more than the fraction"
+    );
+    result
 }
 
 /// Converts `value` to `u16`. NaN gives 0. The result saturates at the range ends and has no fraction.
@@ -31,7 +41,17 @@ pub(crate) fn f64_to_u16(value: f64) -> u16 {
     if value.is_nan() {
         return 0;
     }
-    value.clamp(0.0, f64::from(u16::MAX)) as u16
+    let clamped = value.clamp(0.0, f64::from(u16::MAX));
+    debug_assert!(
+        (0.0..=f64::from(u16::MAX)).contains(&clamped),
+        "the clamped value is in the u16 range"
+    );
+    let result = clamped as u16;
+    debug_assert!(
+        (clamped - f64::from(result)).abs() < 1.0,
+        "the conversion removes no more than the fraction"
+    );
+    result
 }
 
 /// Converts `value` to `u32`. NaN gives 0. The result saturates at the range ends and has no fraction.
@@ -45,7 +65,17 @@ pub(crate) fn f64_to_u32(value: f64) -> u32 {
     if value.is_nan() {
         return 0;
     }
-    value.clamp(0.0, f64::from(u32::MAX)) as u32
+    let clamped = value.clamp(0.0, f64::from(u32::MAX));
+    debug_assert!(
+        (0.0..=f64::from(u32::MAX)).contains(&clamped),
+        "the clamped value is in the u32 range"
+    );
+    let result = clamped as u32;
+    debug_assert!(
+        (clamped - f64::from(result)).abs() < 1.0,
+        "the conversion removes no more than the fraction"
+    );
+    result
 }
 
 /// Converts `value` to `u64`. NaN gives 0. The result saturates at the range ends and has no fraction.
@@ -61,7 +91,14 @@ pub(crate) fn f64_to_u64(value: f64) -> u64 {
         return 0;
     }
     // `u64::MAX as f64` is 2^64. The cast of 2^64 saturates to `u64::MAX`.
-    value.clamp(0.0, u64::MAX as f64) as u64
+    let clamped = value.clamp(0.0, u64::MAX as f64);
+    debug_assert!(clamped >= 0.0, "the clamped value is not negative");
+    let result = clamped as u64;
+    debug_assert!(
+        (clamped - u64_to_f64(result)).abs() < 1.0,
+        "the conversion removes no more than the fraction"
+    );
+    result
 }
 
 /// Converts `value` to `usize`. NaN gives 0. The result saturates at the range ends and has no fraction.
@@ -76,7 +113,14 @@ pub(crate) fn f64_to_usize(value: f64) -> usize {
     if value.is_nan() {
         return 0;
     }
-    value.clamp(0.0, usize::MAX as f64) as usize
+    let clamped = value.clamp(0.0, usize::MAX as f64);
+    debug_assert!(clamped >= 0.0, "the clamped value is not negative");
+    let result = clamped as usize;
+    debug_assert!(
+        (clamped - usize_to_f64(result)).abs() < 1.0,
+        "the conversion removes no more than the fraction"
+    );
+    result
 }
 
 /// Converts `value` to `i64`. NaN gives 0. The result saturates at the range ends and has no fraction.
@@ -91,7 +135,17 @@ pub(crate) fn f64_to_i64(value: f64) -> i64 {
         return 0;
     }
     // `i64::MAX as f64` is 2^63. The cast of 2^63 saturates to `i64::MAX`.
-    value.clamp(i64::MIN as f64, i64::MAX as f64) as i64
+    let clamped = value.clamp(i64::MIN as f64, i64::MAX as f64);
+    let result = clamped as i64;
+    debug_assert!(
+        (clamped - i64_to_f64(result)).abs() < 1.0,
+        "the conversion removes no more than the fraction"
+    );
+    debug_assert!(
+        i64_to_f64(result).abs() <= clamped.abs(),
+        "the conversion rounds toward zero"
+    );
+    result
 }
 
 /// Converts `value` to the nearest `f64`. A value above 2^53 can lose precision.
