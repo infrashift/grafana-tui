@@ -94,8 +94,8 @@ STE_SCAN  := $(LEXISCOPE) scan --ruleset ste-100 --ruleset vocabulary.cue --fail
 @wiki:
     $(OKFW) validate --all
 
-## check: run each gate that CI runs (lint, tests, coverage and the rule gates)
-@check: fmt lint test test-install cover-check p10 wiki
+## check: run every gate: fmt, lint, tests, coverage, p10, wiki and docs-style
+@check: fmt lint test test-install cover-check p10 wiki docs-style
 
 # install.sh extracts the binary by name from the root of the archive. The
 # binary is at the top level of the tarball, next to the license files.

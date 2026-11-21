@@ -1,12 +1,12 @@
 name: Release
 
-# Cut a release by pushing a version tag that matches Cargo.toml (see
+# To make a release, push a version tag that agrees with Cargo.toml (see
 # RELEASE_PROCESS.md):
 #
 #   git tag vX.Y.Z && git push origin vX.Y.Z
 #
-# Every build job is read-only. Only `publish` can write, and it only creates
-# this tag's GitHub release, with the archives and the checksum manifest that
+# Each build job can only read. Only `publish` can write. It makes only the
+# GitHub release of this tag, with the archives and the checksum manifest that
 # install.sh verifies.
 on:
   push:
