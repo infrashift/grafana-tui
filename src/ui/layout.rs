@@ -17,7 +17,8 @@
 use crate::{
     app::{AppMode, AppState, GridUnit, PanelState},
     dashboard::{
-        DashboardAutoGrid, DashboardItemId, DashboardLayoutItem, DashboardTabs, RowId, TabGroupId,
+        DashboardAutoGrid, DashboardItemId, DashboardLayoutItem, DashboardTabs, MAX_LAYOUT_DEPTH,
+        MAX_LAYOUT_STEPS, RowId, TabGroupId,
     },
 };
 use ratatui::prelude::*;
@@ -452,6 +453,8 @@ pub(crate) fn scroll_selected_into_view(area: Rect, app: &mut AppState) {
     };
 }
 
+/// Lays out `items` and their children from `cursor_y` down, and gives the y
+/// below them. A stack of child lists replaces recursion.
 fn project_layout_items(
     items: &[DashboardLayoutItem],
     depth: usize,
@@ -461,39 +464,61 @@ fn project_layout_items(
     app: &AppState,
     output: &mut Vec<DashboardRect>,
 ) -> u16 {
-    let mut panels = Vec::new();
-    for item in items {
+    let mut frames = Vec::with_capacity(MAX_LAYOUT_DEPTH);
+    frames.push(ProjectFrame::new(items, depth));
+    for _ in 0..MAX_LAYOUT_STEPS {
+        let open_frames = frames.len();
+        let Some(frame) = frames.last_mut() else {
+            break;
+        };
+        let Some(item) = frame.items.next() else {
+            if !frame.panels.is_empty() {
+                cursor_y = project_panel_group(area, cursor_y, cell_h, app, &frame.panels, output);
+            }
+            frames.pop();
+            continue;
+        };
         if let DashboardLayoutItem::Panel(index) = item {
-            panels.push(*index);
+            frame.panels.push(*index);
             continue;
         }
-        if !panels.is_empty() {
-            cursor_y = project_panel_group(
-                area,
-                cursor_y,
-                cell_h,
-                app,
-                &std::mem::take(&mut panels),
-                output,
-            );
+        if !frame.panels.is_empty() {
+            let panels = std::mem::take(&mut frame.panels);
+            cursor_y = project_panel_group(area, cursor_y, cell_h, app, &panels, output);
         }
         let header = ItemCursor {
-            depth,
+            depth: frame.depth,
             area,
             cursor_y,
             cell_h,
         };
         let (next_y, nested) = project_item_header(item, &header, output);
         cursor_y = next_y;
-        if let Some((children, child_depth)) = nested {
-            cursor_y =
-                project_layout_items(children, child_depth, area, cursor_y, cell_h, app, output);
+        if let Some((children, child_depth)) = nested
+            && open_frames < MAX_LAYOUT_DEPTH
+        {
+            frames.push(ProjectFrame::new(children, child_depth));
         }
     }
-    if !panels.is_empty() {
-        cursor_y = project_panel_group(area, cursor_y, cell_h, app, &panels, output);
-    }
     cursor_y
+}
+
+/// A list of items to lay out, with the run of panels that waits for its grid.
+struct ProjectFrame<'a> {
+    items: std::slice::Iter<'a, DashboardLayoutItem>,
+    depth: usize,
+    panels: Vec<usize>,
+}
+
+impl<'a> ProjectFrame<'a> {
+    /// Starts a list of items at `depth`.
+    fn new(items: &'a [DashboardLayoutItem], depth: usize) -> Self {
+        Self {
+            items: items.iter(),
+            depth,
+            panels: Vec::new(),
+        }
+    }
 }
 
 /// The position of the next item in a dashboard projection.

@@ -25,8 +25,8 @@ use super::variables::{format_prometheus_values, substitute_variables};
 use crate::conditions::{ConditionGroup, ConditionTarget, Conditions};
 use crate::dashboard::{
     DashboardAutoGrid, DashboardLayout, DashboardLayoutItem, DashboardRow, DashboardTab,
-    DashboardTabs, LayoutWalk, Repeat, RepeatDirection, Repeats, RowId, SectionId, TabGroupId,
-    WalkScope,
+    DashboardTabs, LayoutWalk, MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES, MAX_LAYOUT_STEPS, Repeat,
+    RepeatDirection, Repeats, RowId, SectionId, TabGroupId, WalkScope, node_count,
 };
 use crate::grafana::{SectionVariable, TemplateQueryVar};
 
@@ -366,6 +366,8 @@ impl DashboardTemplate {
             variables,
             panels: Vec::new(),
             materialized_conditions: Vec::new(),
+            nodes: 0,
+            reserve: node_count(&self.layout.items),
         };
         let items = builder.items(&self.layout.items, &Scope::new(), true);
         let (panels, conditions, sections) = (
@@ -417,45 +419,244 @@ struct Builder<'a, 'v> {
     variables: &'a Variables<'v>,
     panels: Vec<PanelInstance>,
     materialized_conditions: Vec<MaterializedCondition>,
+    /// The layout items that the builder made so far.
+    nodes: usize,
+    /// The layout items of the template, which the first copies can still add.
+    reserve: usize,
 }
 
-impl Builder<'_, '_> {
+/// A list of template items that the builder expands, with the row or tab
+/// copy that holds it.
+struct BuildFrame<'a> {
+    items: std::slice::Iter<'a, DashboardLayoutItem>,
+    scope: Scope,
+    primary: bool,
+    output: Vec<DashboardLayoutItem>,
+    /// The run of sibling grid panels that waits for `panel_group`.
+    panels: Vec<usize>,
+    parent: BuildParent<'a>,
+}
+
+impl<'a> BuildFrame<'a> {
+    /// Starts the children of a copy.
+    fn new(items: &'a [DashboardLayoutItem], copy: RepeatCopy, parent: BuildParent<'a>) -> Self {
+        Self {
+            items: items.iter(),
+            scope: copy.scope,
+            primary: copy.primary,
+            output: Vec::new(),
+            panels: Vec::new(),
+            parent,
+        }
+    }
+
+    /// This frame, without its items when `open_frames` frames already fill
+    /// the stack. The builder leaves out the children past the depth limit.
+    fn within_depth(mut self, open_frames: usize) -> Self {
+        if open_frames >= MAX_LAYOUT_DEPTH {
+            self.items = std::slice::Iter::default();
+        }
+        self
+    }
+}
+
+/// The row or tab copy that holds a list of expanded items.
+enum BuildParent<'a> {
+    Root,
+    Row(RowCopies<'a>),
+    Tab(TabCopies<'a>),
+}
+
+/// The copies of a repeated item that the builder makes one at a time.
+struct Copies {
+    rest: std::vec::IntoIter<RepeatCopy>,
+    made: usize,
+}
+
+impl Copies {
+    /// Starts the copies in `copies`.
+    fn new(copies: Vec<RepeatCopy>) -> Self {
+        Self {
+            rest: copies.into_iter(),
+            made: 0,
+        }
+    }
+
+    /// The next copy. A copy after the first needs `room` in the layout.
+    fn next(&mut self, room: bool) -> Option<RepeatCopy> {
+        if self.made > 0 && !room {
+            return None;
+        }
+        self.made += 1;
+        self.rest.next()
+    }
+}
+
+/// A row whose copies the builder expands one at a time.
+struct RowCopies<'a> {
+    row: &'a DashboardRow,
+    copies: Copies,
+    /// The id of the copy whose children the builder expands now.
+    id: RowId,
+    /// The scope of that copy, with the variables of the row.
+    scope: Scope,
+}
+
+/// A tab group whose tabs and tab copies the builder expands one at a time.
+struct TabCopies<'a> {
+    group: &'a DashboardTabs,
+    id: TabGroupId,
+    /// The scope and the primary flag of the copy that holds the tab group.
+    outer: RepeatCopy,
+    /// The position of the tab whose copies the builder makes now.
+    position: usize,
+    /// The copies of that tab, or `None` before the builder makes them.
+    copies: Option<Copies>,
+    /// The title of the tab copy whose children the builder expands now.
+    title: String,
+    tabs: Vec<DashboardTab>,
+}
+
+/// The frame of the next copy, or the finished item after the last copy.
+enum CopyStep<'a> {
+    Open(BuildFrame<'a>),
+    Done(DashboardLayoutItem),
+}
+
+impl<'a> Builder<'a, '_> {
+    /// Expands `items` and the items nested in their rows and tabs. A stack of
+    /// frames replaces recursion and keeps the pre-order of the ids.
     fn items(
         &mut self,
-        items: &[DashboardLayoutItem],
+        items: &'a [DashboardLayoutItem],
         scope: &Scope,
         primary: bool,
     ) -> Vec<DashboardLayoutItem> {
-        let mut output = Vec::new();
-        let mut panels = Vec::new();
-        for item in items {
-            if let DashboardLayoutItem::Panel(index) = item {
-                panels.push(*index);
-                continue;
-            }
-            self.panel_group(&std::mem::take(&mut panels), scope, primary, &mut output);
-            match item {
-                DashboardLayoutItem::Panel(_) => unreachable!(),
-                DashboardLayoutItem::Row(row) => self.row(row, scope, primary, &mut output),
-                DashboardLayoutItem::Tabs(group) => {
-                    output.push(self.tabs(group, scope, primary));
-                }
-                DashboardLayoutItem::AutoGrid(grid) => {
-                    let panels = grid
-                        .panels
-                        .iter()
-                        .flat_map(|&source| self.panel_copies(source, scope, primary))
-                        .map(|(index, _)| index)
-                        .collect();
-                    output.push(DashboardLayoutItem::AutoGrid(DashboardAutoGrid {
-                        panels,
-                        ..grid.clone()
-                    }));
-                }
+        let root = RepeatCopy {
+            scope: scope.clone(),
+            primary,
+        };
+        let mut frames = Vec::with_capacity(MAX_LAYOUT_DEPTH);
+        frames.push(BuildFrame::new(items, root, BuildParent::Root));
+        for _ in 0..MAX_LAYOUT_STEPS {
+            let open_frames = frames.len();
+            let Some(frame) = frames.last_mut() else {
+                break;
+            };
+            if let Some(item) = frame.items.next() {
+                let child = self.expand_item(item, frame);
+                frames.extend(child.map(|child| child.within_depth(open_frames)));
+            } else if let Some(output) = self.close_frame(&mut frames) {
+                return output;
             }
         }
-        self.panel_group(&panels, scope, primary, &mut output);
-        output
+        frames
+            .into_iter()
+            .next()
+            .map_or_else(Vec::new, |root| root.output)
+    }
+
+    /// Expands one item into `frame`. A row or a tab group gives the frame of
+    /// the children of its first copy.
+    fn expand_item(
+        &mut self,
+        item: &'a DashboardLayoutItem,
+        frame: &mut BuildFrame<'a>,
+    ) -> Option<BuildFrame<'a>> {
+        let step = match item {
+            DashboardLayoutItem::Panel(index) => {
+                frame.panels.push(*index);
+                return None;
+            }
+            DashboardLayoutItem::Row(row) => {
+                self.flush_panels(frame);
+                self.open_row(row, &frame.scope, frame.primary)
+            }
+            DashboardLayoutItem::Tabs(group) => {
+                self.flush_panels(frame);
+                self.open_tabs(group, &frame.scope, frame.primary)
+            }
+            DashboardLayoutItem::AutoGrid(grid) => {
+                self.flush_panels(frame);
+                self.nodes = self.nodes.saturating_add(1);
+                let panels = grid
+                    .panels
+                    .iter()
+                    .flat_map(|&source| self.panel_copies(source, &frame.scope, frame.primary))
+                    .map(|(index, _)| index)
+                    .collect();
+                CopyStep::Done(DashboardLayoutItem::AutoGrid(DashboardAutoGrid {
+                    panels,
+                    ..grid.clone()
+                }))
+            }
+        };
+        match step {
+            CopyStep::Open(child) => Some(child),
+            CopyStep::Done(item) => {
+                frame.output.push(item);
+                None
+            }
+        }
+    }
+
+    /// Ends the top frame and adds its row or tab copy to the frame below.
+    /// Gives the expanded items when the root frame ends.
+    fn close_frame(
+        &mut self,
+        frames: &mut Vec<BuildFrame<'a>>,
+    ) -> Option<Vec<DashboardLayoutItem>> {
+        let Some(mut frame) = frames.pop() else {
+            return Some(Vec::new());
+        };
+        self.flush_panels(&mut frame);
+        let step = match frame.parent {
+            BuildParent::Root => return Some(frame.output),
+            BuildParent::Row(copies) => {
+                let row = copies.row;
+                let title = self.variables.title(&row.title, &copies.scope);
+                let item = DashboardRow::new(
+                    copies.id,
+                    title,
+                    row.collapsed,
+                    row.hidden_header,
+                    frame.output,
+                );
+                if let Some(outer) = frames.last_mut() {
+                    outer.output.push(DashboardLayoutItem::Row(item));
+                }
+                self.next_row_copy(copies)
+            }
+            BuildParent::Tab(mut open) => {
+                open.tabs.push(DashboardTab {
+                    title: std::mem::take(&mut open.title),
+                    children: frame.output,
+                });
+                Some(self.next_tab_copy(open))
+            }
+        };
+        match step {
+            Some(CopyStep::Open(next)) => frames.push(next.within_depth(frames.len())),
+            Some(CopyStep::Done(item)) => {
+                if let Some(outer) = frames.last_mut() {
+                    outer.output.push(item);
+                }
+            }
+            None => {}
+        }
+        None
+    }
+
+    /// Expands the run of grid panels that waits in `frame`.
+    fn flush_panels(&mut self, frame: &mut BuildFrame<'a>) {
+        let panels = std::mem::take(&mut frame.panels);
+        self.panel_group(&panels, &frame.scope, frame.primary, &mut frame.output);
+    }
+
+    /// Whether the layout has room for a copy after the first. The first copy
+    /// of each template item stays, so the template reserves its own size.
+    fn has_room(&self) -> bool {
+        self.nodes.saturating_add(self.reserve) < MAX_LAYOUT_NODES
     }
 
     /// Expands a run of sibling grid panels. A repeated panel grows to hold its
@@ -511,7 +712,10 @@ impl Builder<'_, '_> {
     /// indices with whether each is the primary copy.
     fn panel_copies(&mut self, source: usize, scope: &Scope, primary: bool) -> Vec<(usize, bool)> {
         let repeat = self.repeats.panels.get(&source);
-        let copies = self.copies(repeat, scope, primary);
+        let mut copies = self.copies(repeat, scope, primary);
+        let room = MAX_LAYOUT_NODES.saturating_sub(self.nodes.saturating_add(self.reserve));
+        copies.truncate(room.max(1));
+        self.nodes = self.nodes.saturating_add(copies.len());
         let count = copies.len();
         let template = &self.templates[source];
         let (title, grid) = (template.title.clone(), template.grid);
@@ -548,72 +752,128 @@ impl Builder<'_, '_> {
             .collect()
     }
 
-    fn row(
-        &mut self,
-        row: &DashboardRow,
-        scope: &Scope,
-        primary: bool,
-        output: &mut Vec<DashboardLayoutItem>,
-    ) {
+    /// Starts the copies of a row and gives the frame of the first copy.
+    fn open_row(&mut self, row: &'a DashboardRow, scope: &Scope, primary: bool) -> CopyStep<'a> {
         let section = SectionId::Row(row.id);
         let repeat = self.repeats.rows.get(&row.id);
-        for mut copy in self.repeat_section(section, repeat, scope, primary) {
-            let id = if copy.primary {
-                row.id
-            } else {
-                self.clones.row(row.id, &copy.scope)
-            };
-            self.bind_section(section, repeat, &mut copy.scope);
-            if let Some(group) = self.conditions.rows.get(&row.id) {
-                self.materialized_conditions.push(MaterializedCondition {
-                    target: ConditionTarget::Row(id),
-                    group: group.clone(),
-                    scope: copy.scope.clone(),
-                });
-            }
-            let children = self.items(&row.children, &copy.scope, copy.primary);
-            output.push(DashboardLayoutItem::Row(DashboardRow::new(
-                id,
-                self.variables.title(&row.title, &copy.scope),
-                row.collapsed,
-                row.hidden_header,
-                children,
-            )));
-        }
+        let copies = RowCopies {
+            row,
+            copies: Copies::new(self.repeat_section(section, repeat, scope, primary)),
+            id: row.id,
+            scope: Scope::new(),
+        };
+        self.next_row_copy(copies).unwrap_or_else(|| {
+            // `repeat_section` gives one copy at least, so this row is never empty.
+            let empty = DashboardRow::new(row.id, "", row.collapsed, row.hidden_header, Vec::new());
+            CopyStep::Done(DashboardLayoutItem::Row(empty))
+        })
     }
 
-    fn tabs(&mut self, group: &DashboardTabs, scope: &Scope, primary: bool) -> DashboardLayoutItem {
+    /// Starts the next copy of a row: its id, variables and condition. Gives
+    /// the frame of its children, or `None` after the last copy.
+    fn next_row_copy(&mut self, mut copies: RowCopies<'a>) -> Option<CopyStep<'a>> {
+        let room = self.has_room();
+        let mut copy = copies.copies.next(room)?;
+        let row = copies.row;
+        let section = SectionId::Row(row.id);
+        let repeat = self.repeats.rows.get(&row.id);
+        let id = if copy.primary {
+            row.id
+        } else {
+            self.clones.row(row.id, &copy.scope)
+        };
+        self.nodes = self.nodes.saturating_add(1);
+        self.bind_section(section, repeat, &mut copy.scope);
+        if let Some(group) = self.conditions.rows.get(&row.id) {
+            self.materialized_conditions.push(MaterializedCondition {
+                target: ConditionTarget::Row(id),
+                group: group.clone(),
+                scope: copy.scope.clone(),
+            });
+        }
+        copies.id = id;
+        copies.scope.clone_from(&copy.scope);
+        let frame = BuildFrame::new(&row.children, copy, BuildParent::Row(copies));
+        Some(CopyStep::Open(frame))
+    }
+
+    /// Starts a tab group: its id, and the frame of its first tab copy.
+    fn open_tabs(
+        &mut self,
+        group: &'a DashboardTabs,
+        scope: &Scope,
+        primary: bool,
+    ) -> CopyStep<'a> {
         let id = if primary {
             group.id
         } else {
             self.clones.tab_group(group.id, scope)
         };
-        let mut tabs = Vec::new();
-        for (position, tab) in group.tabs.iter().enumerate() {
-            let section = SectionId::Tab(group.id, position);
-            let repeat = self.repeats.tabs.get(&(group.id, position));
-            let condition = self.conditions.tabs.get(&(group.id, position));
-            for mut copy in self.repeat_section(section, repeat, scope, primary) {
-                self.bind_section(section, repeat, &mut copy.scope);
-                if let Some(condition) = condition {
-                    self.materialized_conditions.push(MaterializedCondition {
-                        target: ConditionTarget::Tab(id, tabs.len()),
-                        group: condition.clone(),
-                        scope: copy.scope.clone(),
-                    });
+        self.nodes = self.nodes.saturating_add(1);
+        let open = TabCopies {
+            group,
+            id,
+            outer: RepeatCopy {
+                scope: scope.clone(),
+                primary,
+            },
+            position: 0,
+            copies: None,
+            title: String::new(),
+            tabs: Vec::new(),
+        };
+        self.next_tab_copy(open)
+    }
+
+    /// Starts the next copy of the current tab, or the first copy of the next
+    /// tab. Gives the finished tab group after the last tab.
+    fn next_tab_copy(&mut self, mut open: TabCopies<'a>) -> CopyStep<'a> {
+        let group = open.group;
+        // Each pass makes a copy, or moves to the next tab.
+        for _ in 0..group.tabs.len().saturating_add(2) {
+            if let Some(copies) = open.copies.as_mut() {
+                if let Some(copy) = copies.next(self.has_room()) {
+                    return CopyStep::Open(self.open_tab_copy(open, copy));
                 }
-                tabs.push(DashboardTab {
-                    title: self.variables.title(&tab.title, &copy.scope),
-                    children: self.items(&tab.children, &copy.scope, copy.primary),
-                });
+                open.position += 1;
+                open.copies = None;
             }
+            if open.position >= group.tabs.len() {
+                break;
+            }
+            let section = SectionId::Tab(group.id, open.position);
+            let repeat = self.repeats.tabs.get(&(group.id, open.position));
+            let (scope, primary) = (&open.outer.scope, open.outer.primary);
+            open.copies = Some(Copies::new(
+                self.repeat_section(section, repeat, scope, primary),
+            ));
         }
-        let mut materialized = DashboardTabs::new(id, tabs);
-        if let Some(active) = group.active {
-            materialized.active =
-                (!materialized.tabs.is_empty()).then(|| active.min(materialized.tabs.len() - 1));
+        CopyStep::Done(finish_tabs(open))
+    }
+
+    /// Starts one copy of the current tab: its variables, condition and title.
+    fn open_tab_copy(&mut self, mut open: TabCopies<'a>, mut copy: RepeatCopy) -> BuildFrame<'a> {
+        let group = open.group;
+        let key = (group.id, open.position);
+        let repeat = self.repeats.tabs.get(&key);
+        self.nodes = self.nodes.saturating_add(1);
+        self.bind_section(
+            SectionId::Tab(group.id, open.position),
+            repeat,
+            &mut copy.scope,
+        );
+        if let Some(condition) = self.conditions.tabs.get(&key) {
+            self.materialized_conditions.push(MaterializedCondition {
+                target: ConditionTarget::Tab(open.id, open.tabs.len()),
+                group: condition.clone(),
+                scope: copy.scope.clone(),
+            });
         }
-        DashboardLayoutItem::Tabs(materialized)
+        let tab = group.tabs.get(open.position);
+        let title = tab.map_or("", |tab| tab.title.as_str());
+        open.title = self.variables.title(title, &copy.scope);
+        let children = tab.map_or(&[][..], |tab| tab.children.as_slice());
+        BuildFrame::new(children, copy, BuildParent::Tab(open))
     }
 
     /// The copies of a row or tab. A section's own variables are visible to its
@@ -742,6 +1002,17 @@ impl Builder<'_, '_> {
             .rev()
             .find(|panel| panel.index == index)
     }
+}
+
+/// The tab group of `open` with its finished tabs. The active tab of the
+/// template stays active, or the last tab when the group has fewer tabs now.
+fn finish_tabs(open: TabCopies<'_>) -> DashboardLayoutItem {
+    let mut materialized = DashboardTabs::new(open.id, open.tabs);
+    if let Some(active) = open.group.active {
+        let last = materialized.tabs.len().checked_sub(1);
+        materialized.active = last.map(|last| active.min(last));
+    }
+    DashboardLayoutItem::Tabs(materialized)
 }
 
 /// Grid position of copy `position` of `count` of a repeated panel.
@@ -1284,5 +1555,110 @@ mod tests {
         assert_eq!(scoped.get("dc").map(String::as_str), Some("eu\\\\.west"));
         assert_eq!(scoped.get("job").map(String::as_str), Some("api"));
         assert!(matches!(scoped_vars(&vars, None), Cow::Borrowed(_)));
+    }
+
+    /// `count` values for a repeat variable.
+    fn many_values(count: usize) -> Vec<String> {
+        (0..count).map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn panel_repeats_stop_at_the_node_limit() {
+        let mut repeats = Repeats::default();
+        repeats.panels.insert(0, Repeat::new("host"));
+        let mut template = DashboardTemplate::new(
+            DashboardLayout::flat(1),
+            repeats,
+            &panels(&[("$host", None)]),
+        );
+        let values = many_values(MAX_LAYOUT_NODES + 10);
+        let mut vars = Vars::new(&[]);
+        vars.values.insert("host".to_string(), values);
+
+        let materialized = template.materialize(&vars.get());
+
+        assert_eq!(materialized.panels.len(), MAX_LAYOUT_NODES - 1);
+        assert_eq!(node_count(&materialized.layout.items), MAX_LAYOUT_NODES - 1);
+    }
+
+    #[test]
+    fn row_and_tab_repeats_stop_at_the_node_limit_and_keep_first_copies() {
+        let mut repeats = Repeats::default();
+        repeats.rows.insert(RowId::new(0), Repeat::new("host"));
+        repeats
+            .tabs
+            .insert((TabGroupId::new(0), 0), Repeat::new("host"));
+        let layout = DashboardLayout::new(vec![
+            DashboardLayoutItem::Row(DashboardRow::new(
+                RowId::new(0),
+                "$host",
+                false,
+                false,
+                vec![DashboardLayoutItem::Panel(0)],
+            )),
+            DashboardLayoutItem::Tabs(DashboardTabs::new(
+                TabGroupId::new(0),
+                vec![DashboardTab {
+                    title: "$host".to_string(),
+                    children: vec![DashboardLayoutItem::Panel(1)],
+                }],
+            )),
+            DashboardLayoutItem::Panel(2),
+        ]);
+        let titles = [("A", None), ("B", None), ("C", None)];
+        let mut template = DashboardTemplate::new(layout, repeats, &panels(&titles));
+        let mut vars = Vars::new(&[]);
+        vars.values
+            .insert("host".to_string(), many_values(MAX_LAYOUT_NODES));
+
+        let materialized = template.materialize(&vars.get());
+
+        let count = node_count(&materialized.layout.items);
+        assert!(count <= MAX_LAYOUT_NODES, "{count}");
+        assert!(count > MAX_LAYOUT_NODES - 8, "{count}");
+        let items = &materialized.layout.items;
+        assert!(matches!(items.last(), Some(DashboardLayoutItem::Panel(2))));
+        let Some(DashboardLayoutItem::Tabs(group)) = items.iter().rev().nth(1) else {
+            panic!("expected the tab group before the last panel");
+        };
+        assert_eq!(group.tabs.len(), 1);
+        assert_eq!(group.tabs[0].children, vec![DashboardLayoutItem::Panel(1)]);
+    }
+
+    #[test]
+    fn children_past_the_depth_limit_are_left_out() {
+        let levels = MAX_LAYOUT_DEPTH + 2;
+        let mut items = vec![DashboardLayoutItem::Panel(0)];
+        for id in 1..levels {
+            items = vec![DashboardLayoutItem::Row(DashboardRow::new(
+                RowId::new(id),
+                "Row",
+                false,
+                false,
+                items,
+            ))];
+        }
+        // Row 2 is at the deepest level that the builder opens.
+        let mut repeats = Repeats::default();
+        repeats.rows.insert(RowId::new(2), Repeat::new("dc"));
+        let layout = DashboardLayout::new(items);
+        let mut template = DashboardTemplate::new(layout, repeats, &panels(&[("A", None)]));
+        let vars = Vars::new(&[("dc", &["eu", "us"])]);
+
+        let materialized = template.materialize(&vars.get());
+
+        let mut walk = LayoutWalk::new(&materialized.layout.items, WalkScope::All);
+        let deepest: Vec<_> = walk
+            .by_ref()
+            .filter(|event| event.level == MAX_LAYOUT_DEPTH)
+            .map(|event| event.item.clone())
+            .collect();
+        assert!(!walk.truncated());
+        assert_eq!(deepest.len(), 2);
+        assert!(deepest.iter().all(|item| matches!(
+            item,
+            DashboardLayoutItem::Row(row) if row.children.is_empty()
+        )));
+        assert!(materialized.panels.is_empty());
     }
 }
