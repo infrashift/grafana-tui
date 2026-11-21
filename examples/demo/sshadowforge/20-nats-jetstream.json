@@ -1,0 +1,2524 @@
+{
+  "apiVersion": "dashboard.grafana.app/v2",
+  "kind": "Dashboard",
+  "metadata": {
+    "name": "sshadowforge-nats-jetstream"
+  },
+  "spec": {
+    "title": "SSHadowForge / NATS JetStream",
+    "description": "The event bus: the NATS server, JetStream storage, each stream and every durable consumer on it -- SSHadowForge's four (projector, notifier, dispatcher, workflow) and artifact-governance's. Series from prometheus-nats-exporter behind each server's mTLS metrics door.",
+    "tags": [
+      "sshadowforge",
+      "forge",
+      "gcloud-dc",
+      "nats",
+      "jetstream"
+    ],
+    "editable": true,
+    "preload": false,
+    "liveNow": false,
+    "cursorSync": "Crosshair",
+    "links": [],
+    "annotations": [],
+    "timeSettings": {
+      "from": "now-3h",
+      "to": "now",
+      "autoRefresh": "30s",
+      "timezone": "browser",
+      "hideTimepicker": false,
+      "fiscalYearStartMonth": 0,
+      "weekStart": "",
+      "autoRefreshIntervals": [
+        "15s",
+        "30s",
+        "1m",
+        "5m",
+        "15m"
+      ]
+    },
+    "variables": [
+      {
+        "kind": "DatasourceVariable",
+        "spec": {
+          "name": "datasource",
+          "label": "Data source",
+          "pluginId": "prometheus",
+          "refresh": "onDashboardLoad",
+          "regex": "",
+          "current": {
+            "text": "Prometheus",
+            "value": "prometheus"
+          },
+          "options": [],
+          "multi": false,
+          "includeAll": false,
+          "hide": "dontHide",
+          "skipUrlSync": false,
+          "allowCustomValue": true
+        }
+      },
+      {
+        "kind": "QueryVariable",
+        "spec": {
+          "name": "stream",
+          "label": "Stream",
+          "current": {
+            "text": "All",
+            "value": "$__all"
+          },
+          "hide": "dontHide",
+          "refresh": "onTimeRangeChanged",
+          "skipUrlSync": false,
+          "query": {
+            "kind": "DataQuery",
+            "group": "prometheus",
+            "version": "v0",
+            "datasource": {
+              "name": "${datasource}"
+            },
+            "spec": {
+              "query": "label_values(jetstream_stream_total_messages{service=~\"nats-.+-metrics\"}, stream_name)"
+            }
+          },
+          "definition": "label_values(jetstream_stream_total_messages{service=~\"nats-.+-metrics\"}, stream_name)",
+          "regex": "",
+          "sort": "alphabeticalAsc",
+          "options": [],
+          "multi": true,
+          "includeAll": true,
+          "allValue": ".*",
+          "allowCustomValue": true
+        }
+      },
+      {
+        "kind": "QueryVariable",
+        "spec": {
+          "name": "consumer",
+          "label": "Durable",
+          "current": {
+            "text": "All",
+            "value": "$__all"
+          },
+          "hide": "dontHide",
+          "refresh": "onTimeRangeChanged",
+          "skipUrlSync": false,
+          "query": {
+            "kind": "DataQuery",
+            "group": "prometheus",
+            "version": "v0",
+            "datasource": {
+              "name": "${datasource}"
+            },
+            "spec": {
+              "query": "label_values(jetstream_consumer_num_pending{service=~\"nats-.+-metrics\",stream_name=~\"$stream\"}, consumer_name)"
+            }
+          },
+          "definition": "label_values(jetstream_consumer_num_pending{service=~\"nats-.+-metrics\",stream_name=~\"$stream\"}, consumer_name)",
+          "regex": "",
+          "sort": "alphabeticalAsc",
+          "options": [],
+          "multi": true,
+          "includeAll": true,
+          "allValue": ".*",
+          "allowCustomValue": true
+        }
+      }
+    ],
+    "elements": {
+      "p01-healthz": {
+        "kind": "Panel",
+        "spec": {
+          "id": 1,
+          "title": "Healthz",
+          "description": "NATS /healthz answered ok (1) on every server, as the exporter read it.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "min(gnatsd_healthz_status_value{service=~\"nats-.+-metrics\",value=\"ok\"}) or vector(0)",
+                        "legendFormat": "Healthz",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "red"
+                      },
+                      {
+                        "value": 1,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p02-uptime": {
+        "kind": "Panel",
+        "spec": {
+          "id": 2,
+          "title": "Uptime",
+          "description": "Since the server last started. A restart replaces the allocation; JetStream state survives on its sticky host volume.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "time() - max(gnatsd_varz_start{service=~\"nats-.+-metrics\"}) / 1000",
+                        "legendFormat": "Uptime",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "s",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "blue"
+                      }
+                    ]
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p03-connections": {
+        "kind": "Panel",
+        "spec": {
+          "id": 3,
+          "title": "Connections",
+          "description": "Client connections: the forge's services, daprd sidecars, governance, the gateway hop.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(gnatsd_varz_connections{service=~\"nats-.+-metrics\"})",
+                        "legendFormat": "Connections",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p04-slow-consumers-1h": {
+        "kind": "Panel",
+        "spec": {
+          "id": 4,
+          "title": "Slow consumers (1h)",
+          "description": "Clients NATS disconnected for not reading fast enough.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(((increase(gnatsd_varz_slow_consumers{service=~\"nats-.+-metrics\"}[1h]) + (min_over_time(gnatsd_varz_slow_consumers{service=~\"nats-.+-metrics\"}[1h]) unless gnatsd_varz_slow_consumers{service=~\"nats-.+-metrics\"} offset 1h)) or increase(gnatsd_varz_slow_consumers{service=~\"nats-.+-metrics\"}[1h]))) or vector(0)",
+                        "legendFormat": "Slow consumers (1h)",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      },
+                      {
+                        "value": 1,
+                        "color": "orange"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p05-jetstream-storage": {
+        "kind": "Panel",
+        "spec": {
+          "id": 5,
+          "title": "JetStream storage",
+          "description": "File storage used against max_file_store (NatsJetStreamStorageHigh at 80%).",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "max(gnatsd_varz_jetstream_stats_storage{service=~\"nats-.+-metrics\"} / gnatsd_varz_jetstream_config_max_storage{service=~\"nats-.+-metrics\"})",
+                        "legendFormat": "JetStream storage",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "percentunit",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      },
+                      {
+                        "value": 0.7,
+                        "color": "orange"
+                      },
+                      {
+                        "value": 0.8,
+                        "color": "red"
+                      }
+                    ]
+                  },
+                  "decimals": 1
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p06-api-errors-1h": {
+        "kind": "Panel",
+        "spec": {
+          "id": 6,
+          "title": "API errors (1h)",
+          "description": "JetStream API calls that errored (create/lookup consumer, publish acks).",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(((increase(gnatsd_varz_jetstream_stats_api_errors{service=~\"nats-.+-metrics\"}[1h]) + (min_over_time(gnatsd_varz_jetstream_stats_api_errors{service=~\"nats-.+-metrics\"}[1h]) unless gnatsd_varz_jetstream_stats_api_errors{service=~\"nats-.+-metrics\"} offset 1h)) or increase(gnatsd_varz_jetstream_stats_api_errors{service=~\"nats-.+-metrics\"}[1h]))) or vector(0)",
+                        "legendFormat": "API errors (1h)",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      },
+                      {
+                        "value": 1,
+                        "color": "orange"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p07-stuck-durables": {
+        "kind": "Panel",
+        "spec": {
+          "id": 7,
+          "title": "Stuck durables",
+          "description": "Durables with an unacknowledged message and no ack progress for 10m. Empty is healthy.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "(max by (stream_name, consumer_name) (jetstream_consumer_num_ack_pending{stream_name=~\"$stream\",consumer_name=~\"$consumer\"}) > 0) and on (stream_name, consumer_name) (max by (stream_name, consumer_name) (changes(jetstream_consumer_ack_floor_stream_seq{stream_name=~\"$stream\",consumer_name=~\"$consumer\"}[10m])) == 0)",
+                        "legendFormat": "{{consumer_name}}",
+                        "range": false,
+                        "instant": true,
+                        "format": "table"
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "table",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "showHeader": true,
+                "cellHeight": "sm",
+                "footer": {
+                  "show": false,
+                  "reducer": [
+                    "sum"
+                  ],
+                  "fields": ""
+                },
+                "sortBy": [
+                  {
+                    "displayName": "Value",
+                    "desc": true
+                  }
+                ]
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      },
+                      {
+                        "value": 1,
+                        "color": "red"
+                      }
+                    ]
+                  },
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "inspect": false,
+                    "filterable": true
+                  },
+                  "noValue": "none (healthy)"
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Time"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.hidden",
+                        "value": true
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Value"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "type": "color-background",
+                          "mode": "basic"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "p08-pending-by-durable": {
+        "kind": "Panel",
+        "spec": {
+          "id": 8,
+          "title": "Pending by durable",
+          "description": "Messages each durable has yet to receive. 0 is caught up.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "max by (stream_name, consumer_name) (jetstream_consumer_num_pending{stream_name=~\"$stream\",consumer_name=~\"$consumer\"})",
+                        "legendFormat": "{{consumer_name}}",
+                        "range": false,
+                        "instant": true,
+                        "format": "table"
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "table",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "showHeader": true,
+                "cellHeight": "sm",
+                "footer": {
+                  "show": false,
+                  "reducer": [
+                    "sum"
+                  ],
+                  "fields": ""
+                },
+                "sortBy": [
+                  {
+                    "displayName": "Value",
+                    "desc": true
+                  }
+                ]
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      },
+                      {
+                        "value": 1,
+                        "color": "orange"
+                      }
+                    ]
+                  },
+                  "decimals": 0,
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "inspect": false,
+                    "filterable": true
+                  }
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Time"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.hidden",
+                        "value": true
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Value"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "type": "color-background",
+                          "mode": "basic"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "p09-pending": {
+        "kind": "Panel",
+        "spec": {
+          "id": 9,
+          "title": "Pending",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "max by (consumer_name) (jetstream_consumer_num_pending{stream_name=~\"$stream\",consumer_name=~\"$consumer\"})",
+                        "legendFormat": "{{consumer_name}}",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p10-ack-pending": {
+        "kind": "Panel",
+        "spec": {
+          "id": 10,
+          "title": "Ack pending",
+          "description": "Delivered and unacknowledged. The SSHadowForge durables run MaxAckPending 1.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "max by (consumer_name) (jetstream_consumer_num_ack_pending{stream_name=~\"$stream\",consumer_name=~\"$consumer\"})",
+                        "legendFormat": "{{consumer_name}}",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p11-delivery-rate": {
+        "kind": "Panel",
+        "spec": {
+          "id": 11,
+          "title": "Delivery rate",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum by (consumer_name) (rate(jetstream_consumer_delivered_stream_seq{stream_name=~\"$stream\",consumer_name=~\"$consumer\"}[5m]))",
+                        "legendFormat": "{{consumer_name}}",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "ops",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p12-redelivered": {
+        "kind": "Panel",
+        "spec": {
+          "id": 12,
+          "title": "Redelivered",
+          "description": "Messages currently redelivered (nak, retry or AckWait expiry). A durable retrying one message for ever shows here before it shows as stuck.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "max by (consumer_name) (jetstream_consumer_num_redelivered{stream_name=~\"$stream\",consumer_name=~\"$consumer\"})",
+                        "legendFormat": "{{consumer_name}}",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p13-messages-by-stream": {
+        "kind": "Panel",
+        "spec": {
+          "id": 13,
+          "title": "Messages by stream",
+          "description": "SF_WORK_LOG keeps 90 days (limits); SF_INTEL is a work queue; SF_GOVERNANCE has no max age.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "max by (stream_name) (jetstream_stream_total_messages{stream_name=~\"$stream\"})",
+                        "legendFormat": "{{stream_name}}",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p14-bytes-by-stream": {
+        "kind": "Panel",
+        "spec": {
+          "id": 14,
+          "title": "Bytes by stream",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "max by (stream_name) (jetstream_stream_total_bytes{stream_name=~\"$stream\"})",
+                        "legendFormat": "{{stream_name}}",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "bytes",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p15-publish-rate-by-stream": {
+        "kind": "Panel",
+        "spec": {
+          "id": 15,
+          "title": "Publish rate by stream",
+          "description": "The stream's last sequence advancing: messages stored per second.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum by (stream_name) (rate(jetstream_stream_last_seq{stream_name=~\"$stream\"}[5m]))",
+                        "legendFormat": "{{stream_name}}",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "ops",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p16-messages-in-out": {
+        "kind": "Panel",
+        "spec": {
+          "id": 16,
+          "title": "Messages in / out",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(rate(gnatsd_varz_in_msgs{service=~\"nats-.+-metrics\"}[$__rate_interval]))",
+                        "legendFormat": "in",
+                        "range": true
+                      }
+                    }
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "B",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(rate(gnatsd_varz_out_msgs{service=~\"nats-.+-metrics\"}[$__rate_interval]))",
+                        "legendFormat": "out",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "ops",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p17-bytes-in-out": {
+        "kind": "Panel",
+        "spec": {
+          "id": 17,
+          "title": "Bytes in / out",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(rate(gnatsd_varz_in_bytes{service=~\"nats-.+-metrics\"}[$__rate_interval]))",
+                        "legendFormat": "in",
+                        "range": true
+                      }
+                    }
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "B",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(rate(gnatsd_varz_out_bytes{service=~\"nats-.+-metrics\"}[$__rate_interval]))",
+                        "legendFormat": "out",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "Bps",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p18-jetstream-api": {
+        "kind": "Panel",
+        "spec": {
+          "id": 18,
+          "title": "JetStream API",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(rate(gnatsd_varz_jetstream_stats_api_total{service=~\"nats-.+-metrics\"}[$__rate_interval]))",
+                        "legendFormat": "calls",
+                        "range": true
+                      }
+                    }
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "B",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(rate(gnatsd_varz_jetstream_stats_api_errors{service=~\"nats-.+-metrics\"}[$__rate_interval]))",
+                        "legendFormat": "errors",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "ops",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p19-server-memory": {
+        "kind": "Panel",
+        "spec": {
+          "id": 19,
+          "title": "Server memory",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "max(gnatsd_varz_mem{service=~\"nats-.+-metrics\"})",
+                        "legendFormat": "nats-server RSS",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "bytes",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p20-allocation-memory-by-task": {
+        "kind": "Panel",
+        "spec": {
+          "id": 20,
+          "title": "Allocation memory by task",
+          "description": "nats, the exporter and its metrics door (Nomad allocation metrics).",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum by (task) (nomad_client_allocs_memory_usage{namespace=\"nats\",exported_job=\"nats\"})",
+                        "legendFormat": "{{task}}",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "bytes",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p21-allocation-cpu-by-task": {
+        "kind": "Panel",
+        "spec": {
+          "id": 21,
+          "title": "Allocation CPU by task",
+          "description": "",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum by (task) (nomad_client_allocs_cpu_total_percent{namespace=\"nats\",exported_job=\"nats\"}) / 100",
+                        "legendFormat": "{{task}}",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "decimals": 2,
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      }
+    },
+    "layout": {
+      "kind": "RowsLayout",
+      "spec": {
+        "rows": [
+          {
+            "kind": "RowsLayoutRow",
+            "spec": {
+              "title": "Server -- every tile should be green",
+              "collapse": false,
+              "hideHeader": false,
+              "layout": {
+                "kind": "GridLayout",
+                "spec": {
+                  "items": [
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 0,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p01-healthz"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 4,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p02-uptime"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 8,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p03-connections"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 12,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p04-slow-consumers-1h"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 16,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p05-jetstream-storage"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 20,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p06-api-errors-1h"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "kind": "RowsLayoutRow",
+            "spec": {
+              "title": "Consumers",
+              "collapse": false,
+              "hideHeader": false,
+              "layout": {
+                "kind": "GridLayout",
+                "spec": {
+                  "items": [
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 0,
+                        "y": 0,
+                        "width": 12,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p07-stuck-durables"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 12,
+                        "y": 0,
+                        "width": 12,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p08-pending-by-durable"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 0,
+                        "y": 7,
+                        "width": 12,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p09-pending"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 12,
+                        "y": 7,
+                        "width": 12,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p10-ack-pending"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 0,
+                        "y": 14,
+                        "width": 12,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p11-delivery-rate"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 12,
+                        "y": 14,
+                        "width": 12,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p12-redelivered"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "kind": "RowsLayoutRow",
+            "spec": {
+              "title": "Streams",
+              "collapse": false,
+              "hideHeader": false,
+              "layout": {
+                "kind": "GridLayout",
+                "spec": {
+                  "items": [
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 0,
+                        "y": 0,
+                        "width": 8,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p13-messages-by-stream"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 8,
+                        "y": 0,
+                        "width": 8,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p14-bytes-by-stream"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 16,
+                        "y": 0,
+                        "width": 8,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p15-publish-rate-by-stream"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "kind": "RowsLayoutRow",
+            "spec": {
+              "title": "Server traffic",
+              "collapse": false,
+              "hideHeader": false,
+              "layout": {
+                "kind": "GridLayout",
+                "spec": {
+                  "items": [
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 0,
+                        "y": 0,
+                        "width": 8,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p16-messages-in-out"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 8,
+                        "y": 0,
+                        "width": 8,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p17-bytes-in-out"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 16,
+                        "y": 0,
+                        "width": 8,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p18-jetstream-api"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 0,
+                        "y": 7,
+                        "width": 8,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p19-server-memory"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 8,
+                        "y": 7,
+                        "width": 8,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p20-allocation-memory-by-task"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 16,
+                        "y": 7,
+                        "width": 8,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p21-allocation-cpu-by-task"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,1730 @@
+{
+  "apiVersion": "dashboard.grafana.app/v2",
+  "kind": "Dashboard",
+  "metadata": {
+    "name": "sshadowforge-operator"
+  },
+  "spec": {
+    "title": "SSHadowForge / Operator Overview",
+    "description": "Is the forge healthy right now? Doors, alerts, the event bus, the gateway, builds and merges on one screen. Row 1 is the summary: every tile green. The rows below say where to look next.",
+    "tags": [
+      "sshadowforge",
+      "forge",
+      "gcloud-dc",
+      "operator"
+    ],
+    "editable": true,
+    "preload": false,
+    "liveNow": false,
+    "cursorSync": "Crosshair",
+    "links": [],
+    "annotations": [],
+    "timeSettings": {
+      "from": "now-3h",
+      "to": "now",
+      "autoRefresh": "30s",
+      "timezone": "browser",
+      "hideTimepicker": false,
+      "fiscalYearStartMonth": 0,
+      "weekStart": "",
+      "autoRefreshIntervals": [
+        "15s",
+        "30s",
+        "1m",
+        "5m",
+        "15m"
+      ]
+    },
+    "variables": [
+      {
+        "kind": "DatasourceVariable",
+        "spec": {
+          "name": "datasource",
+          "label": "Data source",
+          "pluginId": "prometheus",
+          "refresh": "onDashboardLoad",
+          "regex": "",
+          "current": {
+            "text": "Prometheus",
+            "value": "prometheus"
+          },
+          "options": [],
+          "multi": false,
+          "includeAll": false,
+          "hide": "dontHide",
+          "skipUrlSync": false,
+          "allowCustomValue": true
+        }
+      }
+    ],
+    "elements": {
+      "p01-forge-doors-up": {
+        "kind": "Panel",
+        "spec": {
+          "id": 1,
+          "title": "Forge doors up",
+          "description": "Metrics doors answering: gateway, projector, notifier, dispatcher and the workflow's. Fewer than 5 is a service down, or a door refusing Prometheus.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "count(up{job=~\"app|nomad-app\",service=~\"sshadowforge-.+\"} == 1) or vector(0)",
+                        "legendFormat": "Forge doors up",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "red"
+                      },
+                      {
+                        "value": 5,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p02-nats-doors-up": {
+        "kind": "Panel",
+        "spec": {
+          "id": 2,
+          "title": "NATS doors up",
+          "description": "The exporter behind each NATS server's metrics door (one per server).",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "count(up{service=~\"nats-.+-metrics\"} == 1) or vector(0)",
+                        "legendFormat": "NATS doors up",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "red"
+                      },
+                      {
+                        "value": 1,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p03-firing-alerts": {
+        "kind": "Panel",
+        "spec": {
+          "id": 3,
+          "title": "Firing alerts",
+          "description": "Forge and bus alerts. SshadowforgeEventsRefused fires on purpose for a while after every `make verify` (check 45 publishes forged events).",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "count(ALERTS{alertstate=\"firing\",alertname=~\"Sshadowforge.+|Nats.+\"}) or vector(0)",
+                        "legendFormat": "Firing alerts",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      },
+                      {
+                        "value": 1,
+                        "color": "red"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p04-durables-stuck": {
+        "kind": "Panel",
+        "spec": {
+          "id": 4,
+          "title": "Durables stuck",
+          "description": "SSHadowForge durables holding an unacknowledged message with no progress for 10m. Every one runs MaxAckPending 1, so ONE stuck message blocks every later event for every repository.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "count((max by (stream_name, consumer_name) (jetstream_consumer_num_ack_pending{consumer_name=~\"sshadowforge-.+\"}) > 0) and on (stream_name, consumer_name) (max by (stream_name, consumer_name) (changes(jetstream_consumer_ack_floor_stream_seq{consumer_name=~\"sshadowforge-.+\"}[10m])) == 0)) or vector(0)",
+                        "legendFormat": "Durables stuck",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      },
+                      {
+                        "value": 1,
+                        "color": "red"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p05-bus-backlog": {
+        "kind": "Panel",
+        "spec": {
+          "id": 5,
+          "title": "Bus backlog",
+          "description": "The largest backlog of any SSHadowForge durable on SF_WORK_LOG.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "max(jetstream_consumer_num_pending{consumer_name=~\"sshadowforge-.+\"}) or vector(0)",
+                        "legendFormat": "Bus backlog",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      },
+                      {
+                        "value": 1,
+                        "color": "orange"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p06-gateway-5xx": {
+        "kind": "Panel",
+        "spec": {
+          "id": 6,
+          "title": "Gateway 5xx",
+          "description": "Share of gateway requests answered 5xx. A 503 is often the auth seal failing closed: the gateway could not reach Vault to sign.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "(sum(rate(sfd_http_request_duration_seconds_count{service=\"sshadowforge-gateway\",code=~\"5..\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(sfd_http_request_duration_seconds_count{service=\"sshadowforge-gateway\"}[$__rate_interval])), 1e-9)",
+                        "legendFormat": "Gateway 5xx",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "percentunit",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      },
+                      {
+                        "value": 0.01,
+                        "color": "orange"
+                      },
+                      {
+                        "value": 0.05,
+                        "color": "red"
+                      }
+                    ]
+                  },
+                  "decimals": 2
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p07-commands-accepted": {
+        "kind": "Panel",
+        "spec": {
+          "id": 7,
+          "title": "Commands accepted",
+          "description": "Issues, pull requests, comments, approvals... admitted by the gateway in the last hour.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(((increase(sfd_commands_total{result=\"accepted\"}[1h]) + (min_over_time(sfd_commands_total{result=\"accepted\"}[1h]) unless sfd_commands_total{result=\"accepted\"} offset 1h)) or increase(sfd_commands_total{result=\"accepted\"}[1h]))) or vector(0)",
+                        "legendFormat": "Commands accepted",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p08-commands-refused": {
+        "kind": "Panel",
+        "spec": {
+          "id": 8,
+          "title": "Commands refused",
+          "description": "Refused by the gateway: schema, signature, authorization, enrolment, or an unavailable dependency. The Event Pipeline dashboard says which.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(((increase(sfd_commands_total{result!=\"accepted\"}[1h]) + (min_over_time(sfd_commands_total{result!=\"accepted\"}[1h]) unless sfd_commands_total{result!=\"accepted\"} offset 1h)) or increase(sfd_commands_total{result!=\"accepted\"}[1h]))) or vector(0)",
+                        "legendFormat": "Commands refused",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      },
+                      {
+                        "value": 1,
+                        "color": "orange"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p09-events-refused": {
+        "kind": "Panel",
+        "spec": {
+          "id": 9,
+          "title": "Events refused",
+          "description": "Events the CONSUMERS refused (no seal, bad signature, contract). Nothing the gateway admits is refused, so outside a verify run this means something else wrote to the bus.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(((increase(sfd_stats_total{name=~\"rejected|dropped_unsealed|dropped_unsigned|dropped_invalid\",service=~\"sshadowforge-.+\"}[1h]) + (min_over_time(sfd_stats_total{name=~\"rejected|dropped_unsealed|dropped_unsigned|dropped_invalid\",service=~\"sshadowforge-.+\"}[1h]) unless sfd_stats_total{name=~\"rejected|dropped_unsealed|dropped_unsigned|dropped_invalid\",service=~\"sshadowforge-.+\"} offset 1h)) or increase(sfd_stats_total{name=~\"rejected|dropped_unsealed|dropped_unsigned|dropped_invalid\",service=~\"sshadowforge-.+\"}[1h]))) or vector(0)",
+                        "legendFormat": "Events refused",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      },
+                      {
+                        "value": 1,
+                        "color": "orange"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p10-builds-finished": {
+        "kind": "Panel",
+        "spec": {
+          "id": 10,
+          "title": "Builds finished",
+          "description": "Build workflows that reached an outcome.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(((increase(sfd_builds_finished_total[1h]) + (min_over_time(sfd_builds_finished_total[1h]) unless sfd_builds_finished_total offset 1h)) or increase(sfd_builds_finished_total[1h]))) or vector(0)",
+                        "legendFormat": "Builds finished",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p11-builds-not-passed": {
+        "kind": "Panel",
+        "spec": {
+          "id": 11,
+          "title": "Builds not passed",
+          "description": "build_failed, scan_rejected, scan_error or refused. Builds dashboard.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(((increase(sfd_builds_finished_total{result!=\"passed\"}[1h]) + (min_over_time(sfd_builds_finished_total{result!=\"passed\"}[1h]) unless sfd_builds_finished_total{result!=\"passed\"} offset 1h)) or increase(sfd_builds_finished_total{result!=\"passed\"}[1h]))) or vector(0)",
+                        "legendFormat": "Builds not passed",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      },
+                      {
+                        "value": 1,
+                        "color": "orange"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p12-merged": {
+        "kind": "Panel",
+        "spec": {
+          "id": 12,
+          "title": "Merged",
+          "description": "Pull requests the dispatcher merged.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum(((increase(sfd_merge_decisions_total{decision=\"merged\"}[1h]) + (min_over_time(sfd_merge_decisions_total{decision=\"merged\"}[1h]) unless sfd_merge_decisions_total{decision=\"merged\"} offset 1h)) or increase(sfd_merge_decisions_total{decision=\"merged\"}[1h]))) or vector(0)",
+                        "legendFormat": "Merged",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "stat",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "colorMode": "background",
+                "graphMode": "area",
+                "justifyMode": "center",
+                "textMode": "value",
+                "orientation": "auto",
+                "wideLayout": true,
+                "showPercentChange": false
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p13-bus-backlog-by-durable": {
+        "kind": "Panel",
+        "spec": {
+          "id": 13,
+          "title": "Bus backlog by durable",
+          "description": "Pending messages per SSHadowForge durable. A backlog that does not drain while ack-pending stays at 1 is the F8 wedge.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "max by (consumer_name) (jetstream_consumer_num_pending{consumer_name=~\"sshadowforge-.+\"})",
+                        "legendFormat": "{{consumer_name}}",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p14-commands-by-result": {
+        "kind": "Panel",
+        "spec": {
+          "id": 14,
+          "title": "Commands by result",
+          "description": "Gateway admissions and each refusal reason.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum by (result) (rate(sfd_commands_total[5m]))",
+                        "legendFormat": "{{result}}",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "ops",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 1,
+                    "fillOpacity": 10,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "none",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p15-builds-by-result-per-hour": {
+        "kind": "Panel",
+        "spec": {
+          "id": 15,
+          "title": "Builds by result (per hour)",
+          "description": "Rolling one-hour count of finished builds, by result.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "sum by (result) (((increase(sfd_builds_finished_total[1h]) + (min_over_time(sfd_builds_finished_total[1h]) unless sfd_builds_finished_total offset 1h)) or increase(sfd_builds_finished_total[1h])))",
+                        "legendFormat": "{{result}}",
+                        "range": true
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "legend": {
+                  "showLegend": true,
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "green"
+                      }
+                    ]
+                  },
+                  "min": 0,
+                  "custom": {
+                    "drawStyle": "bars",
+                    "lineWidth": 1,
+                    "fillOpacity": 60,
+                    "showPoints": "never",
+                    "lineInterpolation": "linear",
+                    "axisPlacement": "auto",
+                    "axisGridShow": true,
+                    "spanNulls": false,
+                    "stacking": {
+                      "mode": "normal",
+                      "group": "A"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
+      },
+      "p16-firing-alerts": {
+        "kind": "Panel",
+        "spec": {
+          "id": 16,
+          "title": "Firing alerts",
+          "description": "Forge and bus alerts firing now, with their labels.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "ALERTS{alertstate=\"firing\",alertname=~\"Sshadowforge.+|Nats.+\"}",
+                        "legendFormat": "{{alertname}}",
+                        "range": false,
+                        "instant": true,
+                        "format": "table"
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "table",
+            "version": "13.0.0",
+            "spec": {
+              "options": {
+                "showHeader": true,
+                "cellHeight": "sm",
+                "footer": {
+                  "show": false,
+                  "reducer": [
+                    "sum"
+                  ],
+                  "fields": ""
+                },
+                "sortBy": [
+                  {
+                    "displayName": "Value",
+                    "desc": false
+                  }
+                ]
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "value": null,
+                        "color": "blue"
+                      }
+                    ]
+                  },
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "inspect": false,
+                    "filterable": true
+                  },
+                  "noValue": "none (healthy)"
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Time"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.hidden",
+                        "value": true
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Value"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "type": "color-background",
+                          "mode": "basic"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "layout": {
+      "kind": "RowsLayout",
+      "spec": {
+        "rows": [
+          {
+            "kind": "RowsLayoutRow",
+            "spec": {
+              "title": "Health -- every tile should be green",
+              "collapse": false,
+              "hideHeader": false,
+              "layout": {
+                "kind": "GridLayout",
+                "spec": {
+                  "items": [
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 0,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p01-forge-doors-up"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 4,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p02-nats-doors-up"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 8,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p03-firing-alerts"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 12,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p04-durables-stuck"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 16,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p05-bus-backlog"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 20,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p06-gateway-5xx"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "kind": "RowsLayoutRow",
+            "spec": {
+              "title": "The last hour",
+              "collapse": false,
+              "hideHeader": false,
+              "layout": {
+                "kind": "GridLayout",
+                "spec": {
+                  "items": [
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 0,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p07-commands-accepted"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 4,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p08-commands-refused"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 8,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p09-events-refused"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 12,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p10-builds-finished"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 16,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p11-builds-not-passed"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 20,
+                        "y": 0,
+                        "width": 4,
+                        "height": 3,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p12-merged"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "kind": "RowsLayoutRow",
+            "spec": {
+              "title": "Trend",
+              "collapse": false,
+              "hideHeader": false,
+              "layout": {
+                "kind": "GridLayout",
+                "spec": {
+                  "items": [
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 0,
+                        "y": 0,
+                        "width": 12,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p13-bus-backlog-by-durable"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 12,
+                        "y": 0,
+                        "width": 12,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p14-commands-by-result"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 0,
+                        "y": 7,
+                        "width": 12,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p15-builds-by-result-per-hour"
+                        }
+                      }
+                    },
+                    {
+                      "kind": "GridLayoutItem",
+                      "spec": {
+                        "x": 12,
+                        "y": 7,
+                        "width": 12,
+                        "height": 7,
+                        "element": {
+                          "kind": "ElementReference",
+                          "name": "p16-firing-alerts"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
