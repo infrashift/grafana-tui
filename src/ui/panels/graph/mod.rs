@@ -20,6 +20,7 @@ mod bounds;
 mod labels;
 mod overlay;
 mod thresholds;
+mod view;
 
 use annotations::{active_cluster, render_annotation_clusters, terminal_clusters};
 use autogrid::{build_autogrid_datasets, calculate_time_grid_ticks, calculate_value_grid_ticks};
@@ -28,16 +29,18 @@ use labels::{
     render_intermediate_y_labels, y_label_width,
 };
 use overlay::{merge_overlay_buffer, merge_overlay_buffer_preserving_data};
-use thresholds::{prepare_thresholds, render_raw_threshold_lines, threshold_marker};
+use thresholds::{render_raw_threshold_lines, threshold_datasets, threshold_marker};
+use view::{GraphView, LegendMode, area_fill_baseline};
 
-use crate::annotations::format_cluster_detail_lines;
+use crate::annotations::{AnnotationCluster, format_cluster_detail_lines};
 use crate::app::{AppState, PanelState};
-use crate::ui::format::{format_axis_time, get_hash_color};
+use crate::theme::Theme;
+use crate::ui::format::format_axis_time;
 use ratatui::{
+    buffer::Buffer,
     prelude::*,
     widgets::{Axis, Chart, Dataset, GraphType, Paragraph, Wrap},
 };
-use std::collections::HashMap;
 
 pub(crate) use bounds::calculate_y_bounds;
 
@@ -52,14 +55,6 @@ fn graph_type_for_draw_style(draw_style: crate::app::GraphDrawStyle) -> GraphTyp
 fn should_overlay_points(options: &crate::app::GraphOptions) -> bool {
     options.show_points == crate::app::GraphPointMode::Always
         && options.draw_style != crate::app::GraphDrawStyle::Points
-}
-
-fn area_fill_baseline(y_bounds: [f64; 2]) -> f64 {
-    if y_bounds[0] <= 0.0 && y_bounds[1] >= 0.0 {
-        0.0
-    } else {
-        y_bounds[0]
-    }
 }
 
 fn is_y_axis_hidden(options: &crate::app::GraphOptions) -> bool {
@@ -172,6 +167,53 @@ fn render_forced_point_markers(
     }
 }
 
+/// The datasets and point markers that the terminal graph draws for its series.
+struct SeriesLayers<'d> {
+    chart: Vec<Dataset<'d>>,
+    strong: Vec<Dataset<'d>>,
+    markers: Vec<(f64, f64, Color)>,
+}
+
+/// The chart area, the axes and the plot bounds of one terminal graph.
+struct ChartFrame<'a> {
+    app: &'a AppState,
+    view: &'a GraphView<'a>,
+    area: Rect,
+    plot: PlotBounds,
+    plot_height: u16,
+    x_labels: Vec<Span<'static>>,
+    y_labels: Vec<Span<'static>>,
+    value_ticks: Vec<f64>,
+    show_autogrid: bool,
+}
+
+impl ChartFrame<'_> {
+    /// Returns a chart with the graph axes and the datasets `datasets`.
+    fn overlay_chart<'d>(&self, datasets: Vec<Dataset<'d>>) -> Chart<'d> {
+        let theme = &self.app.theme;
+        Chart::new(datasets)
+            .x_axis(
+                Axis::default()
+                    .bounds(self.view.x_bounds)
+                    .labels(self.x_labels.clone())
+                    .style(Style::default().fg(theme.text)),
+            )
+            .y_axis(
+                Axis::default()
+                    .style(Style::default().fg(theme.axis))
+                    .bounds(self.view.y_bounds)
+                    .labels(self.y_labels.clone()),
+            )
+    }
+
+    /// Renders the datasets `datasets` into an empty buffer of the chart area.
+    fn render_to_buffer(&self, datasets: Vec<Dataset<'_>>) -> Buffer {
+        let mut buf = Buffer::empty(self.area);
+        self.overlay_chart(datasets).render(self.area, &mut buf);
+        buf
+    }
+}
+
 pub(super) fn render_graph_panel(
     frame: &mut Frame,
     area: Rect,
@@ -181,462 +223,346 @@ pub(super) fn render_graph_panel(
     cursor_x: Option<f64>,
     is_selected: bool,
 ) -> Option<Vec<crate::annotations::AnnotationEvent>> {
-    let theme = &app.theme;
-    let use_hash_colors = p.series.len() > theme.palette.len();
-    // Determine x bounds from the last refreshed query window.
-    let (start, now) = app.time_bounds();
-    let annotation_events = if p.panel_type == crate::app::PanelType::Graph {
-        app.annotations.events_for_panel(
-            crate::annotations::AnnotationPanelContext {
-                index: panel_index,
-                title: &p.title,
-            },
-            [start, now],
-        )
-    } else {
-        Vec::new()
-    };
+    let view = GraphView::build(app, panel_index, p, cursor_x);
     // Hidden series still have points, so their legend stays to show them.
-    if annotation_events.is_empty() && p.series.iter().all(|s| s.points.is_empty()) {
-        let para = Paragraph::new(p.display.no_data_text()).style(Style::default().fg(theme.text));
+    if !view.has_content() {
+        let para =
+            Paragraph::new(p.display.no_data_text()).style(Style::default().fg(app.theme.text));
         frame.render_widget(para, area);
         return None;
     }
-    let strong_data_mask_mode = strong_data_mask_mode(&annotation_events);
+    let (chart_area, legend_area, show_legend) = layout_areas(area, view.has_legend());
+    let chart = chart_frame(app, &view, chart_area);
+    let cursor_line = cursor_x.map_or_else(Vec::new, |cx| {
+        vec![(cx, view.y_bounds[0]), (cx, view.y_bounds[1])]
+    });
+    let layers = build_datasets(&view, &cursor_line, app.theme.cursor);
+    let strong_data_buf = render_main_chart(frame, &chart, layers.chart, layers.strong);
 
-    // If inspecting, find values at cursor
-    let cursor_values: HashMap<String, f64> = if let Some(cx) = cursor_x {
-        p.series
+    let clusters = terminal_clusters(view.events.clone(), view.x_bounds, chart.plot);
+    let active_annotation = active_cluster(&clusters, cursor_x, view.x_bounds, chart.plot);
+    let rendered_cluster = active_annotation.filter(|_| is_selected).map(|cluster| {
+        cluster
+            .events
             .iter()
-            .filter_map(|s| {
-                // Find point closest to cursor_x
-                let closest = s.points.iter().min_by(|a, b| {
-                    let da = (a.0 - cx).abs();
-                    let db = (b.0 - cx).abs();
-                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-                });
-
-                if let Some((ts, val)) = closest {
-                    // Only consider if within reasonable distance (e.g. 2 steps)
-                    if (ts - cx).abs() <= app.default_intervals().step.as_secs_f64() * 2.0 {
-                        Some((s.name.clone(), *val))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            })
+            .map(|event| (*event).clone())
             .collect()
-    } else {
-        HashMap::new()
-    };
+    });
 
-    // Split inner area into chart and legend
-    // If we have series or annotations, reserve space for legend or annotation details.
-    let legend_height =
-        if (!p.series.is_empty() || !annotation_events.is_empty()) && area.height > 5 {
-            2
-        } else {
-            0
-        };
+    render_overlay(frame, &chart, strong_data_buf.as_ref());
+    render_annotation_clusters(
+        frame,
+        &clusters,
+        chart.plot,
+        strong_data_buf.as_ref(),
+        app.theme.annotation,
+    );
+    render_forced_point_markers(
+        frame,
+        &layers.markers,
+        view.x_bounds,
+        view.y_bounds,
+        chart.plot,
+    );
+    if show_legend {
+        render_legend_or_detail(frame, legend_area, active_annotation, &view, &app.theme);
+    }
+    rendered_cluster
+}
 
+/// Splits the panel area into the chart area and the legend area.
+fn layout_areas(area: Rect, has_legend: bool) -> (Rect, Rect, bool) {
+    // Reserve two rows for the legend or the annotation details.
+    let legend_height = if has_legend && area.height > 5 { 2 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(legend_height)])
         .split(area);
+    (chunks[0], chunks[1], legend_height > 0)
+}
 
-    let chart_area = chunks[0];
-    let legend_area = chunks[1];
-
-    // Calculate y_bounds once
-    let y_bounds = calculate_y_bounds(p);
-    let show_autogrid = app.autogrid_enabled && p.autogrid.unwrap_or(true);
-    let graph_options = p.graph_options();
-    let hide_y_axis = is_y_axis_hidden(&graph_options);
-
-    // Prepare datasets (without names for the chart itself to avoid built-in legend)
-    let mut chart_datasets = Vec::new();
-    let mut strong_data_datasets = Vec::new();
-    let mut legend_items = Vec::new();
-    let mut forced_point_markers = Vec::new();
-
-    // Declare helper datasets to extend their lifetimes
-    let mut cursor_dataset = vec![];
-    let mut threshold_data = prepare_thresholds(p, &app.threshold_marker, [start, now]);
-    for (_, color) in &mut threshold_data.labels {
-        *color = theme.threshold_color(*color);
+/// Builds the axes, the value ticks and the plot bounds of the chart area `area`.
+fn chart_frame<'a>(app: &'a AppState, view: &'a GraphView<'a>, area: Rect) -> ChartFrame<'a> {
+    let [start, now] = view.x_bounds;
+    let text_style = Style::default().fg(app.theme.text);
+    let x_labels = vec![
+        Span::styled(format_axis_time(start, now - start), text_style),
+        Span::styled(format_axis_time(now, now - start), text_style),
+    ];
+    // The x-axis occupies the last rows.
+    let chart_bottom = area.bottom().saturating_sub(2);
+    let chart_top = area.top();
+    let plot_height = chart_bottom.saturating_sub(chart_top).saturating_add(1);
+    let show_autogrid = app.autogrid_enabled && view.panel.autogrid.unwrap_or(true);
+    let value_ticks = if show_autogrid {
+        calculate_value_grid_ticks(view.y_bounds, plot_height)
+    } else {
+        Vec::new()
+    };
+    let y_labels = axis_y_labels(view, plot_height, app.theme.text);
+    let left = chart_plot_left(
+        area,
+        chart_y_label_width(&y_labels),
+        &x_labels,
+        !y_labels.is_empty(),
+    );
+    ChartFrame {
+        app,
+        view,
+        area,
+        plot: PlotBounds {
+            left,
+            right: area.right(),
+            top: chart_top,
+            bottom: chart_bottom,
+        },
+        plot_height,
+        x_labels,
+        y_labels,
+        value_ticks,
+        show_autogrid,
     }
-    let grid_color = app.grid_color();
-    let mut threshold_overlay_datasets = Vec::new();
+}
 
-    if !app.threshold_marker.ends_with("line") {
-        let (marker, graph_type) = threshold_marker(&app.threshold_marker);
-        for (i, (_, color)) in threshold_data.labels.iter().enumerate() {
-            threshold_overlay_datasets.push(
-                Dataset::default()
-                    .name("")
-                    .marker(marker)
-                    .graph_type(graph_type)
-                    .style(Style::default().fg(*color))
-                    .data(&threshold_data.datasets[i]),
-            );
-        }
+/// Returns the y-axis labels with the bounds at both ends, or no labels for a hidden axis.
+fn axis_y_labels(view: &GraphView<'_>, plot_height: u16, color: Color) -> Vec<Span<'static>> {
+    if is_y_axis_hidden(&view.options) {
+        return Vec::new();
     }
+    let y_axis_height = usize::from(plot_height).max(2);
+    let style = Style::default().fg(color);
+    let display = &view.panel.display;
+    let mut labels = vec![Span::raw(""); y_axis_height];
+    labels[0] = Span::styled(display.format_number(view.y_bounds[0]), style);
+    labels[y_axis_height - 1] = Span::styled(display.format_number(view.y_bounds[1]), style);
+    labels
+}
 
-    for (i, s) in p.series.iter().enumerate() {
-        let color = if use_hash_colors {
-            get_hash_color(&s.name)
-        } else {
-            theme.palette[i % theme.palette.len()]
-        };
+/// Returns a nameless Braille dataset, so that the chart draws no legend for it.
+fn braille_dataset(data: &[(f64, f64)], graph_type: GraphType, color: Color) -> Dataset<'_> {
+    Dataset::default()
+        .name("")
+        .marker(ratatui::symbols::Marker::Braille)
+        .graph_type(graph_type)
+        .style(Style::default().fg(color))
+        .data(data)
+}
 
+/// Builds the series datasets, the strong data mask datasets and the forced point markers.
+fn build_datasets<'d>(
+    view: &GraphView<'d>,
+    cursor_line: &'d [(f64, f64)],
+    cursor_color: Color,
+) -> SeriesLayers<'d> {
+    let options = &view.options;
+    let graph_type = graph_type_for_draw_style(options.draw_style);
+    let mask_mode = strong_data_mask_mode(&view.events);
+    let is_area_filled = options.fill_opacity.unwrap_or(0) > 0
+        && options.draw_style == crate::app::GraphDrawStyle::Line;
+    let mut layers = SeriesLayers {
+        chart: Vec::new(),
+        strong: Vec::new(),
+        markers: Vec::new(),
+    };
+    for (s, color) in view.panel.series.iter().zip(&view.colors) {
         let data = if s.visible { s.points.as_slice() } else { &[] };
-
-        // For legend display
-        let mut name = s.name.clone();
-        if let Some(val) = cursor_values.get(&s.name) {
-            name.push_str(&format!(" ({})", p.display.format_number(*val)));
-        } else if let Some(val) = s.value {
-            name.push_str(&format!(" ({})", p.display.format_number(val)));
+        let mut dataset = braille_dataset(data, graph_type, *color);
+        if is_area_filled || mask_mode == StrongDataMaskMode::AllDrawStyles {
+            layers
+                .strong
+                .push(braille_dataset(data, graph_type, *color));
         }
-        if name.is_empty() {
-            name = format!("Series {}", i);
-        }
-
-        legend_items.push(Span::styled("■ ".to_string(), Style::default().fg(color)));
-        legend_items.push(Span::styled(
-            format!("{}  ", name),
-            Style::default().fg(theme.text),
-        ));
-
-        // For chart (no name to avoid legend)
-        let mut dataset = Dataset::default()
-            .name("")
-            .marker(ratatui::symbols::Marker::Braille)
-            .graph_type(graph_type_for_draw_style(graph_options.draw_style))
-            .style(Style::default().fg(color))
-            .data(data);
-        let is_area_filled = graph_options.fill_opacity.unwrap_or(0) > 0
-            && graph_options.draw_style == crate::app::GraphDrawStyle::Line;
-        if is_area_filled || strong_data_mask_mode == StrongDataMaskMode::AllDrawStyles {
-            strong_data_datasets.push(
-                Dataset::default()
-                    .name("")
-                    .marker(ratatui::symbols::Marker::Braille)
-                    .graph_type(graph_type_for_draw_style(graph_options.draw_style))
-                    .style(Style::default().fg(color))
-                    .data(data),
-            );
-        }
-
         if is_area_filled {
             dataset = dataset
                 .graph_type(GraphType::Area)
-                .fill_to_y(area_fill_baseline(y_bounds));
+                .fill_to_y(area_fill_baseline(view.y_bounds));
         }
-
-        chart_datasets.push(dataset);
-
-        if should_overlay_points(&graph_options) {
-            forced_point_markers.extend(data.iter().map(|(x, y)| (*x, *y, color)));
-        }
-    }
-
-    // Add cursor line if inspecting
-    if let Some(cx) = cursor_x {
-        cursor_dataset.push((cx, y_bounds[0]));
-        cursor_dataset.push((cx, y_bounds[1]));
-
-        chart_datasets.push(
-            Dataset::default()
-                .name("")
-                .marker(ratatui::symbols::Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(Style::default().fg(theme.cursor))
-                .data(&cursor_dataset),
-        );
-        if !strong_data_datasets.is_empty()
-            || strong_data_mask_mode == StrongDataMaskMode::AllDrawStyles
-        {
-            strong_data_datasets.push(
-                Dataset::default()
-                    .name("")
-                    .marker(ratatui::symbols::Marker::Braille)
-                    .graph_type(GraphType::Line)
-                    .style(Style::default().fg(theme.cursor))
-                    .data(&cursor_dataset),
-            );
+        layers.chart.push(dataset);
+        if should_overlay_points(options) {
+            layers
+                .markers
+                .extend(data.iter().map(|(x, y)| (*x, *y, *color)));
         }
     }
-
-    let time_range_secs = now - start;
-    let x_labels = vec![
-        Span::styled(
-            format_axis_time(start, time_range_secs),
-            Style::default().fg(theme.text),
-        ),
-        Span::styled(
-            format_axis_time(now, time_range_secs),
-            Style::default().fg(theme.text),
-        ),
-    ];
-
-    let chart_bottom = chart_area.bottom().saturating_sub(2); // x-axis occupies last rows
-    let chart_top = chart_area.top();
-    let plot_height = chart_bottom.saturating_sub(chart_top).saturating_add(1);
-    let y_axis_height = usize::from(plot_height).max(2);
-    let mut y_labels = vec![Span::raw(""); y_axis_height];
-    let autogrid_value_ticks = if show_autogrid {
-        calculate_value_grid_ticks(y_bounds, plot_height)
-    } else {
-        Vec::new()
-    };
-
-    if !hide_y_axis {
-        y_labels[0] = Span::styled(
-            p.display.format_number(y_bounds[0]),
-            Style::default().fg(theme.text),
-        );
-        y_labels[y_axis_height - 1] = Span::styled(
-            p.display.format_number(y_bounds[1]),
-            Style::default().fg(theme.text),
-        );
+    // Add the cursor line when inspecting.
+    if !cursor_line.is_empty() {
+        layers
+            .chart
+            .push(braille_dataset(cursor_line, GraphType::Line, cursor_color));
+        if !layers.strong.is_empty() || mask_mode == StrongDataMaskMode::AllDrawStyles {
+            layers
+                .strong
+                .push(braille_dataset(cursor_line, GraphType::Line, cursor_color));
+        }
     }
+    layers
+}
 
-    // Evaluate y_max_width before moving y_labels into Chart block
-    let y_max_width = if hide_y_axis {
-        0
-    } else {
-        y_label_width(
-            &y_labels,
-            &autogrid_value_ticks,
-            &threshold_data.labels,
-            &p.display,
-        )
-    };
-    let chart_y_labels = if hide_y_axis {
-        Vec::new()
-    } else {
-        y_labels.clone()
-    };
-    let chart_y_label_width = chart_y_label_width(&chart_y_labels);
-
-    // Chart fills its plot with the style's background, or reset without one.
-    let chart = Chart::new(chart_datasets)
-        .style(Style::default().bg(app.background()))
-        // No block, as we rendered it outside
-        .x_axis(
-            Axis::default()
-                .bounds([start, now])
-                .labels(x_labels.clone())
-                .style(Style::default().fg(theme.text)),
-        )
-        .y_axis(
-            Axis::default()
-                .style(Style::default().fg(theme.axis))
-                .bounds(y_bounds)
-                .labels(chart_y_labels.clone()),
-        );
-    // No legend position needed as we disabled names
-
-    frame.render_widget(chart, chart_area);
-
-    let strong_data_buf = if strong_data_datasets.is_empty() {
+/// Renders the series chart and returns the strong data mask, if the graph needs one.
+fn render_main_chart(
+    frame: &mut Frame,
+    chart: &ChartFrame<'_>,
+    datasets: Vec<Dataset<'_>>,
+    strong_datasets: Vec<Dataset<'_>>,
+) -> Option<Buffer> {
+    // The chart fills its plot with the style's background, or reset without one.
+    let main_chart = chart
+        .overlay_chart(datasets)
+        .style(Style::default().bg(chart.app.background()));
+    frame.render_widget(main_chart, chart.area);
+    if strong_datasets.is_empty() {
         None
     } else {
-        let mut strong_data_buf = ratatui::buffer::Buffer::empty(chart_area);
-        let strong_data_chart = Chart::new(strong_data_datasets)
-            .x_axis(
-                Axis::default()
-                    .bounds([start, now])
-                    .labels(x_labels.clone())
-                    .style(Style::default().fg(theme.text)),
-            )
-            .y_axis(
-                Axis::default()
-                    .style(Style::default().fg(theme.axis))
-                    .bounds(y_bounds)
-                    .labels(chart_y_labels.clone()),
-            );
-        strong_data_chart.render(chart_area, &mut strong_data_buf);
-        Some(strong_data_buf)
-    };
-
-    let chart_left = chart_plot_left(
-        chart_area,
-        chart_y_label_width,
-        &x_labels,
-        !chart_y_labels.is_empty(),
-    );
-    let chart_right = chart_area.right();
-    let plot_bounds = PlotBounds {
-        left: chart_left,
-        right: chart_right,
-        top: chart_top,
-        bottom: chart_bottom,
-    };
-    let annotation_clusters = terminal_clusters(annotation_events, [start, now], plot_bounds);
-    let active_annotation =
-        active_cluster(&annotation_clusters, cursor_x, [start, now], plot_bounds);
-    let rendered_cluster = if is_selected {
-        active_annotation.map(|cluster| {
-            cluster
-                .events
-                .iter()
-                .map(|event| (*event).clone())
-                .collect::<Vec<_>>()
-        })
-    } else {
-        None
-    };
-
-    // Render threshold markers after chart rendering by merging only onto blank cells.
-    // This guarantees data curves keep precedence wherever both map to the same terminal cell.
-    if !threshold_overlay_datasets.is_empty() && chart_top <= chart_bottom {
-        let threshold_chart = Chart::new(threshold_overlay_datasets)
-            .x_axis(
-                Axis::default()
-                    .bounds([start, now])
-                    .labels(x_labels.clone())
-                    .style(Style::default().fg(theme.text)),
-            )
-            .y_axis(
-                Axis::default()
-                    .style(Style::default().fg(theme.axis))
-                    .bounds(y_bounds)
-                    .labels(chart_y_labels.clone()),
-            );
-
-        let mut threshold_buf = ratatui::buffer::Buffer::empty(chart_area);
-        threshold_chart.render(chart_area, &mut threshold_buf);
-
-        if let Some(strong_data_buf) = strong_data_buf.as_ref() {
-            merge_overlay_buffer_preserving_data(
-                frame,
-                &threshold_buf,
-                strong_data_buf,
-                plot_bounds,
-            );
-        } else {
-            merge_overlay_buffer(frame, &threshold_buf, plot_bounds);
-        }
+        Some(chart.render_to_buffer(strong_datasets))
     }
+}
 
+/// Renders the threshold markers, the autogrid and the intermediate y labels over the chart.
+fn render_overlay(frame: &mut Frame, chart: &ChartFrame<'_>, strong_data_buf: Option<&Buffer>) {
+    let view = chart.view;
+    render_threshold_overlay(frame, chart, strong_data_buf);
     render_raw_threshold_lines(
         frame,
-        &app.threshold_marker,
-        &threshold_data.labels,
-        y_bounds,
-        plot_bounds,
-        strong_data_buf.as_ref(),
+        &chart.app.threshold_marker,
+        &view.thresholds,
+        view.y_bounds,
+        chart.plot,
+        strong_data_buf,
     );
-
-    if show_autogrid && chart_top <= chart_bottom {
-        let plot_width = chart_right.saturating_sub(chart_left);
-        let autogrid_time_ticks = calculate_time_grid_ticks(start, now, plot_width);
-        let autogrid_datasets = build_autogrid_datasets(
-            [start, now],
-            y_bounds,
-            &autogrid_time_ticks,
-            &autogrid_value_ticks,
-            plot_width,
-            plot_height,
-        );
-        let autogrid_overlay_datasets: Vec<_> = autogrid_datasets
-            .iter()
-            .map(|dataset| {
-                Dataset::default()
-                    .name("")
-                    .marker(ratatui::symbols::Marker::Braille)
-                    .graph_type(GraphType::Line)
-                    .style(Style::default().fg(grid_color))
-                    .data(dataset)
-            })
-            .collect();
-
-        let autogrid_chart = Chart::new(autogrid_overlay_datasets)
-            .x_axis(
-                Axis::default()
-                    .bounds([start, now])
-                    .labels(x_labels)
-                    .style(Style::default().fg(theme.text)),
-            )
-            .y_axis(
-                Axis::default()
-                    .style(Style::default().fg(theme.axis))
-                    .bounds(y_bounds)
-                    .labels(chart_y_labels),
-            );
-
-        let mut autogrid_buf = ratatui::buffer::Buffer::empty(chart_area);
-        autogrid_chart.render(chart_area, &mut autogrid_buf);
-
-        // Autogrid is a background layer: it may fill empty plot cells, but it
-        // should not cut through area fills or other rendered data.
-        merge_overlay_buffer(frame, &autogrid_buf, plot_bounds);
-        render_autogrid_time_labels(
-            frame,
-            plot_bounds,
-            [start, now],
-            &autogrid_time_ticks,
-            time_range_secs,
-            grid_color,
-        );
+    if chart.show_autogrid && chart.plot.top <= chart.plot.bottom {
+        render_autogrid(frame, chart);
     }
-
-    if !hide_y_axis {
-        render_intermediate_y_labels(
-            frame,
-            YLabelArea {
-                left: chart_area.left(),
-                width: y_max_width,
-            },
-            plot_bounds,
-            YLabelContext {
-                y_bounds,
-                autogrid_ticks: &autogrid_value_ticks,
-                threshold_labels: &threshold_data.labels,
-                display: &p.display,
-                color: grid_color,
-            },
-        );
+    if !is_y_axis_hidden(&view.options) {
+        render_y_labels(frame, chart);
     }
+}
 
-    render_annotation_clusters(
+/// Merges the threshold marker datasets onto the blank cells of the chart.
+fn render_threshold_overlay(
+    frame: &mut Frame,
+    chart: &ChartFrame<'_>,
+    strong_data_buf: Option<&Buffer>,
+) {
+    let (view, marker_name) = (chart.view, &chart.app.threshold_marker);
+    if marker_name.ends_with("line") {
+        return;
+    }
+    let points = threshold_datasets(&view.thresholds, view.thresholds_dashed, view.x_bounds);
+    let (marker, graph_type) = threshold_marker(marker_name);
+    let datasets: Vec<_> = view
+        .thresholds
+        .iter()
+        .zip(&points)
+        .map(|((_, color), data)| {
+            Dataset::default()
+                .name("")
+                .marker(marker)
+                .graph_type(graph_type)
+                .style(Style::default().fg(*color))
+                .data(data)
+        })
+        .collect();
+    // Data curves keep precedence wherever both map to the same terminal cell.
+    if datasets.is_empty() || chart.plot.top > chart.plot.bottom {
+        return;
+    }
+    let threshold_buf = chart.render_to_buffer(datasets);
+    if let Some(strong_data_buf) = strong_data_buf {
+        merge_overlay_buffer_preserving_data(frame, &threshold_buf, strong_data_buf, chart.plot);
+    } else {
+        merge_overlay_buffer(frame, &threshold_buf, chart.plot);
+    }
+}
+
+/// Renders the autogrid lines on the blank plot cells and the time labels below them.
+fn render_autogrid(frame: &mut Frame, chart: &ChartFrame<'_>) {
+    let (view, plot) = (chart.view, chart.plot);
+    let [start, now] = view.x_bounds;
+    let plot_width = plot.right.saturating_sub(plot.left);
+    let time_ticks = calculate_time_grid_ticks(start, now, plot_width);
+    let grid_lines = build_autogrid_datasets(
+        view.x_bounds,
+        view.y_bounds,
+        &time_ticks,
+        &chart.value_ticks,
+        plot_width,
+        chart.plot_height,
+    );
+    let grid_color = chart.app.grid_color();
+    let datasets = grid_lines
+        .iter()
+        .map(|data| braille_dataset(data, GraphType::Line, grid_color))
+        .collect();
+    let autogrid_buf = chart.render_to_buffer(datasets);
+    // The autogrid is a background layer: it fills only empty plot cells.
+    merge_overlay_buffer(frame, &autogrid_buf, plot);
+    render_autogrid_time_labels(
         frame,
-        &annotation_clusters,
-        plot_bounds,
-        strong_data_buf.as_ref(),
-        theme.annotation,
+        plot,
+        view.x_bounds,
+        &time_ticks,
+        now - start,
+        grid_color,
     );
+}
 
-    render_forced_point_markers(
+/// Renders the autogrid and threshold value labels on the y axis.
+fn render_y_labels(frame: &mut Frame, chart: &ChartFrame<'_>) {
+    let view = chart.view;
+    let width = y_label_width(
+        &chart.y_labels,
+        &chart.value_ticks,
+        &view.thresholds,
+        &view.panel.display,
+    );
+    render_intermediate_y_labels(
         frame,
-        &forced_point_markers,
-        [start, now],
-        y_bounds,
-        plot_bounds,
+        YLabelArea {
+            left: chart.area.left(),
+            width,
+        },
+        chart.plot,
+        YLabelContext {
+            y_bounds: view.y_bounds,
+            autogrid_ticks: &chart.value_ticks,
+            threshold_labels: &view.thresholds,
+            display: &view.panel.display,
+            color: chart.app.grid_color(),
+        },
     );
+}
 
-    // Render custom legend
-    if legend_height > 0 {
-        if let Some(cluster) = active_annotation {
-            let [heading, details] =
-                format_cluster_detail_lines(cluster, usize::from(legend_area.width));
-            let detail_style = Style::default().fg(theme.annotation);
-            let annotation_detail = Paragraph::new(vec![
-                Line::styled(heading, detail_style),
-                Line::styled(details, detail_style),
-            ]);
-            frame.render_widget(annotation_detail, legend_area);
-        } else {
-            let legend = Paragraph::new(Line::from(legend_items)).wrap(Wrap { trim: true });
-            frame.render_widget(legend, legend_area);
-        }
+/// Renders the details of the active annotation cluster, or else the series legend.
+fn render_legend_or_detail(
+    frame: &mut Frame,
+    area: Rect,
+    active_annotation: Option<&AnnotationCluster<'_>>,
+    view: &GraphView<'_>,
+    theme: &Theme,
+) {
+    if let Some(cluster) = active_annotation {
+        let [heading, details] = format_cluster_detail_lines(cluster, usize::from(area.width));
+        let detail_style = Style::default().fg(theme.annotation);
+        let annotation_detail = Paragraph::new(vec![
+            Line::styled(heading, detail_style),
+            Line::styled(details, detail_style),
+        ]);
+        frame.render_widget(annotation_detail, area);
+        return;
     }
-
-    rendered_cluster
+    let legend_items: Vec<Span<'_>> = view
+        .legend_labels(LegendMode::AllSeries)
+        .into_iter()
+        .zip(&view.colors)
+        .flat_map(|((_, label), color)| {
+            [
+                Span::styled("■ ".to_string(), Style::default().fg(*color)),
+                Span::styled(format!("{}  ", label), Style::default().fg(theme.text)),
+            ]
+        })
+        .collect();
+    let legend = Paragraph::new(Line::from(legend_items)).wrap(Wrap { trim: true });
+    frame.render_widget(legend, area);
 }
 
 #[cfg(test)]

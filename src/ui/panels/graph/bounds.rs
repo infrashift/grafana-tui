@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-use crate::app::{PanelState, ThresholdMode, YAxisMode};
+use super::view::threshold_steps;
+use crate::app::{PanelState, YAxisMode};
 
 pub(crate) fn calculate_y_bounds(p: &PanelState) -> [f64; 2] {
     let mut min = f64::INFINITY;
@@ -39,26 +40,7 @@ pub(crate) fn calculate_y_bounds(p: &PanelState) -> [f64; 2] {
         return fallback_bounds(explicit_min, explicit_max);
     }
 
-    if min == max {
-        min -= 1.0;
-        max += 1.0;
-    }
-
-    if p.y_axis_mode == YAxisMode::ZeroBased {
-        if min > 0.0 {
-            min = 0.0;
-        } else if max < 0.0 {
-            max = 0.0;
-        }
-    }
-
-    if let Some(value) = explicit_min {
-        min = value;
-    }
-    if let Some(value) = explicit_max {
-        max = value;
-    }
-
+    let [min, max] = adjusted_range(p, [min, max], explicit_min, explicit_max);
     if max <= min {
         return fallback_bounds(Some(min), explicit_max.filter(|value| *value > min));
     }
@@ -79,20 +61,37 @@ pub(crate) fn calculate_y_bounds(p: &PanelState) -> [f64; 2] {
     ]
 }
 
-fn observe_thresholds(p: &PanelState, min: &mut f64, max: &mut f64, has_data: &mut bool) {
-    let Some(thresholds) = &p.thresholds else {
-        return;
-    };
+/// Widens a flat data range, applies the zero-based mode and applies the explicit limits.
+fn adjusted_range(
+    p: &PanelState,
+    [mut min, mut max]: [f64; 2],
+    explicit_min: Option<f64>,
+    explicit_max: Option<f64>,
+) -> [f64; 2] {
+    if min == max {
+        min -= 1.0;
+        max += 1.0;
+    }
 
-    for step in thresholds.steps.iter().filter_map(|step| step.value) {
-        let value = match thresholds.mode {
-            ThresholdMode::Absolute => step,
-            ThresholdMode::Percentage => {
-                let min = p.min.unwrap_or(0.0);
-                let max = p.max.unwrap_or(100.0);
-                min + (step / 100.0) * (max - min)
-            }
-        };
+    if p.y_axis_mode == YAxisMode::ZeroBased {
+        if min > 0.0 {
+            min = 0.0;
+        } else if max < 0.0 {
+            max = 0.0;
+        }
+    }
+
+    if let Some(value) = explicit_min {
+        min = value;
+    }
+    if let Some(value) = explicit_max {
+        max = value;
+    }
+    [min, max]
+}
+
+fn observe_thresholds(p: &PanelState, min: &mut f64, max: &mut f64, has_data: &mut bool) {
+    for (value, _) in threshold_steps(p) {
         observe_value(value, min, max, has_data);
     }
 }
