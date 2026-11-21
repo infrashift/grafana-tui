@@ -173,7 +173,7 @@ pub(crate) enum RefreshMessage {
     Panels(PanelBatch),
     /// The annotation provider, handed back with its result.
     Annotations {
-        provider: Box<dyn AnnotationProvider>,
+        provider: AnnotationProvider,
         poll: ProviderPoll,
     },
 }
@@ -1028,7 +1028,6 @@ fn push_new_messages(target: &mut Vec<String>, messages: Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::annotations::ProviderFuture;
     use crate::app::{PanelOptions, PanelType, YAxisMode};
     use crate::export::ExportOptions;
     use crate::grafana::VariableRefresh;
@@ -1909,26 +1908,14 @@ mod tests {
         assert_eq!(app.slow_refresh_at(), None);
     }
 
-    #[derive(Debug)]
-    struct WindowRecorder {
-        windows: Arc<Mutex<Vec<AnnotationRefreshContext>>>,
-    }
-
-    impl AnnotationProvider for WindowRecorder {
-        fn refresh<'a>(&'a mut self, context: &'a AnnotationRefreshContext) -> ProviderFuture<'a> {
-            self.windows.lock().unwrap().push(context.clone());
-            Box::pin(async { ProviderPoll::Unchanged })
-        }
-    }
-
     #[tokio::test]
     async fn annotation_loads_queue_behind_a_running_one() {
         let windows = Arc::new(Mutex::new(Vec::new()));
         let mut app = app_with_panels("http://127.0.0.1:9", 0);
         app.annotations =
-            crate::annotations::AnnotationState::from_provider(Some(Box::new(WindowRecorder {
-                windows: Arc::clone(&windows),
-            })));
+            crate::annotations::AnnotationState::from_provider(Some(AnnotationProvider::Test(
+                crate::annotations::TestProvider::WindowRecorder(Arc::clone(&windows)),
+            )));
 
         app.start_refresh();
         app.zoom_out();

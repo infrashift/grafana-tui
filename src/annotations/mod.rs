@@ -22,9 +22,11 @@ pub(crate) use model::{
     AnnotationEvent, AnnotationPanelContext, AnnotationSnapshot, AnnotationTarget,
 };
 pub(crate) use projection::{AnnotationCluster, cluster_projected_events};
+#[cfg(test)]
+pub(crate) use provider::test_provider::TestProvider;
 pub(crate) use provider::{
     AnnotationCommandConfig, AnnotationProvider, AnnotationProviderError, AnnotationRefreshContext,
-    AnnotationSourceConfig, DEFAULT_COMMAND_TIMEOUT, ProviderFuture, ProviderPoll, build_provider,
+    AnnotationSourceConfig, DEFAULT_COMMAND_TIMEOUT, ProviderPoll, build_provider,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -38,7 +40,7 @@ pub(crate) struct AnnotationStatus {
 pub(crate) enum AnnotationState {
     Disabled,
     Active {
-        provider: Option<Box<dyn AnnotationProvider>>,
+        provider: Option<AnnotationProvider>,
         snapshot: AnnotationSnapshot,
         filter: TagFilter,
         visible: bool,
@@ -47,7 +49,7 @@ pub(crate) enum AnnotationState {
 }
 
 impl AnnotationState {
-    pub(crate) fn from_provider(provider: Option<Box<dyn AnnotationProvider>>) -> Self {
+    pub(crate) fn from_provider(provider: Option<AnnotationProvider>) -> Self {
         match provider {
             Some(provider) => Self::Active {
                 provider: Some(provider),
@@ -79,7 +81,7 @@ impl AnnotationState {
 
     /// Takes the provider out so a refresh can run in the background. Returns
     /// `None` when annotations are disabled or a refresh already holds it.
-    pub(crate) fn take_provider(&mut self) -> Option<Box<dyn AnnotationProvider>> {
+    pub(crate) fn take_provider(&mut self) -> Option<AnnotationProvider> {
         match self {
             Self::Active { provider, .. } => provider.take(),
             Self::Disabled => None,
@@ -90,7 +92,7 @@ impl AnnotationState {
     /// Returns whether a new snapshot was loaded.
     pub(crate) fn finish_refresh(
         &mut self,
-        returned: Box<dyn AnnotationProvider>,
+        returned: AnnotationProvider,
         poll: ProviderPoll,
     ) -> bool {
         if let Self::Active { provider, .. } = self {
@@ -278,7 +280,6 @@ mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -286,41 +287,8 @@ mod tests {
     use super::{
         AnnotationPanelContext, AnnotationProvider, AnnotationProviderError,
         AnnotationRefreshContext, AnnotationSnapshot, AnnotationState, AnnotationTarget,
-        ProviderFuture, ProviderPoll, TagFilter,
+        ProviderPoll, TagFilter, TestProvider,
     };
-
-    #[derive(Debug)]
-    struct ScriptedProvider {
-        outcomes: VecDeque<ProviderPoll>,
-        refresh_count: Option<Arc<Mutex<usize>>>,
-    }
-
-    impl ScriptedProvider {
-        fn new(outcomes: Vec<ProviderPoll>) -> Self {
-            Self {
-                outcomes: outcomes.into(),
-                refresh_count: None,
-            }
-        }
-
-        fn recording(outcomes: Vec<ProviderPoll>, refresh_count: Arc<Mutex<usize>>) -> Self {
-            Self {
-                outcomes: outcomes.into(),
-                refresh_count: Some(refresh_count),
-            }
-        }
-    }
-
-    impl AnnotationProvider for ScriptedProvider {
-        fn refresh<'a>(&'a mut self, _context: &'a AnnotationRefreshContext) -> ProviderFuture<'a> {
-            Box::pin(async move {
-                if let Some(refresh_count) = &self.refresh_count {
-                    *refresh_count.lock().unwrap() += 1;
-                }
-                self.outcomes.pop_front().unwrap_or(ProviderPoll::Unchanged)
-            })
-        }
-    }
 
     fn snapshot_with(text: &str) -> AnnotationSnapshot {
         AnnotationSnapshot::new(vec![super::test_event_at(100.0, text)])
@@ -344,12 +312,12 @@ mod tests {
     #[tokio::test]
     async fn command_state_retains_snapshot_on_failure_and_clears_warning_on_recovery() {
         let context = refresh_context();
-        let provider = ScriptedProvider::new(vec![
+        let provider = TestProvider::scripted(vec![
             ProviderPoll::Loaded(snapshot_with("initial")),
             ProviderPoll::Failed(AnnotationProviderError::new("command failed")),
             ProviderPoll::Loaded(AnnotationSnapshot::new(Vec::new())),
         ]);
-        let mut state = AnnotationState::from_provider(Some(Box::new(provider)));
+        let mut state = AnnotationState::from_provider(Some(AnnotationProvider::Test(provider)));
 
         assert!(state.refresh(&context).await);
         assert_eq!(state.snapshot().unwrap().len(), 1);
@@ -373,11 +341,11 @@ mod tests {
     #[tokio::test]
     async fn hidden_state_refreshes_provider_every_time() {
         let refresh_count = Arc::new(Mutex::new(0));
-        let provider = ScriptedProvider::recording(
+        let provider = TestProvider::scripted_recording(
             vec![ProviderPoll::Unchanged, ProviderPoll::Unchanged],
             Arc::clone(&refresh_count),
         );
-        let mut state = AnnotationState::from_provider(Some(Box::new(provider)));
+        let mut state = AnnotationState::from_provider(Some(AnnotationProvider::Test(provider)));
         state.toggle_visibility();
 
         state.refresh(&refresh_context()).await;

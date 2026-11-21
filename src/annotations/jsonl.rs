@@ -5,8 +5,8 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use super::{
-    AnnotationEvent, AnnotationProvider, AnnotationProviderError, AnnotationRefreshContext,
-    AnnotationSnapshot, AnnotationTarget, ProviderFuture, ProviderPoll,
+    AnnotationEvent, AnnotationProviderError, AnnotationRefreshContext, AnnotationSnapshot,
+    AnnotationTarget, ProviderPoll,
 };
 
 #[derive(Deserialize)]
@@ -252,9 +252,10 @@ impl JsonlFileProvider {
     }
 }
 
-impl AnnotationProvider for JsonlFileProvider {
-    fn refresh<'a>(&'a mut self, _context: &'a AnnotationRefreshContext) -> ProviderFuture<'a> {
-        Box::pin(async move { self.poll_file().await })
+impl JsonlFileProvider {
+    /// Loads the file when it changed since the last refresh. The file has events for each window.
+    pub(crate) async fn refresh(&mut self, _context: &AnnotationRefreshContext) -> ProviderPoll {
+        self.poll_file().await
     }
 }
 
@@ -263,9 +264,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use crate::annotations::{
-        AnnotationProvider, AnnotationRefreshContext, AnnotationTarget, ProviderPoll,
-    };
+    use crate::annotations::{AnnotationRefreshContext, AnnotationTarget, ProviderPoll};
 
     use super::{JsonlFileProvider, parse_jsonl};
 
