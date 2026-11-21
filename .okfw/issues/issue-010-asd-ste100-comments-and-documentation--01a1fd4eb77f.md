@@ -39,7 +39,7 @@ Done on 2026-11-21. `make docs-style` reports 0 findings in 80 files (1178 at th
 
 - **Work split:** four agents rewrote the code comments (two groups), the user docs and the contributor docs with the wiki. The coordinator rewrote the comments of the demo scripts, the Makefile and the CI files by hand.
 - **New page:** `docs/src/content/docs/limits.md` lists each limit that a user can reach, from [ADR-0007](/decisions/adr-0007-named-limits-cap-each-input-and-growable-collection--01a1fdaaf533.md).
-- **Workflow docs:** `DEVELOPMENT.md` and `CONTRIBUTING.md` describe the gates, the tools, the two build files, the Power of 10 rules, the working loop and the snapshot tests.
+- **Workflow docs:** `DEVELOPMENT.md` and `CONTRIBUTING.md` describe the gates, the tools and the two build files. They also describe the Power of 10 rules, the loop for each change and the snapshot tests.
 - **Vocabulary:** two new terms: "production" (production code) and "recording" (the Ctrl+E feature).
 - **License headers:** the user chose to keep the Apache header. `docs-style` excludes the 35 files that hold it, until lexiscope can skip the header ([ISSUE-012](/issues/issue-012-scan-the-licensed-rust-files-when-lexiscope-skips-license-headers--01a1fed33e26.md)). The comments below each header follow ASD-STE100.
 - **Out of scope:** the clap doc comments in `src/cli.rs` are the `--help` text, so they keep their words.
