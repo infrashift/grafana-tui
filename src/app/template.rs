@@ -25,7 +25,8 @@ use super::variables::{format_prometheus_values, substitute_variables};
 use crate::conditions::{ConditionGroup, ConditionTarget, Conditions};
 use crate::dashboard::{
     DashboardAutoGrid, DashboardLayout, DashboardLayoutItem, DashboardRow, DashboardTab,
-    DashboardTabs, Repeat, RepeatDirection, Repeats, RowId, SectionId, TabGroupId,
+    DashboardTabs, LayoutWalk, Repeat, RepeatDirection, Repeats, RowId, SectionId, TabGroupId,
+    WalkScope,
 };
 use crate::grafana::{SectionVariable, TemplateQueryVar};
 
@@ -384,27 +385,18 @@ impl DashboardTemplate {
     }
 }
 
+/// The largest row id and the largest tab group id in `items`.
 fn max_ids(items: &[DashboardLayoutItem]) -> (Option<usize>, Option<usize>) {
     let mut rows = None;
     let mut tab_groups = None;
-    for item in items {
-        let (child_rows, child_tab_groups) = match item {
-            DashboardLayoutItem::Row(row) => {
-                rows = rows.max(Some(row.id.value()));
-                max_ids(&row.children)
-            }
+    for event in LayoutWalk::new(items, WalkScope::All) {
+        match event.item {
+            DashboardLayoutItem::Row(row) => rows = rows.max(Some(row.id.value())),
             DashboardLayoutItem::Tabs(group) => {
                 tab_groups = tab_groups.max(Some(group.id.value()));
-                group
-                    .tabs
-                    .iter()
-                    .map(|tab| max_ids(&tab.children))
-                    .fold((None, None), |(a, b), (c, d)| (a.max(c), b.max(d)))
             }
-            DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => (None, None),
-        };
-        rows = rows.max(child_rows);
-        tab_groups = tab_groups.max(child_tab_groups);
+            DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => {}
+        }
     }
     (rows, tab_groups)
 }

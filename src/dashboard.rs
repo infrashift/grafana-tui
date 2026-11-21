@@ -2,6 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use crate::conditions::ConditionTarget;
 
+mod walk;
+
+pub(crate) use walk::{LayoutWalk, WalkScope};
+
 /// The most levels of child lists in a layout. The top-level list is level 1.
 ///
 /// The example dashboards and the test fixtures use 3 levels at most, and a
@@ -231,7 +235,7 @@ impl DashboardLayout {
 
     pub(crate) fn visible_items(&self) -> Vec<VisibleDashboardItem> {
         let mut visible = Vec::new();
-        collect_visible_items(&self.items, 0, &mut visible);
+        collect_visible_items(&self.items, &mut visible);
         visible
     }
 
@@ -266,23 +270,15 @@ impl DashboardLayout {
     /// The tab of group `id` that each row and tab section belongs to: the
     /// group's own tabs, and every row and tab nested inside them.
     pub(crate) fn section_owners(&self, id: TabGroupId) -> HashMap<SectionId, usize> {
-        fn collect(
-            items: &[DashboardLayoutItem],
-            owner: usize,
-            owners: &mut HashMap<SectionId, usize>,
-        ) {
-            for item in items {
-                for (section, children) in item_sections(item) {
-                    owners.insert(section, owner);
-                    collect(children, owner, owners);
-                }
-            }
-        }
         let mut owners = HashMap::new();
         if let Some(group) = self.tabs(id) {
             for (index, tab) in group.tabs.iter().enumerate() {
                 owners.insert(SectionId::Tab(id, index), index);
-                collect(&tab.children, index, &mut owners);
+                owners.extend(
+                    LayoutWalk::new(&tab.children, WalkScope::All)
+                        .flat_map(|event| item_sections(event.item))
+                        .map(|section| (section, index)),
+                );
             }
         }
         owners
@@ -328,7 +324,7 @@ impl DashboardLayout {
         let group = self.tabs(id)?;
         let tab = group.active.and_then(|index| group.tabs.get(index))?;
         let mut visible = Vec::new();
-        collect_visible_items(&tab.children, 0, &mut visible);
+        collect_visible_items(&tab.children, &mut visible);
         visible.first().map(|item| item.id)
     }
 
@@ -373,8 +369,7 @@ impl DashboardLayout {
             return Some(id);
         }
 
-        let mut ancestors = Vec::new();
-        if find_ancestors(&self.items, id, &mut ancestors) {
+        if let Some(ancestors) = find_ancestors(&self.items, id) {
             for ancestor in ancestors.into_iter().rev() {
                 if visible.iter().any(|item| item.id == ancestor) {
                     return Some(ancestor);
@@ -481,22 +476,19 @@ fn sync_state(
     }
 }
 
+/// Records the collapse state of each row and the active tab of each tab group.
 fn collect_state(
     items: &[DashboardLayoutItem],
     rows: &mut HashMap<RowId, bool>,
     tabs: &mut HashMap<TabGroupId, Option<usize>>,
 ) {
-    for item in items {
-        match item {
+    for event in LayoutWalk::new(items, WalkScope::All) {
+        match event.item {
             DashboardLayoutItem::Row(row) => {
                 rows.insert(row.id, row.collapsed);
-                collect_state(&row.children, rows, tabs);
             }
             DashboardLayoutItem::Tabs(group) => {
                 tabs.insert(group.id, group.active);
-                for tab in &group.tabs {
-                    collect_state(&tab.children, rows, tabs);
-                }
             }
             DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => {}
         }
@@ -531,53 +523,36 @@ fn apply_state(
     }
 }
 
-/// The rows and tabs that `item` itself defines, each with its children.
-fn item_sections(item: &DashboardLayoutItem) -> Vec<(SectionId, &[DashboardLayoutItem])> {
+/// The rows and tabs that `item` itself defines.
+fn item_sections(item: &DashboardLayoutItem) -> Vec<SectionId> {
     match item {
-        DashboardLayoutItem::Row(row) => vec![(SectionId::Row(row.id), row.children.as_slice())],
-        DashboardLayoutItem::Tabs(group) => group
-            .tabs
-            .iter()
-            .enumerate()
-            .map(|(index, tab)| (SectionId::Tab(group.id, index), tab.children.as_slice()))
+        DashboardLayoutItem::Row(row) => vec![SectionId::Row(row.id)],
+        DashboardLayoutItem::Tabs(group) => (0..group.tabs.len())
+            .map(|index| SectionId::Tab(group.id, index))
             .collect(),
         DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => Vec::new(),
     }
 }
 
+/// Adds every panel of `items` to `panels` in pre-order.
 fn collect_panel_indices(items: &[DashboardLayoutItem], panels: &mut Vec<usize>) {
-    for item in items {
-        match item {
+    let mut walk = LayoutWalk::new(items, WalkScope::All);
+    for event in walk.by_ref() {
+        match event.item {
             DashboardLayoutItem::Panel(index) => panels.push(*index),
             DashboardLayoutItem::AutoGrid(grid) => panels.extend(&grid.panels),
-            DashboardLayoutItem::Row(row) => collect_panel_indices(&row.children, panels),
-            DashboardLayoutItem::Tabs(group) => {
-                for tab in &group.tabs {
-                    collect_panel_indices(&tab.children, panels);
-                }
-            }
+            DashboardLayoutItem::Row(_) | DashboardLayoutItem::Tabs(_) => {}
         }
     }
+    debug_assert!(!walk.truncated(), "an imported layout is within the limits");
 }
 
+/// The row with `id`, first in pre-order.
 fn find_row(items: &[DashboardLayoutItem], id: RowId) -> Option<&DashboardRow> {
-    for item in items {
-        if let DashboardLayoutItem::Row(row) = item {
-            if row.id == id {
-                return Some(row);
-            }
-            if let Some(found) = find_row(&row.children, id) {
-                return Some(found);
-            }
-        } else if let DashboardLayoutItem::Tabs(group) = item {
-            for tab in &group.tabs {
-                if let Some(found) = find_row(&tab.children, id) {
-                    return Some(found);
-                }
-            }
-        }
-    }
-    None
+    LayoutWalk::new(items, WalkScope::All).find_map(|event| match event.item {
+        DashboardLayoutItem::Row(row) if row.id == id => Some(row),
+        _ => None,
+    })
 }
 
 fn find_row_mut(items: &mut [DashboardLayoutItem], id: RowId) -> Option<&mut DashboardRow> {
@@ -600,28 +575,12 @@ fn find_row_mut(items: &mut [DashboardLayoutItem], id: RowId) -> Option<&mut Das
     None
 }
 
+/// The tab group with `id`, first in pre-order.
 fn find_tabs(items: &[DashboardLayoutItem], id: TabGroupId) -> Option<&DashboardTabs> {
-    for item in items {
-        match item {
-            DashboardLayoutItem::Tabs(group) => {
-                if group.id == id {
-                    return Some(group);
-                }
-                for tab in &group.tabs {
-                    if let Some(found) = find_tabs(&tab.children, id) {
-                        return Some(found);
-                    }
-                }
-            }
-            DashboardLayoutItem::Row(row) => {
-                if let Some(found) = find_tabs(&row.children, id) {
-                    return Some(found);
-                }
-            }
-            DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => {}
-        }
-    }
-    None
+    LayoutWalk::new(items, WalkScope::All).find_map(|event| match event.item {
+        DashboardLayoutItem::Tabs(group) if group.id == id => Some(group),
+        _ => None,
+    })
 }
 
 fn find_tabs_mut(items: &mut [DashboardLayoutItem], id: TabGroupId) -> Option<&mut DashboardTabs> {
@@ -648,37 +607,24 @@ fn find_tabs_mut(items: &mut [DashboardLayoutItem], id: TabGroupId) -> Option<&m
     None
 }
 
-fn collect_visible_items(
-    items: &[DashboardLayoutItem],
-    depth: usize,
-    visible: &mut Vec<VisibleDashboardItem>,
-) {
-    for item in items {
-        match item {
+/// Adds the items on screen to `visible`, in pre-order, with their display depth.
+fn collect_visible_items(items: &[DashboardLayoutItem], visible: &mut Vec<VisibleDashboardItem>) {
+    let mut walk = LayoutWalk::new(items, WalkScope::Visible);
+    for event in walk.by_ref() {
+        let depth = event.depth;
+        match event.item {
             DashboardLayoutItem::Panel(index) => {
-                visible.push(VisibleDashboardItem::panel(*index, depth))
+                visible.push(VisibleDashboardItem::panel(*index, depth));
             }
-            DashboardLayoutItem::Row(row) if row.hidden_header => {
-                collect_visible_items(&row.children, depth, visible);
-            }
-            DashboardLayoutItem::Row(row) => {
-                visible.push(VisibleDashboardItem {
-                    id: DashboardItemId::Row(row.id),
-                    depth,
-                });
-                if !row.collapsed {
-                    collect_visible_items(&row.children, depth + 1, visible);
-                }
-            }
-            DashboardLayoutItem::Tabs(group) => {
-                visible.push(VisibleDashboardItem {
-                    id: DashboardItemId::Tabs(group.id),
-                    depth,
-                });
-                if let Some(tab) = group.active.and_then(|index| group.tabs.get(index)) {
-                    collect_visible_items(&tab.children, depth + 1, visible);
-                }
-            }
+            DashboardLayoutItem::Row(row) if row.hidden_header => {}
+            DashboardLayoutItem::Row(row) => visible.push(VisibleDashboardItem {
+                id: DashboardItemId::Row(row.id),
+                depth,
+            }),
+            DashboardLayoutItem::Tabs(group) => visible.push(VisibleDashboardItem {
+                id: DashboardItemId::Tabs(group.id),
+                depth,
+            }),
             DashboardLayoutItem::AutoGrid(grid) => visible.extend(
                 grid.panels
                     .iter()
@@ -686,53 +632,47 @@ fn collect_visible_items(
             ),
         }
     }
+    debug_assert!(!walk.truncated(), "an imported layout is within the limits");
 }
 
+/// The rows and tab groups around `target`, outermost first, or `None` when
+/// `items` does not hold `target`.
 fn find_ancestors(
     items: &[DashboardLayoutItem],
     target: DashboardItemId,
-    ancestors: &mut Vec<DashboardItemId>,
-) -> bool {
-    for item in items {
-        match item {
+) -> Option<Vec<DashboardItemId>> {
+    let mut path = Vec::with_capacity(MAX_LAYOUT_DEPTH);
+    for event in LayoutWalk::new(items, WalkScope::All) {
+        // The list at level `n` has `n - 1` rows and tab groups around it.
+        path.truncate(event.level.saturating_sub(1));
+        match event.item {
             DashboardLayoutItem::Panel(index) if target == DashboardItemId::Panel(*index) => {
-                return true;
+                return Some(path);
             }
-            DashboardLayoutItem::Row(row) => {
-                if target == DashboardItemId::Row(row.id) {
-                    return true;
-                }
-                ancestors.push(DashboardItemId::Row(row.id));
-                if find_ancestors(&row.children, target, ancestors) {
-                    return true;
-                }
-                ancestors.pop();
-            }
-            DashboardLayoutItem::Tabs(group) => {
-                if target == DashboardItemId::Tabs(group.id) {
-                    return true;
-                }
-                ancestors.push(DashboardItemId::Tabs(group.id));
-                for tab in &group.tabs {
-                    if find_ancestors(&tab.children, target, ancestors) {
-                        return true;
-                    }
-                }
-                ancestors.pop();
-            }
-            DashboardLayoutItem::AutoGrid(grid) => {
+            DashboardLayoutItem::AutoGrid(grid)
                 if grid
                     .panels
                     .iter()
-                    .any(|&index| target == DashboardItemId::Panel(index))
-                {
-                    return true;
-                }
+                    .any(|&index| target == DashboardItemId::Panel(index)) =>
+            {
+                return Some(path);
             }
-            DashboardLayoutItem::Panel(_) => {}
+            DashboardLayoutItem::Row(row) => {
+                if target == DashboardItemId::Row(row.id) {
+                    return Some(path);
+                }
+                path.push(DashboardItemId::Row(row.id));
+            }
+            DashboardLayoutItem::Tabs(group) => {
+                if target == DashboardItemId::Tabs(group.id) {
+                    return Some(path);
+                }
+                path.push(DashboardItemId::Tabs(group.id));
+            }
+            DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => {}
         }
     }
-    false
+    None
 }
 
 #[cfg(test)]
