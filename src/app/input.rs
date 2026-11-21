@@ -273,7 +273,7 @@ fn handle_search_key(key: KeyEvent, terminal_size: Size, app: &mut AppState) -> 
             app.search_query.pop();
             update_search_results(app);
         }
-        // The search text stops growing at its limit.
+        // The search text gets no more characters at its limit.
         KeyCode::Char(c) if app.search_query.chars().count() < MAX_SEARCH_CHARS => {
             app.search_query.push(c);
             update_search_results(app);
