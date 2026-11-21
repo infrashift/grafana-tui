@@ -1,8 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use serde_json::Value;
 
 use super::model;
+use crate::dashboard::{MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES, MAX_LAYOUT_STEPS};
 
 #[derive(Debug, Deserialize)]
 struct RawDashboard {
@@ -202,7 +203,7 @@ pub(super) fn adapt(value: Value) -> Result<model::Dashboard> {
         .enumerate()
         .map(|(index, variable)| variable.normalize(index))
         .collect();
-    dashboard.layout = normalize_layout(raw.panels.unwrap_or_default(), "panels");
+    dashboard.layout = normalize_layout(raw.panels.unwrap_or_default(), "panels")?;
     Ok(dashboard)
 }
 
@@ -270,77 +271,146 @@ impl RawVar {
     }
 }
 
-fn normalize_layout(panels: Vec<RawPanel>, path: &str) -> Vec<model::LayoutNode> {
-    let mut output = Vec::new();
-    let mut expanded_row = None;
-
-    for (index, panel) in panels.into_iter().enumerate() {
-        let source_path = format!("{path}[{index}]");
-        if panel.repeat_panel_id.is_some() {
-            // grafana-tui expands repeats itself, so drop copies saved by older Grafana.
+/// Normalizes a list of classic panels and the panels saved in its rows with
+/// an explicit stack.
+fn normalize_layout(panels: Vec<RawPanel>, path: &str) -> Result<Vec<model::LayoutNode>> {
+    let mut frames = Vec::with_capacity(MAX_LAYOUT_DEPTH);
+    frames.push(ClassicFrame::new(panels, path.to_string(), None));
+    let mut nodes = 0usize;
+    for _ in 0..MAX_LAYOUT_STEPS {
+        let child_level = frames.len().saturating_add(1);
+        let Some(frame) = frames.last_mut() else {
+            break;
+        };
+        let Some((source_path, panel)) = frame.next_panel() else {
+            if let Some(output) = close_classic_frame(&mut frames) {
+                return Ok(output);
+            }
+            continue;
+        };
+        nodes = nodes.saturating_add(1);
+        ensure!(
+            nodes <= MAX_LAYOUT_NODES,
+            "Grafana Classic dashboard at {source_path} holds more than the limit of \
+             {MAX_LAYOUT_NODES} rows and panels"
+        );
+        if panel.panel_type != "row" {
+            frame.push_panel(panel, source_path);
             continue;
         }
-        if panel.panel_type == "row" {
-            if let Some((row, _)) = expanded_row.take() {
-                output.push(model::LayoutNode::Row(row));
-            }
+        frame.flush_expanded_row();
+        ensure!(
+            child_level <= MAX_LAYOUT_DEPTH,
+            "Grafana Classic dashboard at {source_path} nests rows deeper than the limit of \
+             {MAX_LAYOUT_DEPTH} levels"
+        );
+        let (row, row_base_y, saved) = classic_row_header(panel, source_path);
+        let saved_path = format!("{}.panels", row.source_path);
+        frames.push(ClassicFrame::new(
+            saved,
+            saved_path,
+            Some((row, row_base_y)),
+        ));
+    }
+    anyhow::bail!("Grafana Classic dashboard at {path} has more than {MAX_LAYOUT_STEPS} steps")
+}
 
-            let collapsed = panel.collapsed.unwrap_or(false);
-            let (row, row_base_y) = normalize_classic_row(panel, source_path, collapsed);
-            if collapsed {
-                output.push(model::LayoutNode::Row(row));
-            } else {
-                expanded_row = Some((row, row_base_y));
-            }
-        } else if let Some((row, row_base_y)) = expanded_row.as_mut() {
+/// Ends the top frame. Gives the output of the top-level list, or `None` when
+/// the frame was the saved panels of a row, which goes to the frame below.
+fn close_classic_frame(frames: &mut Vec<ClassicFrame>) -> Option<Vec<model::LayoutNode>> {
+    let mut frame = frames.pop()?;
+    frame.flush_expanded_row();
+    let Some((mut row, row_base_y)) = frame.row else {
+        return Some(frame.output);
+    };
+    row.children = frame
+        .output
+        .into_iter()
+        .map(|node| normalize_child_y(node, row_base_y))
+        .collect();
+    let outer = frames.last_mut()?;
+    if row.collapsed {
+        outer.output.push(model::LayoutNode::Row(row));
+    } else {
+        outer.expanded_row = Some((row, row_base_y));
+    }
+    None
+}
+
+/// A list of classic panels that the normalizer reads, with the row that saved it.
+struct ClassicFrame {
+    panels: std::iter::Enumerate<std::vec::IntoIter<RawPanel>>,
+    path: String,
+    output: Vec<model::LayoutNode>,
+    /// The open row that takes the panels below it, with its base y.
+    expanded_row: Option<(model::Row, i32)>,
+    /// The row whose saved panels this list holds, with its base y.
+    row: Option<(model::Row, i32)>,
+}
+
+impl ClassicFrame {
+    /// Starts a list of panels at `path`.
+    fn new(panels: Vec<RawPanel>, path: String, row: Option<(model::Row, i32)>) -> Self {
+        Self {
+            panels: panels.into_iter().enumerate(),
+            path,
+            output: Vec::new(),
+            expanded_row: None,
+            row,
+        }
+    }
+
+    /// The next panel and its path. The function skips the copies that older
+    /// Grafana saved for a repeat, because grafana-tui expands repeats itself.
+    fn next_panel(&mut self) -> Option<(String, RawPanel)> {
+        let path = &self.path;
+        self.panels
+            .by_ref()
+            .find(|(_, panel)| panel.repeat_panel_id.is_none())
+            .map(|(index, panel)| (format!("{path}[{index}]"), panel))
+    }
+
+    /// Adds a panel to the open row, or to the list when no row is open.
+    fn push_panel(&mut self, panel: RawPanel, source_path: String) {
+        if let Some((row, row_base_y)) = self.expanded_row.as_mut() {
             row.children.push(normalize_classic_panel(
                 panel,
                 source_path,
                 Some(*row_base_y),
             ));
         } else {
-            output.push(normalize_classic_panel(panel, source_path, None));
+            self.output
+                .push(normalize_classic_panel(panel, source_path, None));
         }
     }
 
-    if let Some((row, _)) = expanded_row {
-        output.push(model::LayoutNode::Row(row));
+    /// Closes the open row and adds it to the list.
+    fn flush_expanded_row(&mut self) {
+        if let Some((row, _)) = self.expanded_row.take() {
+            self.output.push(model::LayoutNode::Row(row));
+        }
     }
-
-    output
 }
 
-fn normalize_classic_row(
-    panel: RawPanel,
-    source_path: String,
-    collapsed: bool,
-) -> (model::Row, i32) {
+/// A classic row with no children yet, its base y, and the panels it saved.
+fn classic_row_header(panel: RawPanel, source_path: String) -> (model::Row, i32, Vec<RawPanel>) {
+    let collapsed = panel.collapsed.unwrap_or(false);
     let row_base_y = panel
         .grid_pos
         .as_ref()
         .map_or(0, |grid| grid.y.saturating_add(grid.h));
     let repeat = panel.repeat();
-    let children = normalize_layout(
-        panel.panels.unwrap_or_default(),
-        &format!("{source_path}.panels"),
-    )
-    .into_iter()
-    .map(|node| normalize_child_y(node, row_base_y))
-    .collect();
-
-    (
-        model::Row {
-            title: panel.title.unwrap_or_default(),
-            repeat,
-            condition: None,
-            variables: Vec::new(),
-            collapsed,
-            hidden_header: false,
-            source_path,
-            children,
-        },
-        row_base_y,
-    )
+    let row = model::Row {
+        title: panel.title.unwrap_or_default(),
+        repeat,
+        condition: None,
+        variables: Vec::new(),
+        collapsed,
+        hidden_header: false,
+        source_path,
+        children: Vec::new(),
+    };
+    (row, row_base_y, panel.panels.unwrap_or_default())
 }
 
 fn normalize_child_y(node: model::LayoutNode, row_base_y: i32) -> model::LayoutNode {

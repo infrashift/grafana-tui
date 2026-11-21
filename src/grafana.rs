@@ -3836,4 +3836,113 @@ mod tests {
                 && diagnostic.message.contains("$cluster")
         }));
     }
+
+    /// A V2 dashboard whose layout nests `wrappers` rows or tabs around a grid.
+    fn nested_v2_dashboard(wrappers: usize, tabs: bool) -> String {
+        let mut layout = serde_json::json!({"kind": "GridLayout", "spec": {"items": []}});
+        for _ in 0..wrappers {
+            layout = if tabs {
+                serde_json::json!({"kind": "TabsLayout", "spec": {"tabs": [
+                    {"kind": "TabsLayoutTab", "spec": {"title": "Tab", "layout": layout}}
+                ]}})
+            } else {
+                serde_json::json!({"kind": "RowsLayout", "spec": {"rows": [
+                    {"kind": "RowsLayoutRow", "spec": {"title": "Row", "layout": layout}}
+                ]}})
+            };
+        }
+        minimal_v2_with_layout(layout).to_string()
+    }
+
+    /// A V2 dashboard with `count` grid panels.
+    fn wide_v2_dashboard(count: usize) -> String {
+        let mut json = valid_v2_resource();
+        make_v2_panel_importable(&mut json);
+        let item = json["spec"]["layout"]["spec"]["items"][0].clone();
+        json["spec"]["layout"]["spec"]["items"] = serde_json::Value::Array(vec![item; count]);
+        json.to_string()
+    }
+
+    #[test]
+    fn v2_layout_at_the_depth_limit_imports() {
+        let wrappers = crate::dashboard::MAX_LAYOUT_DEPTH - 1;
+        for tabs in [false, true] {
+            let dashboard = parse_grafana_dashboard(&nested_v2_dashboard(wrappers, tabs)).unwrap();
+            assert_eq!(dashboard.layout.items.len(), 1);
+        }
+    }
+
+    #[test]
+    fn v2_layout_past_the_depth_limit_is_an_error() {
+        let wrappers = crate::dashboard::MAX_LAYOUT_DEPTH;
+        for tabs in [false, true] {
+            let error = parse_grafana_dashboard(&nested_v2_dashboard(wrappers, tabs))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("limit of 16 levels"), "{error}");
+        }
+    }
+
+    #[test]
+    fn v2_layout_over_the_node_limit_is_an_error() {
+        let limit = crate::dashboard::MAX_LAYOUT_NODES;
+        let dashboard = parse_grafana_dashboard(&wide_v2_dashboard(limit)).unwrap();
+        assert_eq!(dashboard.layout.items.len(), limit);
+        let error = parse_grafana_dashboard(&wide_v2_dashboard(limit + 1))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("limit of 4096 rows, tabs and panels"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn dashboard_set_checks_the_limits_of_the_combined_layout() {
+        let wrappers = crate::dashboard::MAX_LAYOUT_DEPTH - 1;
+        for tabs in [false, true] {
+            let deep = nested_v2_dashboard(wrappers, tabs);
+            let error = parse_grafana_dashboards(&[&deep]).unwrap_err().to_string();
+            assert!(error.contains("limit of 16 levels"), "{error}");
+        }
+        let half = wide_v2_dashboard(crate::dashboard::MAX_LAYOUT_NODES / 2);
+        let error = parse_grafana_dashboards(&[&half, &half])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("limit of 4096 rows, tabs and panels"),
+            "{error}"
+        );
+        assert!(parse_grafana_dashboards(&[&half]).is_ok());
+    }
+
+    /// A classic dashboard whose rows nest `rows` deep around one panel.
+    fn nested_classic_dashboard(rows: usize) -> String {
+        let mut panel = serde_json::json!({"type": "timeseries", "targets": [{"expr": "up"}]});
+        for _ in 0..rows {
+            panel = serde_json::json!({"type": "row", "collapsed": true, "panels": [panel]});
+        }
+        serde_json::json!({"panels": [panel]}).to_string()
+    }
+
+    #[test]
+    fn classic_rows_past_the_depth_limit_are_an_error() {
+        let limit = crate::dashboard::MAX_LAYOUT_DEPTH;
+        let dashboard = parse_grafana_dashboard(&nested_classic_dashboard(limit - 1)).unwrap();
+        assert_eq!(dashboard.layout.panel_indices(), vec![0]);
+        let error = parse_grafana_dashboard(&nested_classic_dashboard(limit))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("limit of 16 levels"), "{error}");
+    }
+
+    #[test]
+    fn classic_panels_over_the_node_limit_are_an_error() {
+        let panel = serde_json::json!({"type": "timeseries", "targets": [{"expr": "up"}]});
+        let panels = vec![panel; crate::dashboard::MAX_LAYOUT_NODES + 1];
+        let error = parse_grafana_dashboard(&serde_json::json!({"panels": panels}).to_string())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("limit of 4096 rows and panels"), "{error}");
+    }
 }
