@@ -21,7 +21,7 @@ pub(crate) use modal::{AnnotationModal, ClusterModalState, visible_range};
 pub(crate) use model::{
     AnnotationEvent, AnnotationPanelContext, AnnotationSnapshot, AnnotationTarget,
 };
-pub(crate) use projection::{AnnotationCluster, cluster_events_by};
+pub(crate) use projection::{AnnotationCluster, cluster_projected_events};
 pub(crate) use provider::{
     AnnotationCommandConfig, AnnotationProvider, AnnotationProviderError, AnnotationRefreshContext,
     AnnotationSourceConfig, DEFAULT_COMMAND_TIMEOUT, ProviderFuture, ProviderPoll, build_provider,

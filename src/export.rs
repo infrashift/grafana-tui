@@ -14,7 +14,9 @@
  * limitations under the License.
  */
 
-use crate::annotations::{AnnotationCluster, cluster_events_by, format_cluster_detail_lines};
+use crate::annotations::{
+    AnnotationCluster, cluster_projected_events, format_cluster_detail_lines,
+};
 use crate::app::{AppMode, AppState, PanelState, PanelType, SeriesView};
 use crate::limits::MAX_RECORD_FRAMES;
 use crate::num;
@@ -1055,9 +1057,10 @@ fn render_graph_annotations<'a>(
     x_bounds: [f64; 2],
     out: &mut SvgOut,
 ) -> Vec<AnnotationCluster<'a>> {
-    let clusters = cluster_events_by(events, |timestamp| {
-        Some(num::f64_to_u32(map_x(timestamp, x_bounds, plot).round()))
-    });
+    let clusters = cluster_projected_events(events.into_iter().map(|event| {
+        let x = map_x(event.timestamp_secs(), x_bounds, plot).round();
+        (Some(num::f64_to_u32(x)), event)
+    }));
     let color = color_hex(app.theme.annotation, "#f0d000");
 
     for cluster in &clusters {

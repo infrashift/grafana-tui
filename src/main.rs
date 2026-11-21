@@ -255,7 +255,7 @@ fn resolve_settings(args: &Args, config: &Config) -> Result<Settings> {
         client_key: args.client_key.clone(),
     }
     .or(config.tls.clone())
-    .map_paths(config::expand_path);
+    .expand_paths();
     let timing = resolve_timing(args, config)?;
 
     Ok(Settings {

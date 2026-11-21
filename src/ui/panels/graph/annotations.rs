@@ -16,7 +16,7 @@
 
 use super::labels::{PlotBounds, value_to_plot_x};
 use super::overlay::overlay_cell_if_blank_or_weak_area_fill;
-use crate::annotations::{AnnotationCluster, AnnotationEvent, cluster_events_by};
+use crate::annotations::{AnnotationCluster, AnnotationEvent, cluster_projected_events};
 use ratatui::prelude::*;
 
 /// The marker for a cluster of `count` annotations: a dot, a digit, or `+` for 10 or more.
@@ -41,9 +41,10 @@ pub(super) fn terminal_clusters<'a>(
     x_bounds: [f64; 2],
     plot: PlotBounds,
 ) -> Vec<AnnotationCluster<'a>> {
-    cluster_events_by(events, |timestamp| {
-        value_to_plot_x(timestamp, x_bounds, plot).map(u32::from)
-    })
+    cluster_projected_events(events.into_iter().map(|event| {
+        let x = value_to_plot_x(event.timestamp_secs(), x_bounds, plot);
+        (x.map(u32::from), event)
+    }))
 }
 
 pub(super) fn render_annotation_clusters(

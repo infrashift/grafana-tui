@@ -17,6 +17,7 @@
 //! Optional TLS settings for the Prometheus connection: a CA bundle trusted in
 //! place of the built-in roots, and a client certificate for mutual TLS.
 
+use crate::config::expand_path;
 use anyhow::{Result, anyhow, bail};
 use reqwest::{Certificate, ClientBuilder, Identity};
 use rustls::{AlertDescription, CertificateError};
@@ -54,11 +55,12 @@ impl TlsFiles {
         }
     }
 
-    pub(crate) fn map_paths(self, f: impl Fn(&Path) -> PathBuf) -> Self {
+    /// These files, with a leading `~` of each path expanded to the home directory.
+    pub(crate) fn expand_paths(self) -> Self {
         Self {
-            ca_cert: self.ca_cert.as_deref().map(&f),
-            client_cert: self.client_cert.as_deref().map(&f),
-            client_key: self.client_key.as_deref().map(&f),
+            ca_cert: self.ca_cert.as_deref().map(expand_path),
+            client_cert: self.client_cert.as_deref().map(expand_path),
+            client_key: self.client_key.as_deref().map(expand_path),
         }
     }
 
@@ -806,7 +808,7 @@ pub(crate) mod tests {
             client_key: Some(PathBuf::from("~/client.key")),
         };
 
-        let files = cli.or(config).map_paths(crate::config::expand_path);
+        let files = cli.or(config).expand_paths();
 
         assert_eq!(files.ca_cert, Some(PathBuf::from("/etc/ca.pem")));
         assert_eq!(

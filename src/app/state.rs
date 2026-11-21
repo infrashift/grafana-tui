@@ -28,7 +28,6 @@ use crate::theme::Theme;
 use crate::ui::DisplayFormat;
 use anyhow::Result;
 use ratatui::style::Color;
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -278,9 +277,7 @@ impl PanelState {
         vars: &HashMap<String, String>,
     ) -> QueryIntervals {
         let parse = |text: &str| {
-            let text = super::variables::substitute_variables(text, |name| {
-                vars.get(name).map(|value| Cow::Borrowed(value.as_str()))
-            });
+            let text = super::variables::substitute_variables(text, vars);
             parse_min_interval(&text)
         };
         let resolution = &self.resolution;
@@ -778,15 +775,18 @@ impl AppState {
     }
 
     fn evaluate_hidden_items(&self) -> HashSet<ConditionTarget> {
-        let panel_has_data = |index: usize| {
-            let panel = self.panels.get(index)?;
-            panel.has_loaded().then(|| {
-                panel
-                    .series
-                    .iter()
-                    .any(|series| !series.points.is_empty() || series.value.is_some())
+        let panel_has_data: Vec<Option<bool>> = self
+            .panels
+            .iter()
+            .map(|panel| {
+                panel.has_loaded().then(|| {
+                    panel
+                        .series
+                        .iter()
+                        .any(|series| !series.points.is_empty() || series.value.is_some())
+                })
             })
-        };
+            .collect();
         let context = ConditionContext {
             values: &self.var_values,
             defined: &self.variable_names,

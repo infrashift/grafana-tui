@@ -15,6 +15,7 @@
  */
 
 use super::state::{GraphOptions, PanelOptions, PanelState, PanelType, YAxisMode};
+use super::variables::VariableLookup;
 use anyhow::Result;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -135,9 +136,31 @@ pub(crate) fn expand_expr(
     intervals: QueryIntervals,
     vars: &HashMap<String, String>,
 ) -> String {
-    let interval = intervals.step;
-    let rate_interval_secs = intervals.rate_interval.as_secs();
-    super::variables::substitute_variables(expr, |name| {
+    let lookup = QueryVariables {
+        interval: intervals.step,
+        rate_interval_secs: intervals.rate_interval.as_secs(),
+        range,
+        vars,
+    };
+    super::variables::substitute_variables(expr, lookup)
+}
+
+/// The variables of a panel query: Grafana's built-in interval variables and the dashboard ones.
+struct QueryVariables<'a> {
+    /// The query step, for `$__interval`.
+    interval: Duration,
+    /// The rate interval in seconds, for `$__rate_interval`.
+    rate_interval_secs: u64,
+    /// The dashboard time range, for `$__range`.
+    range: Duration,
+    /// The formatted values of the dashboard variables.
+    vars: &'a HashMap<String, String>,
+}
+
+impl VariableLookup for QueryVariables<'_> {
+    fn lookup(&mut self, name: &str) -> Option<Cow<'_, str>> {
+        let (interval, range, rate_interval_secs) =
+            (self.interval, self.range, self.rate_interval_secs);
         Some(match name {
             "__interval" => Cow::Owned(format_prom_duration(interval)),
             "__interval_ms" => Cow::Owned(interval.as_millis().to_string()),
@@ -146,9 +169,9 @@ pub(crate) fn expand_expr(
             "__range_ms" => Cow::Owned(range.as_millis().to_string()),
             "__rate_interval" => Cow::Owned(format!("{rate_interval_secs}s")),
             "__rate_interval_ms" => Cow::Owned((rate_interval_secs * 1000).to_string()),
-            _ => Cow::Borrowed(vars.get(name)?.as_str()),
+            _ => Cow::Borrowed(self.vars.get(name)?.as_str()),
         })
-    })
+    }
 }
 
 fn format_prom_duration(duration: Duration) -> String {
