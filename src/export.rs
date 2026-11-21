@@ -1541,7 +1541,9 @@ fn render_bar_gauge_row(
     let rect = layout.rect;
     debug_assert!(layout.bar_width >= 1.0, "the bar has a width");
     debug_assert!(layout.max_value >= 1.0, "the scale is at least one");
+    // A NaN value draws an empty bar, as in the TUI.
     let ratio = (value / layout.max_value).clamp(0.0, 1.0);
+    let ratio = if ratio.is_nan() { 0.0 } else { ratio };
     let color = value_color(app, panel, value);
     let (name, _) = fit_text(&series.name, layout.label_width - 8.0, SMALL_FONT_SIZE);
     write_text(
@@ -2347,10 +2349,7 @@ impl AxisLabels {
             !start.is_infinite() && !end.is_infinite(),
             "the label extent is not infinite"
         );
-        debug_assert!(
-            start <= end || start.is_nan() || end.is_nan(),
-            "the label extent is in order"
-        );
+        debug_assert!(start <= end, "the label extent is numbers in order");
         let clear = self.0.iter().all(|&[placed_start, placed_end]| {
             end + AXIS_LABEL_GAP <= placed_start || placed_end + AXIS_LABEL_GAP <= start
         });
@@ -2479,10 +2478,13 @@ fn write_styled_text(out: &mut SvgOut, x: f64, y: f64, text: &str, style: TextSt
 }
 
 fn write_rect(out: &mut SvgOut, rect: PlotRect, fill: &str, stroke: &str, stroke_width: f64) {
-    // A NaN bar value gives a NaN width, so the check lets NaN through.
     debug_assert!(
-        rect.left.is_finite() && rect.top.is_finite() && !(rect.width < 0.0 || rect.height < 0.0),
-        "the rectangle has a finite corner and no negative size"
+        rect.left.is_finite() && rect.top.is_finite(),
+        "the rectangle has a finite corner"
+    );
+    debug_assert!(
+        rect.width >= 0.0 && rect.height >= 0.0,
+        "the rectangle has a size that is a number and not negative"
     );
     debug_assert!(
         [fill, stroke]
@@ -2511,14 +2513,25 @@ fn scaled_rect(rect: Rect) -> PlotRect {
     scaled
 }
 
+/// The place of `value` between `bounds`, from 0 to 1. The function subtracts
+/// halves, so values near `f64::MAX` do not overflow. NaN gives 0.
+fn bounds_fraction(value: f64, [low, high]: [f64; 2]) -> f64 {
+    let span = (high / 2.0 - low / 2.0).max(f64::EPSILON / 2.0);
+    let fraction = ((value / 2.0 - low / 2.0) / span).clamp(0.0, 1.0);
+    let fraction = if fraction.is_nan() { 0.0 } else { fraction };
+    debug_assert!(
+        (0.0..=1.0).contains(&fraction),
+        "the fraction is a number from 0 to 1"
+    );
+    fraction
+}
+
 fn map_x(value: f64, bounds: [f64; 2], plot: PlotRect) -> f64 {
-    let span = (bounds[1] - bounds[0]).max(f64::EPSILON);
-    plot.left + ((value - bounds[0]) / span).clamp(0.0, 1.0) * plot.width
+    plot.left + bounds_fraction(value, bounds) * plot.width
 }
 
 fn map_y(value: f64, bounds: [f64; 2], plot: PlotRect) -> f64 {
-    let span = (bounds[1] - bounds[0]).max(f64::EPSILON);
-    plot.bottom() - ((value - bounds[0]) / span).clamp(0.0, 1.0) * plot.height
+    plot.bottom() - bounds_fraction(value, bounds) * plot.height
 }
 
 fn color_hex(color: Color, reset: &str) -> String {
@@ -3488,6 +3501,37 @@ mod tests {
         ];
         let bars_svg = render_svg(&bars_app, Rect::new(0, 0, 120, 50));
         assert!(!bars_svg.contains("NaN"));
+    }
+
+    #[test]
+    fn nan_bar_gauge_values_draw_an_empty_bar() {
+        let mut app = test_app_with_panel_type(PanelType::BarGauge);
+        app.panels[0].series[0].value = Some(f64::NAN);
+        if let Some(point) = app.panels[0].series[0].points.last_mut() {
+            point.1 = f64::NAN;
+        }
+
+        let svg = render_svg(&app, Rect::new(0, 0, 120, 40));
+
+        // The value label shows "NaN"; no coordinate does.
+        assert!(!svg.contains("=\"NaN\""), "{svg}");
+    }
+
+    #[test]
+    fn data_near_the_float_limits_keeps_finite_coordinates() {
+        let mut app = test_app_with_panel_type(PanelType::Graph);
+        let start = app.panels[0].series[0].points[0].0;
+        app.panels[0].series[0].points = vec![
+            (start, -1e308),
+            (start + 50.0, 1e308),
+            (start + 100.0, f64::MAX),
+        ];
+
+        let svg = render_svg(&app, Rect::new(0, 0, 120, 40));
+
+        for bad in ["=\"NaN\"", "=\"inf\"", "=\"-inf\""] {
+            assert!(!svg.contains(bad), "{bad} in {svg}");
+        }
     }
 
     #[test]

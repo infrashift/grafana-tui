@@ -45,24 +45,29 @@ pub(crate) fn calculate_y_bounds(p: &PanelState) -> [f64; 2] {
         return fallback_bounds(Some(min), explicit_max.filter(|value| *value > min));
     }
 
-    // Add some padding
-    let range = max - min;
+    // Add 5% of the range as padding. Halves keep the range finite for data
+    // near f64::MAX, and the clamps keep each bound finite.
+    let padding = (max / 2.0 - min / 2.0) * 0.1;
     let bounds = [
         if explicit_min.is_some() {
             min
         } else {
-            min - range * 0.05
+            (min - padding).max(f64::MIN)
         },
         if explicit_max.is_some() {
             max
         } else {
-            max + range * 0.05
+            (max + padding).min(f64::MAX)
         },
     ];
     let [lower, upper] = bounds;
     debug_assert!(
         lower <= upper,
         "the lower bound is a number and not above the upper bound"
+    );
+    debug_assert!(
+        lower.is_finite() && upper.is_finite(),
+        "the bounds are finite"
     );
     debug_assert!(
         explicit_min.is_none_or(|value| value.to_bits() == lower.to_bits()),
@@ -146,6 +151,21 @@ fn fallback_bounds(explicit_min: Option<f64>, explicit_max: Option<f64>) -> [f64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_near_the_float_limits_gives_finite_bounds() {
+        let mut panel = create_test_panel();
+        panel.series = vec![crate::app::SeriesView {
+            name: "edge".to_string(),
+            value: None,
+            points: vec![(0.0, -f64::MAX), (1.0, f64::MAX)],
+            visible: true,
+        }];
+
+        let [lower, upper] = calculate_y_bounds(&panel);
+
+        assert_eq!([lower, upper], [f64::MIN, f64::MAX]);
+    }
     use crate::app::{
         GraphOptions, PanelOptions, SeriesView, ThresholdMode, ThresholdStep, Thresholds,
     };
