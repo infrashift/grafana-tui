@@ -51,6 +51,11 @@ impl<'a> LayoutWalk<'a> {
             tabs: slice::Iter::default(),
             depth: 0,
         });
+        debug_assert!(
+            frames.capacity() >= MAX_LAYOUT_DEPTH,
+            "the frame stack holds the depth limit"
+        );
+        debug_assert_eq!(frames.len(), 1, "a new walk has one open frame");
         Self {
             scope,
             frames,
@@ -66,6 +71,11 @@ impl<'a> LayoutWalk<'a> {
 
     /// Opens the children of `event` that the scope includes.
     fn open(&mut self, event: WalkEvent<'a>) {
+        debug_assert_eq!(
+            event.level,
+            self.frames.len(),
+            "the last item is in the top frame"
+        );
         let empty = slice::Iter::default();
         let (items, tabs, depth) = match (event.item, self.scope) {
             (DashboardLayoutItem::Row(row), _) if row.hidden_header => {
@@ -93,6 +103,14 @@ impl<'a> LayoutWalk<'a> {
             return;
         }
         self.frames.push(Frame { items, tabs, depth });
+        debug_assert!(
+            self.frames.len() <= MAX_LAYOUT_DEPTH,
+            "the stack depth is in the limit"
+        );
+        debug_assert!(
+            depth <= event.depth.saturating_add(1),
+            "a child is one level down or less"
+        );
     }
 }
 
@@ -108,6 +126,14 @@ impl<'a> Iterator for LayoutWalk<'a> {
             let level = self.frames.len();
             let frame = self.frames.last_mut()?;
             if let Some(item) = frame.items.next() {
+                debug_assert!(
+                    (1..=MAX_LAYOUT_DEPTH).contains(&level),
+                    "the item level is in the depth limit"
+                );
+                debug_assert!(
+                    frame.depth < level,
+                    "the display depth is less than the level"
+                );
                 let event = WalkEvent {
                     item,
                     depth: frame.depth,
@@ -130,13 +156,25 @@ impl<'a> Iterator for LayoutWalk<'a> {
 
 /// The number of rows, tab groups, tabs, auto grids and panels in `items`.
 pub(crate) fn node_count(items: &[DashboardLayoutItem]) -> usize {
-    LayoutWalk::new(items, WalkScope::All)
+    let mut walk = LayoutWalk::new(items, WalkScope::All);
+    let count = walk
+        .by_ref()
         .map(|event| match event.item {
             DashboardLayoutItem::Tabs(group) => group.tabs.len().saturating_add(1),
             DashboardLayoutItem::AutoGrid(grid) => grid.panels.len().saturating_add(1),
             DashboardLayoutItem::Row(_) | DashboardLayoutItem::Panel(_) => 1,
         })
-        .sum()
+        .sum();
+    debug_assert_eq!(
+        count == 0,
+        items.is_empty(),
+        "only an empty layout has no nodes"
+    );
+    debug_assert!(
+        walk.truncated() || count >= items.len(),
+        "each top-level item is counted"
+    );
+    count
 }
 
 #[cfg(test)]

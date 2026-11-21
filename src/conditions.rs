@@ -105,6 +105,14 @@ impl ConditionGroup {
             .iter()
             .filter_map(|condition| condition.evaluate(context, scope, panel))
             .collect();
+        debug_assert!(
+            results.len() <= self.conditions.len(),
+            "each condition gives one result or less"
+        );
+        debug_assert!(
+            panel.is_some() || !self.uses_data() || results.len() < self.conditions.len(),
+            "a data condition without a panel gives no result"
+        );
         if results.is_empty() {
             return true;
         }
@@ -130,6 +138,14 @@ impl Condition {
         scope: &[ScopeBinding],
         panel: Option<usize>,
     ) -> Option<bool> {
+        debug_assert!(
+            context.range_seconds >= 0.0,
+            "the time range size is not negative"
+        );
+        debug_assert!(
+            panel.is_none_or(|index| index < context.panel_has_data.len()),
+            "the panel index is in range"
+        );
         match self {
             Condition::Variable {
                 name,
@@ -165,6 +181,11 @@ fn evaluate_variable(
         Some(values) if !values.is_empty() => values.iter().map(String::as_str).collect(),
         _ => vec![""],
     };
+    debug_assert!(!values.is_empty(), "the variable has one value or more");
+    debug_assert!(
+        scoped.is_some() || context.defined.contains(name),
+        "an unscoped variable is defined"
+    );
     let all = match scoped {
         Some(binding) => binding.all,
         None => context.all_selected.contains(name),
@@ -214,7 +235,10 @@ pub(crate) fn parse_time_range_size(value: &str) -> Option<f64> {
         'y' => 31_536_000.0,
         _ => return None,
     };
-    Some(number.parse::<f64>().ok()? * seconds)
+    debug_assert!(seconds >= 1.0, "the unit is one second or more");
+    let size = number.parse::<f64>().ok()? * seconds;
+    debug_assert!(size >= 0.0, "a time range size is not negative");
+    Some(size)
 }
 
 #[cfg(test)]

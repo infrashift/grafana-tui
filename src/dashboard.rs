@@ -77,8 +77,14 @@ pub(crate) struct Repeat {
 impl Repeat {
     #[cfg(test)]
     pub(crate) fn new(variable: impl Into<String>) -> Self {
+        let variable = variable.into();
+        debug_assert!(!variable.is_empty(), "a repeat names a variable");
+        debug_assert!(
+            !variable.starts_with('$'),
+            "a repeat names the variable without `$`"
+        );
         Self {
-            variable: variable.into(),
+            variable,
             direction: RepeatDirection::default(),
             max_per_row: None,
         }
@@ -162,6 +168,11 @@ impl DashboardTabs {
         let active = (!tabs.is_empty()).then_some(0);
         Self { id, tabs, active }
     }
+
+    /// Whether the active tab is a tab of the group.
+    pub(crate) fn active_in_range(&self) -> bool {
+        self.active.is_none_or(|index| index < self.tabs.len())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +192,16 @@ impl DashboardRow {
         hidden_header: bool,
         children: Vec<DashboardLayoutItem>,
     ) -> Self {
+        debug_assert!(
+            !children
+                .iter()
+                .any(|child| matches!(child, DashboardLayoutItem::Row(row) if row.id == id)),
+            "a row does not hold a row with its own id"
+        );
+        debug_assert!(
+            children.len() <= MAX_LAYOUT_NODES,
+            "the row children are in the node limit"
+        );
         Self {
             id,
             title: title.into(),
@@ -199,6 +220,14 @@ pub(crate) struct VisibleDashboardItem {
 
 impl VisibleDashboardItem {
     pub(crate) const fn panel(index: usize, depth: usize) -> Self {
+        debug_assert!(
+            depth < MAX_LAYOUT_DEPTH,
+            "the display depth is in the depth limit"
+        );
+        debug_assert!(
+            index < MAX_LAYOUT_NODES,
+            "the panel index is in the node limit"
+        );
         Self {
             id: DashboardItemId::Panel(index),
             depth,
@@ -240,13 +269,20 @@ impl DashboardLayout {
     }
 
     pub(crate) fn visible_panel_indices(&self) -> Vec<usize> {
-        self.visible_items()
+        let visible = self.visible_items();
+        let count = visible.len();
+        let panels: Vec<usize> = visible
             .into_iter()
             .filter_map(|item| match item.id {
                 DashboardItemId::Panel(index) => Some(index),
                 DashboardItemId::Row(_) | DashboardItemId::Tabs(_) => None,
             })
-            .collect()
+            .collect();
+        debug_assert!(
+            panels.len() <= count,
+            "each visible panel is a visible item"
+        );
+        panels
     }
 
     /// Every panel in the layout, including those in collapsed rows and
@@ -260,10 +296,20 @@ impl DashboardLayout {
     /// Every panel in one tab of a tab group, including those in its collapsed
     /// rows and inactive inner tabs.
     pub(crate) fn tab_panel_indices(&self, id: TabGroupId, index: usize) -> Vec<usize> {
+        let group = self.tabs(id);
+        let tab = group.and_then(|group| group.tabs.get(index));
         let mut panels = Vec::new();
-        if let Some(tab) = self.tabs(id).and_then(|group| group.tabs.get(index)) {
+        if let Some(tab) = tab {
             collect_panel_indices(&tab.children, &mut panels);
         }
+        debug_assert!(
+            tab.is_some() || panels.is_empty(),
+            "a missing tab has no panels"
+        );
+        debug_assert!(
+            group.is_none_or(|group| index < group.tabs.len() || panels.is_empty()),
+            "a tab index out of range gives no panels"
+        );
         panels
     }
 
@@ -281,6 +327,12 @@ impl DashboardLayout {
                 );
             }
         }
+        let count = self.tabs(id).map_or(0, |group| group.tabs.len());
+        debug_assert!(owners.len() >= count, "each tab of the group owns itself");
+        debug_assert!(
+            owners.values().all(|&tab| tab < count),
+            "each owner tab index is in range"
+        );
         owners
     }
 
@@ -293,12 +345,21 @@ impl DashboardLayout {
         let before = self.visible_panel_indices();
         *row_collapsed_mut(&mut self.items, id)? = collapsed;
         let after = self.visible_panel_indices();
-        Some(LayoutChange {
+        debug_assert!(
+            collapsed || before.len() <= after.len(),
+            "an expanded row hides no panel"
+        );
+        let change = LayoutChange {
             newly_visible_panels: after
                 .into_iter()
                 .filter(|panel| !before.contains(panel))
                 .collect(),
-        })
+        };
+        debug_assert!(
+            !collapsed || change.newly_visible_panels.is_empty(),
+            "a collapsed row shows no new panel"
+        );
+        Some(change)
     }
 
     pub(crate) fn set_active_tab(&mut self, id: TabGroupId, index: usize) -> Option<LayoutChange> {
@@ -306,25 +367,42 @@ impl DashboardLayout {
         if index >= tabs.tabs.len() {
             return None;
         }
+        debug_assert!(tabs.active_in_range(), "the active tab is in range");
         if tabs.active == Some(index) {
             return Some(LayoutChange::default());
         }
         let before = self.visible_panel_indices();
         *tabs_active_mut(&mut self.items, id)? = Some(index);
         let after = self.visible_panel_indices();
-        Some(LayoutChange {
+        let change = LayoutChange {
             newly_visible_panels: after
                 .into_iter()
                 .filter(|panel| !before.contains(panel))
                 .collect(),
-        })
+        };
+        debug_assert!(
+            change.newly_visible_panels.is_empty() || {
+                let tab_panels = self.tab_panel_indices(id, index);
+                change
+                    .newly_visible_panels
+                    .iter()
+                    .all(|panel| tab_panels.contains(panel))
+            },
+            "the new panels are in the new tab"
+        );
+        Some(change)
     }
 
     pub(crate) fn first_tab_descendant(&self, id: TabGroupId) -> Option<DashboardItemId> {
         let group = self.tabs(id)?;
+        debug_assert!(group.active_in_range(), "the active tab is in range");
         let tab = group.active.and_then(|index| group.tabs.get(index))?;
         let mut visible = Vec::new();
         collect_visible_items(&tab.children, &mut visible);
+        debug_assert!(
+            visible.first().is_none_or(|item| item.depth == 0),
+            "the first item of a tab is at the top depth"
+        );
         visible.first().map(|item| item.id)
     }
 
@@ -335,10 +413,16 @@ impl DashboardLayout {
     /// Copies row collapse state and active tabs from `previous` onto the rows and
     /// tab groups with the same ids, so rebuilding a layout keeps what was open.
     pub(crate) fn restore_state(&mut self, previous: &DashboardLayout) {
+        let count = self.items.len();
         let mut rows = HashMap::new();
         let mut tabs = HashMap::new();
         collect_state(&previous.items, &mut rows, &mut tabs);
         apply_state(&mut self.items, &rows, &tabs);
+        debug_assert_eq!(self.items.len(), count, "the state copy keeps the items");
+        debug_assert!(
+            active_tabs_in_range(&self.items),
+            "each active tab is in range"
+        );
     }
 
     /// This layout without the rows, tabs, and auto grid panels in `hidden`.
@@ -346,7 +430,16 @@ impl DashboardLayout {
     /// Tab groups and auto grids left empty are dropped. A tab group whose
     /// active tab is hidden activates its first remaining tab.
     pub(crate) fn without(&self, hidden: &HashSet<ConditionTarget>) -> DashboardLayout {
-        DashboardLayout::new(filter_items(&self.items, hidden))
+        let layout = DashboardLayout::new(filter_items(&self.items, hidden));
+        debug_assert!(
+            layout.items.len() <= self.items.len(),
+            "the filter adds no top-level item"
+        );
+        debug_assert!(
+            active_tabs_in_range(&layout.items),
+            "each active tab is in range"
+        );
+        layout
     }
 
     /// Copies row collapse state and active tabs back from `displayed`, which
@@ -357,10 +450,16 @@ impl DashboardLayout {
         displayed: &DashboardLayout,
         hidden: &HashSet<ConditionTarget>,
     ) {
+        let count = self.items.len();
         let mut rows = HashMap::new();
         let mut tabs = HashMap::new();
         collect_state(&displayed.items, &mut rows, &mut tabs);
         sync_state(&mut self.items, &rows, &tabs, hidden);
+        debug_assert_eq!(self.items.len(), count, "the state copy keeps the items");
+        debug_assert!(
+            active_tabs_in_range(&self.items),
+            "each active tab is in range"
+        );
     }
 
     pub(crate) fn nearest_visible_ancestor(&self, id: DashboardItemId) -> Option<DashboardItemId> {
@@ -370,6 +469,11 @@ impl DashboardLayout {
         }
 
         if let Some(ancestors) = find_ancestors(&self.items, id) {
+            debug_assert!(
+                ancestors.len() < MAX_LAYOUT_DEPTH,
+                "the ancestors are in the depth limit"
+            );
+            debug_assert!(!ancestors.contains(&id), "an item is not its own ancestor");
             for ancestor in ancestors.into_iter().rev() {
                 if visible.iter().any(|item| item.id == ancestor) {
                     return Some(ancestor);
@@ -406,6 +510,7 @@ fn filter_items(
         }
     }
     debug_assert!(lists.is_empty(), "an imported layout is within the limits");
+    debug_assert!(filtered.len() <= items.len(), "the filter adds no item");
     filtered
 }
 
@@ -437,11 +542,23 @@ fn keep_item(item: &mut DashboardLayoutItem, hidden: &HashSet<ConditionTarget>) 
                 .map(|(_, tab)| tab)
                 .collect();
             group.active = Some(active);
+            debug_assert_eq!(
+                group.tabs.len(),
+                shown.len(),
+                "the group keeps the shown tabs"
+            );
+            debug_assert!(active < group.tabs.len(), "the active tab is in range");
             true
         }
         DashboardLayoutItem::AutoGrid(grid) => {
             grid.panels
                 .retain(|index| !hidden.contains(&ConditionTarget::Panel(*index)));
+            debug_assert!(
+                grid.panels
+                    .iter()
+                    .all(|index| !hidden.contains(&ConditionTarget::Panel(*index))),
+                "the grid keeps no hidden panel"
+            );
             !grid.panels.is_empty()
         }
     }
@@ -465,10 +582,18 @@ fn sync_state(
             }
             SectionMut::Tabs { id, count, active } => {
                 if let Some(&Some(displayed)) = tabs.get(&id) {
-                    *active = (0..count)
+                    let position = (0..count)
                         .filter(|&position| !hidden.contains(&ConditionTarget::Tab(id, position)))
-                        .nth(displayed)
-                        .or(*active);
+                        .nth(displayed);
+                    debug_assert!(
+                        position.is_none_or(|index| index >= displayed),
+                        "a displayed tab maps to the same or a later tab"
+                    );
+                    *active = position.or(*active);
+                    debug_assert!(
+                        active.is_none_or(|index| index < count),
+                        "the active tab is in range"
+                    );
                 }
             }
         }
@@ -481,7 +606,9 @@ fn collect_state(
     rows: &mut HashMap<RowId, bool>,
     tabs: &mut HashMap<TabGroupId, Option<usize>>,
 ) {
-    for event in LayoutWalk::new(items, WalkScope::All) {
+    let before = rows.len().saturating_add(tabs.len());
+    let mut walk = LayoutWalk::new(items, WalkScope::All);
+    for event in walk.by_ref() {
         match event.item {
             DashboardLayoutItem::Row(row) => {
                 rows.insert(row.id, row.collapsed);
@@ -492,6 +619,11 @@ fn collect_state(
             DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => {}
         }
     }
+    debug_assert!(!walk.truncated(), "an imported layout is within the limits");
+    debug_assert!(
+        rows.len().saturating_add(tabs.len()) >= before,
+        "the state maps do not shrink"
+    );
 }
 
 /// Copies the row collapse state and the active tabs in `rows` and `tabs`
@@ -513,6 +645,15 @@ fn apply_state(
                     *active = value
                         .map(|index| index.min(count.saturating_sub(1)))
                         .filter(|_| count > 0);
+                    debug_assert!(
+                        active.is_none_or(|index| index < count),
+                        "the active tab is in range"
+                    );
+                    debug_assert_eq!(
+                        active.is_some(),
+                        value.is_some() && count > 0,
+                        "a group with tabs keeps a saved active tab"
+                    );
                 }
             }
         }
@@ -566,17 +707,27 @@ fn sections_mut(items: &mut [DashboardLayoutItem]) -> Vec<SectionMut<'_>> {
         }
     }
     debug_assert!(lists.is_empty(), "an imported layout is within the limits");
+    debug_assert!(
+        sections.len() <= MAX_LAYOUT_NODES,
+        "the sections are in the node limit"
+    );
     sections
 }
 
 /// The collapse state of the row with `id`.
 fn row_collapsed_mut(items: &mut [DashboardLayoutItem], id: RowId) -> Option<&mut bool> {
-    sections_mut(items)
+    let empty = items.is_empty();
+    let mut found = sections_mut(items)
         .into_iter()
-        .find_map(|section| match section {
+        .filter_map(|section| match section {
             SectionMut::Row { id: row, collapsed } if row == id => Some(collapsed),
             _ => None,
-        })
+        });
+    let collapsed = found.next();
+    let others = found.count();
+    debug_assert_eq!(others, 0, "the row id is unique");
+    debug_assert!(!empty || collapsed.is_none(), "an empty layout has no row");
+    collapsed
 }
 
 /// The active tab of the tab group with `id`.
@@ -584,29 +735,55 @@ fn tabs_active_mut(
     items: &mut [DashboardLayoutItem],
     id: TabGroupId,
 ) -> Option<&mut Option<usize>> {
-    sections_mut(items)
+    let mut found = sections_mut(items)
         .into_iter()
-        .find_map(|section| match section {
+        .filter_map(|section| match section {
             SectionMut::Tabs {
-                id: group, active, ..
-            } if group == id => Some(active),
+                id: group,
+                count,
+                active,
+            } if group == id => Some((active.is_none_or(|index| index < count), active)),
             _ => None,
-        })
+        });
+    let first = found.next();
+    let others = found.count();
+    debug_assert_eq!(others, 0, "the tab group id is unique");
+    debug_assert!(
+        first.as_ref().is_none_or(|(in_range, _)| *in_range),
+        "the active tab is in range"
+    );
+    first.map(|(_, active)| active)
 }
 
 /// The rows and tabs that `item` itself defines.
 fn item_sections(item: &DashboardLayoutItem) -> Vec<SectionId> {
-    match item {
-        DashboardLayoutItem::Row(row) => vec![SectionId::Row(row.id)],
-        DashboardLayoutItem::Tabs(group) => (0..group.tabs.len())
-            .map(|index| SectionId::Tab(group.id, index))
-            .collect(),
-        DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => Vec::new(),
-    }
+    let (sections, tabs) = match item {
+        DashboardLayoutItem::Row(row) => (vec![SectionId::Row(row.id)], 0),
+        DashboardLayoutItem::Tabs(group) => (
+            (0..group.tabs.len())
+                .map(|index| SectionId::Tab(group.id, index))
+                .collect(),
+            group.tabs.len(),
+        ),
+        DashboardLayoutItem::Panel(_) | DashboardLayoutItem::AutoGrid(_) => (Vec::new(), 0),
+    };
+    debug_assert!(
+        sections.len() <= 1 || matches!(item, DashboardLayoutItem::Tabs(_)),
+        "only a tab group defines more than one section"
+    );
+    debug_assert!(
+        sections.iter().all(|section| match section {
+            SectionId::Tab(_, index) => *index < tabs,
+            SectionId::Row(_) => true,
+        }),
+        "each tab section index is in range"
+    );
+    sections
 }
 
 /// Adds every panel of `items` to `panels` in pre-order.
 fn collect_panel_indices(items: &[DashboardLayoutItem], panels: &mut Vec<usize>) {
+    let before = panels.len();
     let mut walk = LayoutWalk::new(items, WalkScope::All);
     for event in walk.by_ref() {
         match event.item {
@@ -616,26 +793,55 @@ fn collect_panel_indices(items: &[DashboardLayoutItem], panels: &mut Vec<usize>)
         }
     }
     debug_assert!(!walk.truncated(), "an imported layout is within the limits");
+    debug_assert!(panels.len() >= before, "the panel list does not shrink");
+}
+
+/// Whether the active tab of each tab group in `items` is in range.
+fn active_tabs_in_range(items: &[DashboardLayoutItem]) -> bool {
+    LayoutWalk::new(items, WalkScope::All).all(
+        |event| !matches!(event.item, DashboardLayoutItem::Tabs(group) if !group.active_in_range()),
+    )
 }
 
 /// The row with `id`, first in pre-order.
 fn find_row(items: &[DashboardLayoutItem], id: RowId) -> Option<&DashboardRow> {
-    LayoutWalk::new(items, WalkScope::All).find_map(|event| match event.item {
+    let mut walk = LayoutWalk::new(items, WalkScope::All);
+    let found = walk.find_map(|event| match event.item {
         DashboardLayoutItem::Row(row) if row.id == id => Some(row),
         _ => None,
-    })
+    });
+    debug_assert!(
+        found.is_some() || !walk.truncated(),
+        "a search for a missing row sees the full layout"
+    );
+    debug_assert!(
+        found.is_none_or(|row| row.children.len() <= MAX_LAYOUT_NODES),
+        "the row children are in the node limit"
+    );
+    found
 }
 
 /// The tab group with `id`, first in pre-order.
 fn find_tabs(items: &[DashboardLayoutItem], id: TabGroupId) -> Option<&DashboardTabs> {
-    LayoutWalk::new(items, WalkScope::All).find_map(|event| match event.item {
+    let mut walk = LayoutWalk::new(items, WalkScope::All);
+    let found = walk.find_map(|event| match event.item {
         DashboardLayoutItem::Tabs(group) if group.id == id => Some(group),
         _ => None,
-    })
+    });
+    debug_assert!(
+        found.is_some() || !walk.truncated(),
+        "a search for a missing tab group sees the full layout"
+    );
+    debug_assert!(
+        found.is_none_or(DashboardTabs::active_in_range),
+        "the active tab is in range"
+    );
+    found
 }
 
 /// Adds the items on screen to `visible`, in pre-order, with their display depth.
 fn collect_visible_items(items: &[DashboardLayoutItem], visible: &mut Vec<VisibleDashboardItem>) {
+    let before = visible.len();
     let mut walk = LayoutWalk::new(items, WalkScope::Visible);
     for event in walk.by_ref() {
         let depth = event.depth;
@@ -660,6 +866,7 @@ fn collect_visible_items(items: &[DashboardLayoutItem], visible: &mut Vec<Visibl
         }
     }
     debug_assert!(!walk.truncated(), "an imported layout is within the limits");
+    debug_assert!(visible.len() >= before, "the visible list does not shrink");
 }
 
 /// The rows and tab groups around `target`, outermost first, or `None` when
@@ -672,6 +879,15 @@ fn find_ancestors(
     for event in LayoutWalk::new(items, WalkScope::All) {
         // The list at level `n` has `n - 1` rows and tab groups around it.
         path.truncate(event.level.saturating_sub(1));
+        debug_assert_eq!(
+            path.len(),
+            event.level.saturating_sub(1),
+            "the path holds one ancestor for each level above the item"
+        );
+        debug_assert!(
+            path.len() < MAX_LAYOUT_DEPTH,
+            "the path is in the depth limit"
+        );
         match event.item {
             DashboardLayoutItem::Panel(index) if target == DashboardItemId::Panel(*index) => {
                 return Some(path);
