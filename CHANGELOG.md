@@ -5,6 +5,112 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-21
+
+### ⚠️ Behavior changes
+
+The code now follows the NASA Power of 10 rules for safety-critical code (see the wiki ADR-0002). Named limits protect each input, and a limit gives an error or a notice. See the [Limits](https://infrashift.github.io/grafana-tui/limits/) page.
+
+- Start-up fails with an error for more than 64 dashboard files, 256 `--var` pairs, 4096 `--query` panels or 100000 `--record-max-frames`.
+- A dashboard file over 16 MiB, a config file over 1 MiB, or a PEM file over 1 MiB gives an error.
+- A dashboard layout deeper than 16 levels, or with more than 4096 rows, tabs and panels, gives an import error. A repeat that reaches the limit stops, and the footer shows a notice.
+- A panel keeps 2000 series and the newest 22000 points of each series, with a warning on the panel. A query variable keeps its first 10000 values, with a notice.
+- An empty variable query fails before grafana-tui sends it. A config with more than 64 dashboard files or 256 variables fails when it loads.
+- A command annotation provider that writes more than 16 MiB to stderr fails.
+- An SVG export over a range of about 11 years or more uses a wider time step.
+- Dependency updates fix 18 RustSec advisories in quinn, rustls, rustls-webpki, webpki-roots and zstd.
+
+### ⛰️  Features
+
+- **demo:** Hashistack-rdw SSHadowForge dashboard (70-sshadowforge)
+- **demo:** SSHadowForge dashboard set -- operator, NATS JetStream, builds, developer (examples/demo/sshadowforge)
+- **sshadowforge:** A build-pins row on the builds dashboard
+- **p10:** Byte caps on dashboard, config and PEM files (ISSUE-006)
+- **p10:** Limit the series, points, messages and query length of Prometheus queries (ISSUE-006)
+- **p10:** Limit the variables of a dashboard and the values of a query variable (ISSUE-006)
+- **p10:** Limit the search text and the recording frame option (ISSUE-006)
+
+### 🐛 Bug Fixes
+
+- **demo/sshadowforge:** Young histograms, counts without decimals, honest empty states
+- **p10:** Report the layout limit cuts and turn on the R1 gate (ISSUE-003)
+- **export:** No NaN coordinates for NaN or huge values (ISSUE-011)
+- **deps:** Update quinn, rustls, rustls-webpki, webpki-roots and zstd for 18 advisories
+
+### 📚 Documentation
+
+- **sshadowforge:** Name the failed builds make verify leaves on purpose
+- **wiki:** Name the shared graph view in the architecture overview
+- **p10:** Write the search limit comment in Simplified Technical English (ISSUE-006)
+- **p10:** ADR-0007 lists each resource limit; close ISSUE-006
+- **ste:** ASD-STE100 README and examples (ISSUE-010)
+- **ste:** ASD-STE100 contributor guides and the gates (ISSUE-010)
+- **ste:** ASD-STE100 comments in the ui, theme and test modules (ISSUE-010)
+- **ste:** ASD-STE100 comments in the grafana and export modules (ISSUE-010)
+- **ste:** ASD-STE100 wiki ADRs, issues and guides (ISSUE-010)
+- **ste:** ASD-STE100 user guide (ISSUE-010)
+- **ste:** Add the Limits page (ISSUE-010)
+- **ste:** ASD-STE100 comments in the app module (ISSUE-010)
+- **ste:** Vocabulary terms and ASD-STE100 example script comments (ISSUE-010)
+- **ste:** ASD-STE100 comments in the annotations and prom modules (ISSUE-010)
+- **ste:** ASD-STE100 comments in main, config, num, conditions and dashboard (ISSUE-010)
+- **ste:** Docs-style joins make check; Makefile and CI comments (ISSUE-010)
+- **wiki:** ASD-STE100 wording in ISSUE-010 and ISSUE-012
+
+### 🚜 Refactor
+
+- **p10:** Split the ui renderers and layout to 60 lines or fewer (ISSUE-002)
+- **p10:** Split main and the importers to 60 lines or fewer (ISSUE-002)
+- **p10:** Split the app, prom and annotation functions to 60 lines or fewer (ISSUE-002)
+- **p10:** Split the graph and export renderers to 60 lines or fewer (ISSUE-002)
+- **p10:** Share the graph helpers with the export and turn on the R4 gate (ISSUE-002)
+- **p10:** Layout limits and iterative dashboard import (ISSUE-003)
+- **p10:** Bounded layout walker replaces recursive reads (ISSUE-003)
+- **p10:** Iterative layout builders and state changes (ISSUE-003)
+- **p10:** Remove the last recursion findings (ISSUE-003)
+- **p10:** Bounded tick generators (ISSUE-004)
+- **p10:** Bound the loops that semscope reports (ISSUE-004)
+- **p10:** Bounded while loops (ISSUE-004)
+- **p10:** An SVG writer that cannot fail replaces the write unwraps (ISSUE-005)
+- **p10:** Check each result in annotations, themes and the terminal restore (ISSUE-005)
+- **p10:** Delete dead code and give each allow a reason (ISSUE-005)
+- **p10:** Checked conversions and no panicking indexing (ISSUE-007)
+- **p10:** An explicit role table replaces the theme_spec macro (ISSUE-008)
+- **p10:** Data, enums and traits replace function pointer types (ISSUE-008)
+- **p10:** Enum dispatch for annotation providers (ISSUE-008)
+- **p10:** The KEY=VALUE parser returns its error as text (ISSUE-008)
+- **p10:** Assertions in the data, variable, event loop and dashboard code (ISSUE-009)
+- **p10:** Assertions in the input handlers (ISSUE-009)
+- **p10:** Assertions in the dashboard template (ISSUE-009)
+- **p10:** Assertions in the background refresh (ISSUE-009)
+- **p10:** Assertions in the app state (ISSUE-009)
+- **p10:** Assertions in the graph, theme, config and conversion code (ISSUE-009)
+- **p10:** Assertions in the SVG export (ISSUE-009)
+- **p10:** Assertions in the layout model, walker and conditions (ISSUE-009)
+- **p10:** Assertions in the dashboard loader and the Classic adapter (ISSUE-009)
+- **p10:** Assertions in the importer (ISSUE-009)
+- **p10:** Assertions in the V2 importer (ISSUE-009)
+- **p10:** Assertions in the entry point (ISSUE-009)
+- **p10:** Assertions in the Prometheus client (ISSUE-009)
+- **p10:** Assertions in the annotation providers and state (ISSUE-009)
+- **p10:** Assertions in the layout, tabs, formats, modals and panels (ISSUE-009)
+- **p10:** Assertions in the screen drawing (ISSUE-009)
+
+### ⚙️ Miscellaneous Tasks
+
+- Move repository and docs site to the infrashift organization
+- Ignore the old grafatui-exports recording directory
+- **p10:** Gates, ZMakefile, OKF wiki and snapshot tests for the Power of 10 refactor
+- **p10:** Turn on the R2 gate (ISSUE-004)
+- **p10:** Turn on the R7 gate (ISSUE-005)
+- **p10:** Turn on the cast and indexing lints (ISSUE-007)
+- **p10:** Turn on the R8 and R9 gates (ISSUE-008)
+- **p10:** Assertion density check for non-trivial functions (ISSUE-009)
+- **p10:** The density check also skips pub test modules; file ISSUE-011
+- **p10:** Gate the assertion density and the assert messages (ISSUE-009)
+- **ste:** Docs-style skips the files with the Apache header (ISSUE-012)
+- **release:** Start a release run by hand for a tag (ISSUE-013)
+
 ## [0.2.0] - 2026-10-08
 
 ### ⛰️  Features
