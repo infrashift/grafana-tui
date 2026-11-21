@@ -34,7 +34,11 @@ pub(crate) fn substitute_variables<'a>(
 ) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(position) = rest.find('$') {
+    // Each pass reads one `$` or more, so the text length bounds the loop.
+    for _ in 0..text.len() {
+        let Some(position) = rest.find('$') else {
+            break;
+        };
         out.push_str(&rest[..position]);
         let after = &rest[position + 1..];
         let (name, consumed) = if let Some(braced) = after.strip_prefix('{') {
@@ -144,7 +148,11 @@ pub(crate) fn parse_custom_variable_values(query: &str, json: bool) -> Vec<Strin
         }
         current.clear();
     };
-    while let Some(ch) = chars.next() {
+    // Each pass reads one character or more, so the query length bounds the loop.
+    for _ in 0..query.len() {
+        let Some(ch) = chars.next() else {
+            break;
+        };
         match ch {
             '\\' if chars.peek() == Some(&',') => {
                 current.push(',');

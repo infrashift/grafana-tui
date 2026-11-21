@@ -366,7 +366,11 @@ fn collect_variable_diagnostics(
         seen,
     };
     let mut idx = 0;
-    while idx < scan.chars.len() {
+    // Each pass moves `idx` forward one character or more.
+    for _ in 0..scan.chars.len() {
+        if idx >= scan.chars.len() {
+            break;
+        }
         if scan.chars[idx].1 != '$' {
             idx += 1;
             continue;

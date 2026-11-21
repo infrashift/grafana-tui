@@ -178,7 +178,11 @@ fn format_prom_duration(duration: Duration) -> String {
 pub(crate) fn format_legend(fmt: &str, metric: &HashMap<String, String>) -> String {
     let mut out = String::with_capacity(fmt.len());
     let mut rest = fmt;
-    while let Some(start) = rest.find("{{") {
+    // Each pass reads a placeholder of four bytes or more, so the format length bounds the loop.
+    for _ in 0..fmt.len() {
+        let Some(start) = rest.find("{{") else {
+            break;
+        };
         let Some(end) = rest[start + 2..].find("}}") else {
             break;
         };

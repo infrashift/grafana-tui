@@ -137,9 +137,12 @@ fn format_scaled(value: f64, suffixes: &[&str], base: f64, decimals: Option<usiz
     let mut scaled = value;
     let mut suffix_index = 0;
 
-    while scaled.abs() >= base && suffix_index + 1 < suffixes.len() {
+    for next_index in 1..suffixes.len() {
+        if scaled.abs() < base || scaled.is_nan() {
+            break;
+        }
         scaled /= base;
-        suffix_index += 1;
+        suffix_index = next_index;
     }
 
     format!(
@@ -266,6 +269,16 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scaled_values_stop_at_the_largest_suffix() {
+        assert_eq!(format_scaled(f64::NAN, &BYTES_IEC, KIB, None), "NaNB");
+        assert_eq!(format_scaled(2048.0, &BYTES_IEC, KIB, None), "2.00KiB");
+        assert_eq!(
+            format_scaled(KIB.powi(6), &BYTES_IEC, KIB, Some(0)),
+            "1024PiB"
+        );
+    }
 
     #[test]
     fn test_display_format_uses_si_for_missing_and_unknown_units() {

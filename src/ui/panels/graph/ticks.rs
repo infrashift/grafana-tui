@@ -236,6 +236,30 @@ mod tests {
     }
 
     #[test]
+    fn each_time_range_gets_its_base_step() {
+        let cases = [
+            (20.0 * MINUTE, 5.0 * MINUTE),
+            (5.0 * HOUR, 2.0 * HOUR),
+            (10.0 * HOUR, 3.0 * HOUR),
+            (20.0 * HOUR, 6.0 * HOUR),
+            (40.0 * HOUR, 12.0 * HOUR),
+        ];
+        for (range, step) in cases {
+            assert_eq!(base_time_grid_step(range), step, "{range}");
+        }
+        let ticks = svg_time_ticks(0.0, 20.0 * HOUR);
+        assert_eq!(ticks, vec![6.0 * HOUR, 12.0 * HOUR, 18.0 * HOUR]);
+    }
+
+    #[test]
+    fn invalid_ranges_have_no_ticks() {
+        assert!(calculate_time_grid_ticks(1.0, 1.0, 80).is_empty());
+        assert!(calculate_time_grid_ticks(0.0, 60.0, 7).is_empty());
+        assert!(svg_value_ticks(f64::NAN, 1.0).is_empty());
+        assert!(svg_time_ticks(2.0, 1.0).is_empty());
+    }
+
+    #[test]
     fn the_tui_time_step_grows_past_one_day_for_long_ranges() {
         let ticks = calculate_time_grid_ticks(0.0, 30.0 * DAY, 80);
         assert_eq!(ticks, vec![8.0 * DAY, 16.0 * DAY, 24.0 * DAY]);

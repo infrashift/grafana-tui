@@ -70,10 +70,9 @@ impl QueryCache {
         if self.entries.insert(key.clone(), result).is_none() {
             self.order.push_back(key);
         }
-        while self.order.len() > CACHE_CAPACITY {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
-            }
+        let excess = self.order.len().saturating_sub(CACHE_CAPACITY);
+        for oldest in self.order.drain(..excess) {
+            self.entries.remove(&oldest);
         }
     }
 
@@ -498,17 +497,7 @@ impl PromClient {
         {
             return Err(too_large());
         }
-        let mut body = Vec::new();
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|e| TransportError::new("reading text", &e))?
-        {
-            if body.len() + chunk.len() > limit {
-                return Err(too_large());
-            }
-            body.extend_from_slice(&chunk);
-        }
+        let body = read_body(&mut resp, limit).await?;
         let text = String::from_utf8(body)
             .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
 
@@ -518,6 +507,26 @@ impl PromClient {
 
         Ok(text)
     }
+}
+
+/// Reads the body of `resp` to its end. A body over `limit` bytes is an error.
+async fn read_body(resp: &mut reqwest::Response, limit: usize) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    // A chunk holds one byte or more, so `limit + 1` reads reach the end or pass the limit.
+    for _ in 0..=limit {
+        let chunk = resp
+            .chunk()
+            .await
+            .map_err(|e| TransportError::new("reading text", &e))?;
+        let Some(chunk) = chunk else {
+            return Ok(body);
+        };
+        if body.len() + chunk.len() > limit {
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Err(anyhow::Error::new(ResponseTooLarge(limit)))
 }
 
 fn ensure_success(status: &str) -> Result<()> {
