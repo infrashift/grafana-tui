@@ -8,6 +8,7 @@ COVER_MIN ?= 95
 CARGO     ?= cargo
 SEMSCOPE  ?= semscope
 LEXISCOPE ?= lexiscope
+PYTHON    ?= python3
 OKFW      ?= okfw
 # The documents that lexiscope checks against ASD-STE100. CHANGELOG.md is
 # generated history, so it is not in the list.
@@ -61,8 +62,9 @@ vuln: ## cargo-audit against the RustSec advisory database (needs the network)
 tidy: ## Fail if Cargo.lock is out of date with Cargo.toml (CI-friendly)
 	$(CARGO) metadata --locked --format-version 1 >/dev/null
 
-p10: ## Check src/ against the NASA Power of 10 rules (semscope, with the .semscope.cue overlay)
+p10: ## Check src/ against the NASA Power of 10 rules (semscope, then the R5 assertion density)
 	$(SEMSCOPE) scan --ruleset nasa-p10 --ruleset .semscope.cue --fail-level error src
+	$(PYTHON) -I scripts/p10-assert-density.py
 
 docs-style: ## Check the docs and the code comments against ASD-STE100 (lexiscope)
 	$(STE_SCAN) $(STE_PATHS)

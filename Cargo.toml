@@ -65,7 +65,7 @@ too_many_lines = "warn"
 excessive_nesting = "warn"
 too_many_arguments = "warn"
 # R5: assertions.
-missing_assert_message = "allow"           # ISSUE-009
+missing_assert_message = "warn"
 debug_assert_with_mut_call = "warn"
 # R7: check each result.
 unwrap_used = "warn"
