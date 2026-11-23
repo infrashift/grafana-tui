@@ -1,5 +1,7 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
+description: "Record of the grafana-tui Rust terminal dashboard's NASA Power of 10 refactor: ADRs on the bounded layout walker, named limits and enum dispatch, an architecture overview and per-rule issues."
+title: "grafana-tui"
 ---
 
 # /

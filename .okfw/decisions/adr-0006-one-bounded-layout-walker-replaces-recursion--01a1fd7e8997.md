@@ -1,5 +1,5 @@
 ---
-id: "01a1fd7e-8997-7c2d-af6e-0734c816ea05"
+x-okfw-id: "01a1fd7e-8997-7c2d-af6e-0734c816ea05"
 title: "ADR-0006: One bounded layout walker replaces recursion"
 type: "ADR"
 tags:
@@ -7,8 +7,8 @@ tags:
   - "power-of-10"
   - "r1"
   - "layout"
-created: "2026-11-21T03:44:50-06:00"
-timestamp: "2026-11-21T03:44:50-06:00"
+x-okfw-created: "2026-11-21T03:44:50-06:00"
+x-okfw-timestamp: "2026-11-21T03:44:50-06:00"
 description: "Explicit stacks with depth, node and step limits replace the 24 recursive walks of the layout tree and other chains."
 ---
 

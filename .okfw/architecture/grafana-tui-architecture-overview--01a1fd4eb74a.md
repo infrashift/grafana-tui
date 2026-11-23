@@ -1,12 +1,12 @@
 ---
-id: "01a1fd4e-b74a-7d9a-a481-5509c2e3acf8"
+x-okfw-id: "01a1fd4e-b74a-7d9a-a481-5509c2e3acf8"
 title: "grafana-tui architecture overview"
 type: "Architecture"
 tags:
   - "architecture"
   - "overview"
-created: "2026-11-21T02:52:36-06:00"
-timestamp: "2026-11-21T02:52:36-06:00"
+x-okfw-created: "2026-11-21T02:52:36-06:00"
+x-okfw-timestamp: "2026-11-21T02:52:36-06:00"
 description: "The modules of grafana-tui, the layout tree and the data flow from the dashboard file to the terminal."
 ---
 

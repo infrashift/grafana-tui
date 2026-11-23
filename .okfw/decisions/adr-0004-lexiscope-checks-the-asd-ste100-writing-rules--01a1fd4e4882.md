@@ -1,5 +1,5 @@
 ---
-id: "01a1fd4e-4882-7086-8058-3af1faa3c4ea"
+x-okfw-id: "01a1fd4e-4882-7086-8058-3af1faa3c4ea"
 title: "ADR-0004: lexiscope checks the ASD-STE100 writing rules"
 type: "ADR"
 tags:
@@ -7,8 +7,8 @@ tags:
   - "ste-100"
   - "docs"
   - "tooling"
-created: "2026-11-21T02:52:08-06:00"
-timestamp: "2026-11-21T02:52:08-06:00"
+x-okfw-created: "2026-11-21T02:52:08-06:00"
+x-okfw-timestamp: "2026-11-21T02:52:08-06:00"
 description: "make docs-style runs lexiscope with the ste-100 ruleset and vocabulary.cue on the docs, the wiki and the code comments."
 ---
 

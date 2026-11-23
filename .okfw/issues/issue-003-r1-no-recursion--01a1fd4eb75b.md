@@ -1,8 +1,8 @@
 ---
-id: "01a1fd4e-b75b-72e1-b3f9-166bf56bf92f"
+x-okfw-id: "01a1fd4e-b75b-72e1-b3f9-166bf56bf92f"
 title: "ISSUE-003: R1: no recursion"
 type: "Issue"
-kind: "issue"
+x-okfw-kind: "issue"
 tags:
   - "issue"
   - "phase-2"
@@ -10,8 +10,8 @@ tags:
   - "r1"
   - "layout"
   - "closed"
-created: "2026-11-21T02:52:36-06:00"
-timestamp: "2026-11-21T03:47:16-06:00"
+x-okfw-created: "2026-11-21T02:52:36-06:00"
+x-okfw-timestamp: "2026-11-21T03:47:16-06:00"
 description: "Replace each recursive walk with a bounded explicit stack, with depth and node limits on import."
 ---
 

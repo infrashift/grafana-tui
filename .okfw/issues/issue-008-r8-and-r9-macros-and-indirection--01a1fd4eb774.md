@@ -1,8 +1,8 @@
 ---
-id: "01a1fd4e-b774-7a3d-b23a-98b1e72eb6a9"
+x-okfw-id: "01a1fd4e-b774-7a3d-b23a-98b1e72eb6a9"
 title: "ISSUE-008: R8 and R9: macros and indirection"
 type: "Issue"
-kind: "issue"
+x-okfw-kind: "issue"
 tags:
   - "issue"
   - "phase-7"
@@ -10,8 +10,8 @@ tags:
   - "r8"
   - "r9"
   - "closed"
-created: "2026-11-21T02:52:36-06:00"
-timestamp: "2026-11-21T05:02:19-06:00"
+x-okfw-created: "2026-11-21T02:52:36-06:00"
+x-okfw-timestamp: "2026-11-21T05:02:19-06:00"
 description: "Replace the theme macro, the function pointer types and the boxed trait objects."
 ---
 

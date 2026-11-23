@@ -1,16 +1,16 @@
 ---
-id: "01a1fd4e-b76f-765e-a570-3450b793e282"
+x-okfw-id: "01a1fd4e-b76f-765e-a570-3450b793e282"
 title: "ISSUE-007: R10: casts and indexing"
 type: "Issue"
-kind: "issue"
+x-okfw-kind: "issue"
 tags:
   - "issue"
   - "phase-6"
   - "power-of-10"
   - "r10"
   - "closed"
-created: "2026-11-21T02:52:36-06:00"
-timestamp: "2026-11-21T04:51:59-06:00"
+x-okfw-created: "2026-11-21T02:52:36-06:00"
+x-okfw-timestamp: "2026-11-21T04:51:59-06:00"
 description: "Replace the as casts and the indexing in production code with checked forms."
 ---
 

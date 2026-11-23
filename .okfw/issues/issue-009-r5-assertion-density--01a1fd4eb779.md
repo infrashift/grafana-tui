@@ -1,16 +1,16 @@
 ---
-id: "01a1fd4e-b779-7e30-9661-c442995c8318"
+x-okfw-id: "01a1fd4e-b779-7e30-9661-c442995c8318"
 title: "ISSUE-009: R5: assertion density"
 type: "Issue"
-kind: "issue"
+x-okfw-kind: "issue"
 tags:
   - "issue"
   - "phase-8"
   - "power-of-10"
   - "r5"
   - "closed"
-created: "2026-11-21T02:52:36-06:00"
-timestamp: "2026-11-21T09:46:29-06:00"
+x-okfw-created: "2026-11-21T02:52:36-06:00"
+x-okfw-timestamp: "2026-11-21T09:46:29-06:00"
 description: "Add checks on external data and invariant assertions until the average is 2 or more for each function."
 ---
 

@@ -1,16 +1,16 @@
 ---
-id: "01a1fd4e-b77f-72f4-867f-1de33b5aa521"
+x-okfw-id: "01a1fd4e-b77f-72f4-867f-1de33b5aa521"
 title: "ISSUE-010: ASD-STE100 comments and documentation"
 type: "Issue"
-kind: "issue"
+x-okfw-kind: "issue"
 tags:
   - "issue"
   - "phase-9"
   - "ste-100"
   - "docs"
   - "closed"
-created: "2026-11-21T02:52:36-06:00"
-timestamp: "2026-11-21T10:09:08-06:00"
+x-okfw-created: "2026-11-21T02:52:36-06:00"
+x-okfw-timestamp: "2026-11-21T10:09:08-06:00"
 description: "Rewrite the comments, the docs and the wiki until lexiscope reports no findings."
 ---
 
