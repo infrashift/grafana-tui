@@ -1,16 +1,16 @@
 ---
-id: "01a1fd4e-b76a-7468-8dda-ac4f61c8fbf3"
+x-okfw-id: "01a1fd4e-b76a-7468-8dda-ac4f61c8fbf3"
 title: "ISSUE-006: R3: resource limits"
 type: "Issue"
-kind: "issue"
+x-okfw-kind: "issue"
 tags:
   - "issue"
   - "phase-5"
   - "power-of-10"
   - "r3"
   - "closed"
-created: "2026-11-21T02:52:36-06:00"
-timestamp: "2026-11-21T04:34:35-06:00"
+x-okfw-created: "2026-11-21T02:52:36-06:00"
+x-okfw-timestamp: "2026-11-21T04:34:35-06:00"
 description: "Give each growable collection, buffer, input and queue a named limit."
 ---
 

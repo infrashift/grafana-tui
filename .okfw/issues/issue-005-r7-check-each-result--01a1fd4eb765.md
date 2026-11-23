@@ -1,16 +1,16 @@
 ---
-id: "01a1fd4e-b765-722d-8096-39b16e537575"
+x-okfw-id: "01a1fd4e-b765-722d-8096-39b16e537575"
 title: "ISSUE-005: R7: check each result"
 type: "Issue"
-kind: "issue"
+x-okfw-kind: "issue"
 tags:
   - "issue"
   - "phase-4"
   - "power-of-10"
   - "r7"
   - "closed"
-created: "2026-11-21T02:52:36-06:00"
-timestamp: "2026-11-21T04:13:18-06:00"
+x-okfw-created: "2026-11-21T02:52:36-06:00"
+x-okfw-timestamp: "2026-11-21T04:13:18-06:00"
 description: "Remove unwrap, expect, unreachable and discarded results from production code."
 ---
 

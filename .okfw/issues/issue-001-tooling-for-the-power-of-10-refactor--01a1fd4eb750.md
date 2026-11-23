@@ -1,15 +1,15 @@
 ---
-id: "01a1fd4e-b750-7076-889f-7d400e0eac73"
+x-okfw-id: "01a1fd4e-b750-7076-889f-7d400e0eac73"
 title: "ISSUE-001: Tooling for the Power of 10 refactor"
 type: "Issue"
-kind: "issue"
+x-okfw-kind: "issue"
 tags:
   - "issue"
   - "phase-0"
   - "tooling"
   - "closed"
-created: "2026-11-21T02:52:36-06:00"
-timestamp: "2026-11-21T02:55:52-06:00"
+x-okfw-created: "2026-11-21T02:52:36-06:00"
+x-okfw-timestamp: "2026-11-21T02:55:52-06:00"
 description: "Add the ZMakefile, the gates, the wiki and the characterization snapshots."
 ---
 

@@ -1,15 +1,15 @@
 ---
-id: "01a1fed3-3e26-718f-ae11-4c75738a3239"
+x-okfw-id: "01a1fed3-3e26-718f-ae11-4c75738a3239"
 title: "ISSUE-012: Scan the licensed Rust files when lexiscope skips license headers"
 type: "Issue"
-kind: "issue"
+x-okfw-kind: "issue"
 tags:
   - "issue"
   - "open"
   - "ste-100"
   - "tooling"
-created: "2026-11-21T09:56:59-06:00"
-timestamp: "2026-11-21T09:56:59-06:00"
+x-okfw-created: "2026-11-21T09:56:59-06:00"
+x-okfw-timestamp: "2026-11-21T09:56:59-06:00"
 description: "docs-style excludes the 35 Rust files with the Apache header until lexiscope can skip a license comment block."
 ---
 

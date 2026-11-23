@@ -1,5 +1,5 @@
 ---
-id: "01a1fdaa-f533-748f-a599-87c9a6c30f81"
+x-okfw-id: "01a1fdaa-f533-748f-a599-87c9a6c30f81"
 title: "ADR-0007: Named limits cap each input and growable collection"
 type: "ADR"
 tags:
@@ -7,8 +7,8 @@ tags:
   - "power-of-10"
   - "r3"
   - "limits"
-created: "2026-11-21T04:33:21-06:00"
-timestamp: "2026-11-21T04:33:21-06:00"
+x-okfw-created: "2026-11-21T04:33:21-06:00"
+x-okfw-timestamp: "2026-11-21T04:33:21-06:00"
 description: "The table of every resource limit, where the program checks it and what the user sees at the limit."
 ---
 

@@ -1,15 +1,15 @@
 ---
-id: "01a1feaa-f30f-718f-9116-e68ae69a2aee"
+x-okfw-id: "01a1feaa-f30f-718f-9116-e68ae69a2aee"
 title: "ISSUE-011: The SVG export writes NaN coordinates for NaN or huge values"
 type: "Issue"
-kind: "issue"
+x-okfw-kind: "issue"
 tags:
   - "issue"
   - "bug"
   - "export"
   - "closed"
-created: "2026-11-21T09:12:58-06:00"
-timestamp: "2026-11-21T09:37:00-06:00"
+x-okfw-created: "2026-11-21T09:12:58-06:00"
+x-okfw-timestamp: "2026-11-21T09:37:00-06:00"
 description: "A NaN bar gauge value or data near f64::MAX gives NaN coordinates in the SVG export."
 ---
 

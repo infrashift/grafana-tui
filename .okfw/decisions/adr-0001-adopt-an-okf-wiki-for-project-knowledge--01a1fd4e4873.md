@@ -1,13 +1,13 @@
 ---
-id: "01a1fd4e-4873-74cc-b209-845b7afb46de"
+x-okfw-id: "01a1fd4e-4873-74cc-b209-845b7afb46de"
 title: "ADR-0001: Adopt an OKF wiki for project knowledge"
 type: "ADR"
 tags:
   - "adr"
   - "wiki"
   - "tooling"
-created: "2026-11-21T02:52:08-06:00"
-timestamp: "2026-11-21T02:52:08-06:00"
+x-okfw-created: "2026-11-21T02:52:08-06:00"
+x-okfw-timestamp: "2026-11-21T02:52:08-06:00"
 description: "The project knowledge is in an OKF wiki in .okfw/ that okfw manages and make wiki validates."
 ---
 

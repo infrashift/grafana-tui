@@ -1,13 +1,13 @@
 ---
-id: "01a1fd4e-4878-795e-a03e-6420e079a308"
+x-okfw-id: "01a1fd4e-4878-795e-a03e-6420e079a308"
 title: "ADR-0002: Adapt the NASA Power of 10 rules to Rust"
 type: "ADR"
 tags:
   - "adr"
   - "power-of-10"
   - "safety"
-created: "2026-11-21T02:52:08-06:00"
-timestamp: "2026-11-21T02:52:08-06:00"
+x-okfw-created: "2026-11-21T02:52:08-06:00"
+x-okfw-timestamp: "2026-11-21T02:52:08-06:00"
 description: "The production code follows the ten rules with Rust adaptations for rules 3, 5 and 9, and this ADR records each deviation."
 ---
 

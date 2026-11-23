@@ -1,5 +1,5 @@
 ---
-id: "01a1fd4e-487d-746f-8c08-4609bc8863b2"
+x-okfw-id: "01a1fd4e-487d-746f-8c08-4609bc8863b2"
 title: "ADR-0003: semscope and clippy enforce the Power of 10 rules"
 type: "ADR"
 tags:
@@ -7,8 +7,8 @@ tags:
   - "power-of-10"
   - "lint"
   - "tooling"
-created: "2026-11-21T02:52:08-06:00"
-timestamp: "2026-11-21T02:52:08-06:00"
+x-okfw-created: "2026-11-21T02:52:08-06:00"
+x-okfw-timestamp: "2026-11-21T02:52:08-06:00"
 description: "make p10 runs semscope with a ratchet overlay, and the clippy lints table turns on each rule when its phase closes."
 ---
 

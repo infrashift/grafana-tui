@@ -1,13 +1,13 @@
 ---
-id: "01a1ff3c-1071-77f7-8152-8c42b1aeab0a"
+x-okfw-id: "01a1ff3c-1071-77f7-8152-8c42b1aeab0a"
 title: "ADR-0009: Remove the upstream history and keep the legal notices"
 type: "ADR"
 tags:
   - "adr"
   - "history"
   - "license"
-created: "2026-11-21T11:51:28-06:00"
-timestamp: "2026-11-21T11:51:28-06:00"
+x-okfw-created: "2026-11-21T11:51:28-06:00"
+x-okfw-timestamp: "2026-11-21T11:51:28-06:00"
 description: "A new root commit replaces the upstream git history; NOTICE and the file headers keep the attribution that Apache-2.0 requires."
 ---
 

@@ -1,13 +1,13 @@
 ---
-id: "01a1fd4e-4886-7b5b-b45d-e0fe4eff61dd"
+x-okfw-id: "01a1fd4e-4886-7b5b-b45d-e0fe4eff61dd"
 title: "ADR-0005: Keep a modern-mode ZMakefile next to the Makefile"
 type: "ADR"
 tags:
   - "adr"
   - "build"
   - "tooling"
-created: "2026-11-21T02:52:08-06:00"
-timestamp: "2026-11-21T02:52:08-06:00"
+x-okfw-created: "2026-11-21T02:52:08-06:00"
+x-okfw-timestamp: "2026-11-21T02:52:08-06:00"
 description: "The ZMakefile has the same tasks as the Makefile in zmake modern mode, and GNU Make keeps the Makefile."
 ---
 

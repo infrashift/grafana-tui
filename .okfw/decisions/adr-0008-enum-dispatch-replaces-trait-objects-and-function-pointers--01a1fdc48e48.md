@@ -1,5 +1,5 @@
 ---
-id: "01a1fdc4-8e48-71b7-bcba-30fb48927319"
+x-okfw-id: "01a1fdc4-8e48-71b7-bcba-30fb48927319"
 title: "ADR-0008: Enum dispatch replaces trait objects and function pointers"
 type: "ADR"
 tags:
@@ -8,8 +8,8 @@ tags:
   - "r8"
   - "r9"
   - "annotations"
-created: "2026-11-21T05:01:19-06:00"
-timestamp: "2026-11-21T05:01:19-06:00"
+x-okfw-created: "2026-11-21T05:01:19-06:00"
+x-okfw-timestamp: "2026-11-21T05:01:19-06:00"
 description: "An enum of annotation providers, plain data and small traits replace Box dyn, dyn Fn, function pointers and the theme macro."
 ---
 

@@ -1,15 +1,15 @@
 ---
-id: "01a1ff09-635a-7504-b1e3-b5d4380c47ae"
+x-okfw-id: "01a1ff09-635a-7504-b1e3-b5d4380c47ae"
 title: "ISSUE-013: Push and pull request events start no workflow run"
 type: "Issue"
-kind: "issue"
+x-okfw-kind: "issue"
 tags:
   - "issue"
   - "in-progress"
   - "ci"
   - "release"
-created: "2026-11-21T10:56:07-06:00"
-timestamp: "2026-11-21T10:56:07-06:00"
+x-okfw-created: "2026-11-21T10:56:07-06:00"
+x-okfw-timestamp: "2026-11-21T10:56:07-06:00"
 description: "Since the move to the infrashift account, only a manual workflow_dispatch starts a GitHub Actions run."
 ---
 

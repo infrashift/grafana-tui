@@ -1,16 +1,16 @@
 ---
-id: "01a1fd4e-b760-7262-aab0-7aed9ae7d121"
+x-okfw-id: "01a1fd4e-b760-7262-aab0-7aed9ae7d121"
 title: "ISSUE-004: R2: bounded loops"
 type: "Issue"
-kind: "issue"
+x-okfw-kind: "issue"
 tags:
   - "issue"
   - "phase-3"
   - "power-of-10"
   - "r2"
   - "closed"
-created: "2026-11-21T02:52:36-06:00"
-timestamp: "2026-11-21T04:01:08-06:00"
+x-okfw-created: "2026-11-21T02:52:36-06:00"
+x-okfw-timestamp: "2026-11-21T04:01:08-06:00"
 description: "Give each production loop a bound that a reader can see."
 ---
 
